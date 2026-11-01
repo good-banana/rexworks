@@ -1,6 +1,6 @@
 # md-viewer
 
-Preview Markdown files from Rex terminal panes. Click a Markdown path in any Rex pane and a WebKit-rendered preview opens in a pane beside it. The preview is drawn in the terminal using the kitty graphics protocol.
+`md-viewer` lets you preview Markdown files in a dedicated pane in Rex. Click a Markdown path in any Rex pane and a rendered preview opens in a pane beside it. The preview is drawn in the terminal using the kitty graphics protocol.
 
 ## Requirements
 
@@ -11,11 +11,10 @@ Preview Markdown files from Rex terminal panes. Click a Markdown path in any Rex
 ## Install
 
 ```
-brew install good-banana/rexworks/md-viewer
-md-viewer setup
+brew install good-banana/rexworks/md-viewer && md-viewer setup
 ```
 
-`md-viewer setup` installs the background handler app and makes it the default handler for Markdown files.
+`md-viewer setup` installs the background handler app and makes it the default handler for Markdown files when you click them in Rex. Clicking a Markdown file in any other app will open it in your normal default Markdown app.
 
 ## How routing works
 
@@ -26,8 +25,8 @@ md-viewer setup
 
 | Key | Action |
 | --- | --- |
-| j, Down | Scroll down a line |
-| k, Up | Scroll up a line |
+| j, Down | Scroll down |
+| k, Up | Scroll up |
 | d | Scroll down half a page |
 | u | Scroll up half a page |
 | Space, Page Down | Scroll down a page |
@@ -50,34 +49,43 @@ md-viewer setup
 
 ## Local file links
 
-Links to local files open only when the target is an image, audio or video, a PDF, or plain text. Scripts, apps, HTML, and SVG are blocked.
+- Links to other Markdown files open in the preview. Backspace goes back.
+- Web and mailto links open in your browser or mail app.
+- Links to local files open only when the target is an image, audio or video, a PDF, or plain text. Scripts, apps, HTML, and SVG are blocked.
 
 ## Commands
 
+### Setup
 ```
-md-viewer view <file>
-md-viewer open <file>
 md-viewer setup
-md-viewer uninstall
-md-viewer doctor
 ```
 
+### Doctor
+```
+md-viewer doctor
+```
 `md-viewer doctor` diagnoses the installation: handler app, web resources, and default handler registration.
 
 The handler log is at `~/Library/Application Support/md-viewer/handler.log`.
 
-## Uninstall
-
+### View Files
 ```
-md-viewer uninstall
-brew uninstall md-viewer
+md-viewer view <file>
 ```
 
+### Open Files
+```
+md-viewer open <file>
+```
+
+### Uninstall
+```
+md-viewer uninstall && brew uninstall md-viewer
+```
 `md-viewer uninstall` removes the handler app and restores the previous Markdown handler.
 
-## Credits
 
-Inspired by [rex-markdown](https://github.com/jal-co/jalco-dotfiles/tree/main/tools/rex-markdown) by jal-co.
+## Credits
 
 Vendored web libraries and their licenses are listed in `Sources/MDViewerWeb/Resources/web/THIRD_PARTY_NOTICES`.
 
