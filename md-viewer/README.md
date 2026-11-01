@@ -47,7 +47,7 @@ brew install good-banana/rexworks/md-viewer && md-viewer setup
 - Wheel scrolls.
 - Click follows a link.
 
-## Local file links
+## Links
 
 - Links to other Markdown files open in the preview. Backspace goes back.
 - Web and mailto links open in your browser or mail app.
