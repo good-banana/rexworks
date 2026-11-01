@@ -80,7 +80,7 @@ final class ReadmeHTMLTests: XCTestCase {
         "div(center)[p(\"Safe \" strong(\"text\"))]",
         "p(\"tab trick \" link(https://ok.example: \"ok\"))",
         "p(\"md link \")",
-        "p(\"<svg onload=\"alert(1)\"><text>svg</text></svg>\")",
+        "p(\"svg\")",
         "p(\"After.\")",
       ].joined(separator: ", "))
   }
@@ -88,7 +88,7 @@ final class ReadmeHTMLTests: XCTestCase {
   func testOriginalHostileFixture() throws {
     XCTAssertEqual(
       shape(Document.parse(try fixture("hostile")).blocks),
-      "h1(\"Hostile\"), plain(img(x: \"\")), p(\"x\"), p(\"<audio autoplay src=\"x.mp3\"></audio>\")")
+      "h1(\"Hostile\"), plain(img(x: \"\")), p(\"x\")")
   }
 
   func testUnsafeURLSchemes() {

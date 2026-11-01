@@ -1,7 +1,7 @@
 enum HTMLToken: Hashable {
   case text(String)
-  case startTag(name: String, attributes: [String: String], source: String)
-  case endTag(name: String, source: String)
+  case startTag(name: String, attributes: [String: String])
+  case endTag(name: String)
   case comment
 }
 
@@ -30,7 +30,7 @@ enum HTMLTokenizer {
       flushText()
       tokens.append(token)
       i = end
-      if case .startTag(let name, _, _) = token, rawTextElements.contains(name) {
+      if case .startTag(let name, _) = token, rawTextElements.contains(name) {
         let close = rawTextEnd(s, name: name, from: i) ?? s.count
         text = Scalars(s[i..<close])
         flushText()
@@ -70,7 +70,7 @@ enum HTMLTokenizer {
     if closing {
       while i < s.count, isSpace(s[i]) { i += 1 }
       guard i < s.count, s[i] == ">" else { return nil }
-      return (.endTag(name: name, source: string(Array(s[start...i]))), i + 1)
+      return (.endTag(name: name), i + 1)
     }
     var attributes: [String: String] = [:]
     while true {
@@ -78,10 +78,10 @@ enum HTMLTokenizer {
       while i < s.count, isSpace(s[i]) { i += 1 }
       guard i < s.count else { return nil }
       if s[i] == ">" {
-        return (.startTag(name: name, attributes: attributes, source: string(Array(s[start...i]))), i + 1)
+        return (.startTag(name: name, attributes: attributes), i + 1)
       }
       if s[i] == "/", i + 1 < s.count, s[i + 1] == ">" {
-        return (.startTag(name: name, attributes: attributes, source: string(Array(s[start...(i + 1)]))), i + 2)
+        return (.startTag(name: name, attributes: attributes), i + 2)
       }
       guard i > beforeSpace else { return nil }
       let attributeStart = i

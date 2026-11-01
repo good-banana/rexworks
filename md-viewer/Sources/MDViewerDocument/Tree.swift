@@ -148,23 +148,17 @@ final class TreeBuilder {
       break
     case .text(let text):
       self.text(fromBlock ? HTMLEntities.decode(text) : text, range: range, fromHTML: fromBlock)
-    case .startTag(let name, let attributes, let source):
-      start(name, attributes: attributes, source: source, range: range, fromBlock: fromBlock)
-    case .endTag(let name, let source):
-      if HTMLVocabulary.isKnown(name) || HTMLVocabulary.dropped.contains(name) {
-        guard name != "br" else {
-          current.children.append(.element(TreeElement(.html("br"), range: range)))
-          return
-        }
-        closeHTML([name], boundary: [], explicitEnd: range.end)
-      } else {
-        text(source, range: range, fromHTML: fromBlock)
-      }
+    case .startTag(let name, let attributes):
+      start(name, attributes: attributes, range: range)
+    case .endTag("br"):
+      current.children.append(.element(TreeElement(.html("br"), range: range)))
+    case .endTag(let name):
+      closeHTML([name], boundary: [], explicitEnd: range.end)
     }
   }
 
   private func start(
-    _ name: String, attributes: [String: String], source: String, range: SourceRange, fromBlock: Bool
+    _ name: String, attributes: [String: String], range: SourceRange
   ) {
     if HTMLVocabulary.dropped.contains(name) {
       guard !HTMLVocabulary.droppedVoid.contains(name) else { return }
@@ -173,10 +167,7 @@ final class TreeBuilder {
       stack.append(element)
       return
     }
-    guard HTMLVocabulary.isKnown(name) else {
-      text(source, range: range, fromHTML: fromBlock)
-      return
-    }
+    guard HTMLVocabulary.isKnown(name) else { return }
     if HTMLVocabulary.closesParagraph.contains(name) { closeHTML(["p"], boundary: []) }
     switch name {
     case "li":

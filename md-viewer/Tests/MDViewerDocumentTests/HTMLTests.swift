@@ -42,13 +42,17 @@ final class HTMLTests: XCTestCase {
     XCTAssertEqual(paragraphShape("*x <b>y* z</b>"), "em(\"x \" strong(\"y\")) \" z\"")
   }
 
-  func testUnknownTagsAreLiteralText() {
-    XCTAssertEqual(paragraphShape("a <foo class=\"x\">b</foo> c"), "\"a <foo class=\"x\">b</foo> c\"")
-    XCTAssertEqual(paragraphShape("a <audio autoplay>b</audio>"), "\"a <audio autoplay>b</audio>\"")
-    let document = Document.parse("<custom-tag>\nhello\n</custom-tag>\n\nAfter.\n")
-    XCTAssertEqual(shape(document.blocks), "plain(\"<custom-tag> hello </custom-tag>\"), p(\"After.\")")
+  func testUnknownTagsKeepOnlyTheirText() {
+    XCTAssertEqual(paragraphShape("a <foo class=\"x\">b</foo> c"), "\"a b c\"")
+    XCTAssertEqual(
+      paragraphShape("a <u>under</u> <font color=\"red\">red</font> <video src=\"v.mp4\">fallback</video>"),
+      "\"a under red fallback\"")
+    XCTAssertEqual(paragraphShape("x <unknown-element/> y </stray> z"), "\"x  y  z\"")
+    let document = Document.parse("<custom-tag>\nhello <b>bold</b>\n</custom-tag>\n\nAfter.\n")
+    XCTAssertEqual(shape(document.blocks), "plain(\"hello \" strong(\"bold\")), p(\"After.\")")
     XCTAssertEqual(
       document.blocks[0].range, SourceRange(start: .init(line: 1, column: 1), end: .init(line: 3, column: 13)))
+    XCTAssertEqual(blocks("<div align=\"center\"><u>kept</u> text</div>\n"), "div(center)[plain(\"kept text\")]")
   }
 
   func testCommentsAreDropped() {
