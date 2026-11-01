@@ -166,7 +166,8 @@
     });
     root.querySelectorAll("*").forEach(function (element) {
       element.getAttributeNames().forEach(function (name) {
-        if (name.toLowerCase().startsWith("on")) element.removeAttribute(name);
+        const lower = name.toLowerCase();
+        if (lower.startsWith("on") || lower === "loading") element.removeAttribute(name);
       });
     });
   }
@@ -261,7 +262,9 @@
     await renderDiagrams(theme.dark);
     await waitForImages(article);
     await document.fonts.ready;
-    return { height: document.documentElement.scrollHeight };
+    const bodyStyle = getComputedStyle(document.body);
+    const bottom = article.getBoundingClientRect().bottom + window.scrollY;
+    return { height: Math.ceil(bottom + parseFloat(bodyStyle.paddingBottom) + parseFloat(bodyStyle.marginBottom)) };
   };
 
   window.setPoster = function (index, dataURL) {

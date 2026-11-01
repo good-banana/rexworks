@@ -7,21 +7,55 @@ import XCTest
 @MainActor
 final class RenderTests: XCTestCase {
   func render(_ name: String, dark: Bool = false) async throws -> (WebRenderer, CGFloat) {
-    let renderer = WebRenderer(resources: WebRenderer.resourcesURL())
+    let renderer = try WebRenderer(resources: WebRenderer.resourcesURL())
+    let height = try await render(name, with: renderer, dark: dark)
+    return (renderer, height)
+  }
+
+  func render(_ name: String, with renderer: WebRenderer, dark: Bool = false) async throws -> CGFloat {
     let url = try XCTUnwrap(Bundle.module.url(forResource: name, withExtension: "md", subdirectory: "Fixtures"))
-    let height = try await renderer.render(
+    return try await renderer.render(
       markdown: String(contentsOf: url, encoding: .utf8), fileURL: url, width: 800,
       theme: Theme(dark: dark, background: "#1e1e2e", foreground: "#cdd6f4"))
-    return (renderer, height)
   }
 
   func count(_ selector: String, in renderer: WebRenderer) async throws -> Int? {
     try await renderer.evaluate("document.querySelectorAll(\"\(selector)\").length") as? Int
   }
 
-  func testResourcesContainViewer() {
-    let viewer = WebRenderer.resourcesURL().appendingPathComponent("viewer.html")
+  func testResourcesContainViewer() throws {
+    let viewer = try WebRenderer.resourcesURL().appendingPathComponent("viewer.html")
     XCTAssertTrue(FileManager.default.fileExists(atPath: viewer.path))
+  }
+
+  func testMissingResourcesThrowInsteadOfCrashing() {
+    let missing = URL(fileURLWithPath: "/nonexistent/md-viewer_MDViewerWeb.bundle")
+    XCTAssertThrowsError(try WebRenderer.resourcesURL(candidates: [missing])) { error in
+      XCTAssertEqual(error as? WebRendererError, .resourcesNotFound(searched: [missing.path]))
+    }
+  }
+
+  func testConcurrentRendersAreSerialized() async throws {
+    let renderer = try WebRenderer(resources: WebRenderer.resourcesURL())
+    let first = Task { try await self.render("gfm", with: renderer) }
+    let second = Task { try await self.render("links", with: renderer) }
+    let firstHeight = try await first.value
+    let secondHeight = try await second.value
+    XCTAssertGreaterThan(firstHeight, 0)
+    XCTAssertGreaterThan(secondHeight, 0)
+    let heading = try await renderer.evaluate("document.querySelector('article h1').textContent")
+    XCTAssertEqual(heading as? String, "Links")
+    let tables = try await count("table", in: renderer)
+    XCTAssertEqual(tables, 0)
+  }
+
+  func testShortDocumentHeightIgnoresViewport() async throws {
+    let (renderer, height) = try await render("short")
+    XCTAssertGreaterThan(height, 50)
+    XCTAssertLessThan(height, 300)
+    _ = try await render("tall", with: renderer)
+    let again = try await render("short", with: renderer)
+    XCTAssertEqual(again, height)
   }
 
   func testGFMFeatures() async throws {
@@ -77,6 +111,8 @@ final class RenderTests: XCTestCase {
     XCTAssertEqual(videos, 0)
     let placeholders = try await count(".video-placeholder", in: r)
     XCTAssertEqual(placeholders, 1)
+    let lazy = try await count("article [loading]", in: r)
+    XCTAssertEqual(lazy, 0)
   }
 
   func testAnchorOffset() async throws {
@@ -102,11 +138,19 @@ final class RenderTests: XCTestCase {
     XCTAssertEqual(image.size.width, 800)
   }
 
-  func testSnapshotBelowTheFoldHasContent() async throws {
-    let (r, h) = try await render("gfm", dark: true)
-    let image = try await r.snapshot(rect: CGRect(x: 0, y: h - 400, width: 800, height: 400))
-    XCTAssertEqual(image.size, NSSize(width: 800, height: 400))
-    XCTAssertGreaterThan(try distinctColors(in: image), 1)
+  func testSnapshotCapturesScrolledRegion() async throws {
+    let (r, h) = try await render("tall")
+    let markerTop = try await r.evaluate(
+      "document.getElementById('marker').getBoundingClientRect().top + window.scrollY")
+    let top = try XCTUnwrap(markerTop as? Double)
+    XCTAssertGreaterThan(top, 600)
+    let inside = try await r.snapshot(rect: CGRect(x: 0, y: top - 150, width: 800, height: 300))
+    XCTAssertEqual(inside.size, NSSize(width: 800, height: 300))
+    XCTAssertFalse(try isMarkerRed(inside, x: 400, y: 50))
+    XCTAssertTrue(try isMarkerRed(inside, x: 400, y: 200))
+    XCTAssertGreaterThan(top + 400, h)
+    let pastEnd = try await r.snapshot(rect: CGRect(x: 0, y: top, width: 800, height: 400))
+    XCTAssertTrue(try isMarkerRed(pastEnd, x: 400, y: 100))
   }
 
   func testThemeDoesNotChangeLayoutHeight() async throws {
@@ -124,15 +168,10 @@ final class RenderTests: XCTestCase {
     XCTAssertEqual(source as? String, pixel)
   }
 
-  func distinctColors(in image: NSImage) throws -> Int {
-    let data = try XCTUnwrap(image.tiffRepresentation)
-    let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data))
-    var colors = Set<String>()
-    for x in stride(from: 0, to: bitmap.pixelsWide, by: 8) {
-      for y in stride(from: 0, to: bitmap.pixelsHigh, by: 8) {
-        if let color = bitmap.colorAt(x: x, y: y) { colors.insert(color.description) }
-      }
-    }
-    return colors.count
+  func isMarkerRed(_ image: NSImage, x: CGFloat, y: CGFloat) throws -> Bool {
+    let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+    let scale = CGFloat(bitmap.pixelsWide) / image.size.width
+    let color = try XCTUnwrap(bitmap.colorAt(x: Int(x * scale), y: Int(y * scale))?.usingColorSpace(.sRGB))
+    return color.redComponent > 0.8 && color.greenComponent < 0.3 && color.blueComponent < 0.3
   }
 }
