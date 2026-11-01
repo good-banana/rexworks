@@ -110,4 +110,12 @@ final class TerminalInputTests: XCTestCase {
     XCTAssertEqual(p.feed([0x1b, 0x5d] + Array(repeating: 0x41, count: 5000)), [])
     XCTAssertEqual(p.feed(Array("j".utf8)), [.key(.char("j"))])
   }
+
+  func testThemeResolveTriggers() {
+    XCTAssertTrue(InputEvent.colorScheme(.dark).requestsThemeResolve)
+    XCTAssertTrue(InputEvent.colorScheme(.light).requestsThemeResolve)
+    XCTAssertTrue(InputEvent.key(.char("r")).requestsThemeResolve)
+    XCTAssertFalse(InputEvent.key(.char("R")).requestsThemeResolve)
+    XCTAssertFalse(InputEvent.mouse(.init(kind: .press, x: 0, y: 0)).requestsThemeResolve)
+  }
 }

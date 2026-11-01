@@ -99,13 +99,18 @@ public struct TerminalColorSet: Equatable, Sendable {
   public var background: RGB?
   public var palette: [RGB?]
   public var colorScheme: ColorScheme?
+  public var cursor: RGB?
+  public var selectionBackground: RGB?
 
   public init(
-    foreground: RGB? = nil, background: RGB? = nil, palette: [RGB?] = [], colorScheme: ColorScheme? = nil
+    foreground: RGB? = nil, background: RGB? = nil, palette: [RGB?] = [], colorScheme: ColorScheme? = nil,
+    cursor: RGB? = nil, selectionBackground: RGB? = nil
   ) {
     self.foreground = foreground
     self.background = background
     self.colorScheme = colorScheme
+    self.cursor = cursor
+    self.selectionBackground = selectionBackground
     self.palette = (0..<Self.paletteSize).map { $0 < palette.count ? palette[$0] : nil }
   }
 

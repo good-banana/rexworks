@@ -97,7 +97,7 @@ public struct RenderPalette: Equatable, Sendable {
     tableStripe = tint(0.035)
     blockquoteBar = tint(0.3)
     alerts = Alerts(note: blue, tip: green, important: magenta, warning: yellow, caution: red)
-    selectionFill = bg.mixed(with: blue, 0.35)
+    selectionFill = colors.selectionBackground ?? bg.mixed(with: blue, 0.35)
     findHighlight = bg.mixed(with: yellow, 0.3)
     currentMatchHighlight = bg.mixed(with: yellow.mixed(with: red, 0.5), 0.55)
     focusOutline = blue

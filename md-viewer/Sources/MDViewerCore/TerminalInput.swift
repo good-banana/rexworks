@@ -52,6 +52,13 @@ public enum InputEvent: Equatable {
   case key(Key)
   case mouse(MouseEvent)
   case colorScheme(ColorScheme)
+
+  public var requestsThemeResolve: Bool {
+    switch self {
+    case .colorScheme, .key(.char("r")): true
+    default: false
+    }
+  }
 }
 
 public struct InputParser {
