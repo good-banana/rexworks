@@ -2,6 +2,11 @@
 
 `md-viewer` lets you preview Markdown files in a dedicated pane in Rex. Click a Markdown path in any Rex pane and a rendered preview opens in a pane beside it. The preview is drawn in the terminal using the kitty graphics protocol.
 
+<p>
+  <img src="docs/preview-dark.png" alt="md-viewer preview in a dark terminal theme" width="49%">
+  <img src="docs/preview-light.png" alt="md-viewer preview in a light terminal theme" width="49%">
+</p>
+
 ## Requirements
 
 - macOS 14 or later
