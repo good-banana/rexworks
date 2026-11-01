@@ -20,7 +20,8 @@ final class DocumentTests: XCTestCase {
       case .table: "table"
       case .footnoteDefinition: "footnote"
       case .details: "details"
-      case .htmlBlock: "html"
+      case .division: "division"
+      case .plain: "plain"
       case .thematicBreak: "hr"
       }
     }
@@ -113,14 +114,18 @@ final class DocumentTests: XCTestCase {
   func testTables() throws {
     let table = try XCTUnwrap(document.blocks[12].table)
     XCTAssertEqual(table.alignments, [.left, .center, .right, .none])
-    XCTAssertEqual(table.header.cells.map { shape($0.content) }, ["\"Left\"", "\"Center\"", "\"Right\"", "\"None\""])
-    XCTAssertEqual(table.rows.map { $0.cells.map { shape($0.content) } }, [["\"a\"", "\"b\"", "\"c\"", "\"d\""]])
-    XCTAssertEqual(table.rows[0].range.start.line, table.header.range.start.line + 2)
+    let header = try XCTUnwrap(table.header)
+    XCTAssertEqual(header.cells.map(cellText), ["\"Left\"", "\"Center\"", "\"Right\"", "\"None\""])
+    XCTAssertEqual(header.cells.map(\.isHeader), [true, true, true, true])
+    XCTAssertEqual(table.rows.map { $0.cells.map(cellText) }, [["\"a\"", "\"b\"", "\"c\"", "\"d\""]])
+    XCTAssertEqual(table.rows[0].cells.map(\.alignment), [.left, .center, .right, .none])
+    XCTAssertEqual(table.rows[0].cells.map(\.isHeader), [false, false, false, false])
+    XCTAssertEqual(table.rows[0].range.start.line, header.range.start.line + 2)
   }
 
   func testTableFormattingAndShortRows() throws {
     let table = try XCTUnwrap(Document.parse("| a | b |\n|---|---|\n| **x** |\n").blocks.first?.table)
-    XCTAssertEqual(table.rows[0].cells.map { shape($0.content) }, ["strong(\"x\")", ""])
+    XCTAssertEqual(table.rows[0].cells.map(cellText), ["strong(\"x\")", ""])
   }
 
   func testFootnotes() throws {

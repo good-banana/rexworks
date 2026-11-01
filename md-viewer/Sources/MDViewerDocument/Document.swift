@@ -49,7 +49,8 @@ public struct Block: Hashable, Sendable {
     case table(Table)
     case footnoteDefinition(FootnoteDefinition)
     case details(Details)
-    case htmlBlock([Inline])
+    case division(Division)
+    case plain([Inline])
     case thematicBreak
   }
 
@@ -64,8 +65,17 @@ public struct Block: Hashable, Sendable {
 
 public struct Heading: Hashable, Sendable {
   public var level: Int
-  public var slug: String
+  public var slug: String?
   public var content: [Inline]
+}
+
+public enum TextAlignment: Hashable, Sendable {
+  case left, center, right, justify
+}
+
+public struct Division: Hashable, Sendable {
+  public var alignment: TextAlignment
+  public var blocks: [Block]
 }
 
 public enum AlertKind: String, CaseIterable, Hashable, Sendable {
@@ -122,7 +132,11 @@ public enum TableAlignment: Hashable, Sendable {
 }
 
 public struct TableCell: Hashable, Sendable {
-  public var content: [Inline]
+  public var content: [Block]
+  public var alignment: TableAlignment
+  public var isHeader: Bool
+  public var columnSpan: Int
+  public var rowSpan: Int
   public var range: SourceRange
 }
 
@@ -133,7 +147,7 @@ public struct TableRow: Hashable, Sendable {
 
 public struct Table: Hashable, Sendable {
   public var alignments: [TableAlignment]
-  public var header: TableRow
+  public var header: TableRow?
   public var rows: [TableRow]
 }
 
@@ -161,6 +175,10 @@ public struct Inline: Hashable, Sendable {
     case keyboard([Inline])
     case `subscript`([Inline])
     case superscript([Inline])
+    case inserted([Inline])
+    case marked([Inline])
+    case small([Inline])
+    case abbreviation(title: String, content: [Inline])
     case link(Link)
     case image(Image)
     case footnoteReference(label: String, number: Int)
@@ -188,6 +206,17 @@ public struct Image: Hashable, Sendable {
   public var alt: String
   public var width: Int?
   public var height: Int?
+  public var sources: [ImageSource]
+}
+
+public enum ColorScheme: Hashable, Sendable {
+  case light, dark
+}
+
+public struct ImageSource: Hashable, Sendable {
+  public var source: String
+  public var media: String
+  public var colorScheme: ColorScheme?
 }
 
 extension Inline {
@@ -197,7 +226,8 @@ extension Inline {
     case .softBreak: " "
     case .hardBreak: "\n"
     case .emphasis(let children), .strong(let children), .strikethrough(let children), .keyboard(let children),
-      .subscript(let children), .superscript(let children):
+      .subscript(let children), .superscript(let children), .inserted(let children), .marked(let children),
+      .small(let children), .abbreviation(_, let children):
       children.plainText
     case .link(let link): link.content.plainText
     case .image(let image): image.alt

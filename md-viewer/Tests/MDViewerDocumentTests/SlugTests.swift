@@ -3,7 +3,7 @@ import XCTest
 
 final class SlugTests: XCTestCase {
   func slugs(_ markdown: String) -> [String] {
-    Document.parse(markdown).headings().map(\.slug)
+    Document.parse(markdown).headings().compactMap(\.slug)
   }
 
   func testBasicSlugs() {

@@ -8,6 +8,10 @@ enum HTMLToken: Hashable {
 enum HTMLTokenizer {
   private typealias Scalars = [Unicode.Scalar]
 
+  static let rawTextElements: Set<String> = [
+    "script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext",
+  ]
+
   static func tokenize(_ html: String) -> [HTMLToken] {
     let s = Array(html.unicodeScalars)
     var tokens: [HTMLToken] = []
@@ -18,17 +22,37 @@ enum HTMLTokenizer {
       text = []
     }
     while i < s.count {
-      if s[i] == "<", let (token, end) = tag(s, at: i) {
-        flushText()
-        tokens.append(token)
-        i = end
-      } else {
+      guard s[i] == "<", let (token, end) = tag(s, at: i) else {
         text.append(s[i])
         i += 1
+        continue
+      }
+      flushText()
+      tokens.append(token)
+      i = end
+      if case .startTag(let name, _, _) = token, rawTextElements.contains(name) {
+        let close = rawTextEnd(s, name: name, from: i) ?? s.count
+        text = Scalars(s[i..<close])
+        flushText()
+        i = close
       }
     }
     flushText()
     return tokens
+  }
+
+  private static func rawTextEnd(_ s: Scalars, name: String, from start: Int) -> Int? {
+    let needle = Array(("</" + name).unicodeScalars)
+    var i = start
+    while i + needle.count <= s.count {
+      let candidate = string(Array(s[i..<(i + needle.count)])).lowercased()
+      if candidate.unicodeScalars.elementsEqual(needle) {
+        let after = i + needle.count
+        if after == s.count || isSpace(s[after]) || s[after] == ">" || s[after] == "/" { return i }
+      }
+      i += 1
+    }
+    return nil
   }
 
   private static func tag(_ s: Scalars, at start: Int) -> (HTMLToken, Int)? {
@@ -156,99 +180,14 @@ enum HTMLEntities {
   }
 }
 
-struct InlineBuilder {
-  private struct Frame {
-    var name: String
-    var attributes: [String: String]
-    var start: SourcePosition
-    var content: [Inline] = []
-  }
+enum URLSafety {
+  private static let blockedSchemes: Set<String> = ["javascript", "vbscript", "data"]
 
-  private static let containers: Set<String> = ["kbd", "sub", "sup", "b", "strong", "i", "em", "code", "a"]
-  private static let transparent: Set<String> = ["details", "summary"]
-
-  private var root: [Inline] = []
-  private var frames: [Frame] = []
-
-  var isEmpty: Bool { root.isEmpty && frames.isEmpty }
-
-  mutating func append(_ inline: Inline) {
-    if frames.isEmpty {
-      Self.append(inline, to: &root)
-    } else {
-      Self.append(inline, to: &frames[frames.count - 1].content)
-    }
-  }
-
-  mutating func handle(_ token: HTMLToken, range: SourceRange, decodingText: Bool) {
-    switch token {
-    case .text(let text):
-      append(Inline(.text(decodingText ? HTMLEntities.decode(text) : text), range: range))
-    case .comment:
-      break
-    case .startTag(let name, let attributes, let source):
-      if name == "br" {
-        append(Inline(.hardBreak, range: range))
-      } else if name == "img" {
-        append(Inline(.image(Self.image(attributes)), range: range))
-      } else if Self.containers.contains(name) {
-        frames.append(Frame(name: name, attributes: attributes, start: range.start))
-      } else if !Self.transparent.contains(name) {
-        append(Inline(.text(source), range: range))
-      }
-    case .endTag(let name, let source):
-      if Self.containers.contains(name) {
-        guard let index = frames.lastIndex(where: { $0.name == name }) else { return }
-        while frames.count > index { closeFrame(end: range.end) }
-      } else if !Self.transparent.contains(name) && name != "br" && name != "img" {
-        append(Inline(.text(source), range: range))
-      }
-    }
-  }
-
-  mutating func finish(end: SourcePosition) -> [Inline] {
-    while !frames.isEmpty { closeFrame(end: end) }
-    return root
-  }
-
-  private mutating func closeFrame(end: SourcePosition) {
-    let frame = frames.removeLast()
-    let range = SourceRange(start: frame.start, end: end)
-    let kind: Inline.Kind?
-    switch frame.name {
-    case "kbd": kind = .keyboard(frame.content)
-    case "sub": kind = .subscript(frame.content)
-    case "sup": kind = .superscript(frame.content)
-    case "b", "strong": kind = .strong(frame.content)
-    case "i", "em": kind = .emphasis(frame.content)
-    case "code": kind = .code(frame.content.plainText)
-    default:
-      if let href = frame.attributes["href"] {
-        kind = .link(
-          Link(destination: href, title: frame.attributes["title"] ?? "", content: frame.content, isAutolink: false))
-      } else {
-        kind = nil
-      }
-    }
-    if let kind {
-      append(Inline(kind, range: range))
-    } else {
-      for inline in frame.content { append(inline) }
-    }
-  }
-
-  private static func image(_ attributes: [String: String]) -> Image {
-    Image(
-      source: attributes["src"] ?? "", title: attributes["title"] ?? "", alt: attributes["alt"] ?? "",
-      width: attributes["width"].flatMap { Int($0) }, height: attributes["height"].flatMap { Int($0) })
-  }
-
-  private static func append(_ inline: Inline, to content: inout [Inline]) {
-    if case .text(let addition) = inline.kind, let last = content.last, case .text(let existing) = last.kind {
-      content[content.count - 1] = Inline(
-        .text(existing + addition), range: SourceRange(start: last.range.start, end: inline.range.end))
-    } else {
-      content.append(inline)
-    }
+  static func isSafe(_ url: String) -> Bool {
+    let compact = url.unicodeScalars.filter { $0.value > 0x20 && $0.value != 0x7F }
+    guard let colon = compact.firstIndex(of: ":") else { return true }
+    let scheme = HTMLTokenizer.string(Array(compact[..<colon])).lowercased()
+    if scheme.contains("/") || scheme.contains("?") || scheme.contains("#") { return true }
+    return !blockedSchemes.contains(scheme)
   }
 }
