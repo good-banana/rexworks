@@ -14,6 +14,7 @@ struct FontMetrics {
   var descent: CGFloat
   var attributes: [NSAttributedString.Key: Any]
   var rightToLeftParagraph: CTParagraphStyle
+  var leftToRightParagraph: CTParagraphStyle
 }
 
 final class FontCache {
@@ -32,13 +33,14 @@ final class FontCache {
     let interval = CGFloat(spaceWidth) * CGFloat(tabWidth)
     let paragraph = Self.paragraphStyle(tabInterval: interval, direction: .natural)
     let rightToLeft = Self.paragraphStyle(tabInterval: interval, direction: .rightToLeft)
+    let leftToRight = Self.paragraphStyle(tabInterval: interval, direction: .leftToRight)
     let metrics = FontMetrics(
       font: font, ascent: CTFontGetAscent(font), descent: CTFontGetDescent(font),
       attributes: [
         .init(kCTFontAttributeName as String): font,
         .init(kCTForegroundColorFromContextAttributeName as String): true,
         .init(kCTParagraphStyleAttributeName as String): paragraph,
-      ], rightToLeftParagraph: rightToLeft)
+      ], rightToLeftParagraph: rightToLeft, leftToRightParagraph: leftToRight)
     fonts[key] = metrics
     return metrics
   }

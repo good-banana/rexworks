@@ -176,10 +176,12 @@ struct LayoutEngine {
     let top = y
     let bar = em(typography.barWidth)
     let inset = bar + em(typography.blockquotePadding)
-    container(children, x: x + inset, width: max(width - inset, em(1)), y: &y, context: context)
+    let mirrored = startsRightToLeft(children)
+    container(children, x: mirrored ? x : x + inset, width: max(width - inset, em(1)), y: &y, context: context)
     out.decorations.append(
       Decoration(
-        rect: CGRect(x: x, y: top, width: bar, height: y - top), kind: .blockquoteBar, region: nil, cornerRadius: 0))
+        rect: CGRect(x: mirrored ? x + width - bar : x, y: top, width: bar, height: y - top), kind: .blockquoteBar,
+        region: nil, cornerRadius: 0))
   }
 
   private mutating func footnote(
@@ -217,28 +219,33 @@ struct LayoutEngine {
     let bar = em(typography.barWidth)
     let inset = bar + em(typography.alertPadding.width)
     let inner = max(width - inset - em(typography.alertPadding.width), em(1))
+    let mirrored = startsRightToLeft(children)
+    let innerX = mirrored ? x + width - inset - inner : x + inset
     y += em(typography.alertPadding.height)
     let rowHeight = em(typography.alertIconSize)
+    let label = prepared.labels[title]
+    let gap = em(typography.alertIconGap)
+    let iconX = mirrored ? innerX + inner - rowHeight : innerX
     out.decorations.append(
       Decoration(
-        rect: CGRect(x: x + inset, y: y, width: rowHeight, height: rowHeight), kind: .alertIcon(kind), region: nil,
+        rect: CGRect(x: iconX, y: y, width: rowHeight, height: rowHeight), kind: .alertIcon(kind), region: nil,
         cornerRadius: 0))
-    let label = prepared.labels[title]
     out.labels.append(
       PlacedLabel(
         label: title,
         origin: CGPoint(
-          x: x + inset + rowHeight + em(typography.alertIconGap),
+          x: mirrored ? iconX - gap - label.width : iconX + rowHeight + gap,
           y: y + (rowHeight - label.ascent - label.descent) / 2 + label.ascent), region: nil))
     y += rowHeight
     if !children.isEmpty {
       y += em(typography.alertTitleGap)
-      container(children, x: x + inset, width: inner, y: &y, context: context)
+      container(children, x: innerX, width: inner, y: &y, context: context)
     }
     y += em(typography.alertPadding.height)
     out.decorations.append(
       Decoration(
-        rect: CGRect(x: x, y: top, width: bar, height: y - top), kind: .alertBar(kind), region: nil, cornerRadius: 0))
+        rect: CGRect(x: mirrored ? x + width - bar : x, y: top, width: bar, height: y - top), kind: .alertBar(kind),
+        region: nil, cornerRadius: 0))
   }
 
   private mutating func list(_ list: ListNode, x: CGFloat, width: CGFloat, y: inout CGFloat, context: LayoutContext) {
@@ -250,22 +257,49 @@ struct LayoutEngine {
       let top = y
       let mark = out.mark
       let start = mark.fragments
-      let itemX = x + indent
-      container(item.children, x: itemX, width: max(width - indent, em(1)), y: &y, context: inner)
+      let mirrored = startsRightToLeft(item.children)
+      let itemWidth = max(width - indent, em(1))
+      let itemX = mirrored ? x : x + indent
+      container(item.children, x: itemX, width: itemWidth, y: &y, context: inner)
       if y == top { y += em(typography.bodyLineHeight) }
       if let marker = item.marker {
-        placeMarker(marker, contentX: itemX, firstFragment: start, labelIndex: mark.labels, top: top)
+        placeMarker(
+          marker, contentX: mirrored ? itemX + itemWidth : itemX, mirrored: mirrored, firstFragment: start,
+          labelIndex: mark.labels, top: top)
       }
       if let task = item.task {
         let line = firstLine(from: start, top: top)
         let size = em(typography.taskBoxSize)
+        let offset = em(typography.taskBoxOffset)
         let rect = CGRect(
-          x: itemX - em(typography.taskBoxOffset), y: (line.top + line.bottom - size) / 2, width: size, height: size)
+          x: mirrored ? itemX + itemWidth + offset - size : itemX - offset, y: (line.top + line.bottom - size) / 2,
+          width: size, height: size)
         out.decorations.append(
           Decoration(rect: rect, kind: .taskBox(checked: task == .checked), region: nil, cornerRadius: size / 5))
         out.targets.append(TargetArea(rect: rect, target: .task(item.id, checked: task == .checked), region: nil))
       }
     }
+  }
+
+  func startsRightToLeft(_ nodes: [Node]) -> Bool {
+    var pending = Array(nodes.reversed())
+    while let node = pending.popLast() {
+      switch node {
+      case .heading(_, _, _, let run), .paragraph(_, let run, _):
+        if run.hasStrongDirection { return run.isRightToLeft }
+      case .quote(_, let children), .alert(_, _, _, let children), .footnote(_, _, _, _, let children),
+        .division(_, _, let children):
+        pending += children.reversed()
+      case .list(_, let list):
+        pending += list.items.flatMap(\.children).reversed()
+      case .details(_, let summary, let children):
+        if summary.hasStrongDirection { return summary.isRightToLeft }
+        pending += children.reversed()
+      case .code, .diagram, .table, .rule, .frontMatter:
+        continue
+      }
+    }
+    return false
   }
 
   private func firstLine(from start: Int, top: CGFloat) -> (top: CGFloat, bottom: CGFloat, baseline: CGFloat) {
@@ -279,14 +313,16 @@ struct LayoutEngine {
   }
 
   private mutating func placeMarker(
-    _ marker: Int, contentX: CGFloat, firstFragment: Int, labelIndex: Int, top: CGFloat
+    _ marker: Int, contentX: CGFloat, mirrored: Bool = false, firstFragment: Int, labelIndex: Int, top: CGFloat
   ) {
     let label = prepared.labels[marker]
     let line = firstLine(from: firstFragment, top: top)
     out.labels.insert(
       PlacedLabel(
         label: marker,
-        origin: CGPoint(x: contentX - em(typography.listMarkerGap) - label.width, y: line.baseline), region: nil),
+        origin: CGPoint(
+          x: mirrored ? contentX + em(typography.listMarkerGap) : contentX - em(typography.listMarkerGap) - label.width,
+          y: line.baseline), region: nil),
       at: labelIndex)
   }
 

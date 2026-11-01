@@ -24,6 +24,7 @@ struct Run {
   var minWidth: CGFloat
   var maxWidth: CGFloat
   var isRightToLeft: Bool
+  var hasStrongDirection = false
 }
 
 struct ImageAtom {

@@ -567,10 +567,13 @@ private final class Preparer {
     text.append(local as String)
     let breaks = wrap ? breakOpportunities(local) : []
     var cutIndex = 0
-    let isRightToLeft = baseDirection(local) == .rightToLeft
-    if isRightToLeft {
+    let direction = wrap ? baseDirection(local) : nil
+    let isRightToLeft = direction == .rightToLeft
+    if isRightToLeft || !wrap {
+      let metrics = fonts.metrics(fontKey(base))
       attributed.addAttribute(
-        .init(kCTParagraphStyleAttributeName as String), value: fonts.metrics(fontKey(base)).rightToLeftParagraph,
+        .init(kCTParagraphStyleAttributeName as String),
+        value: isRightToLeft ? metrics.rightToLeftParagraph : metrics.leftToRightParagraph,
         range: NSRange(location: 0, length: attributed.length))
     }
     let typesetter = local.length > 0 ? CTTypesetterCreateWithAttributedString(attributed) : nil
@@ -654,7 +657,9 @@ private final class Preparer {
         otherIndex += 1
       }
     }
-    return finishRun(merged, base: base, context: context, isRightToLeft: isRightToLeft)
+    var result = finishRun(merged, base: base, context: context, isRightToLeft: isRightToLeft)
+    result.hasStrongDirection = direction != nil
+    return result
   }
 
   private func baseDirection(_ string: NSString) -> Direction? {
