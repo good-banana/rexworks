@@ -8,8 +8,19 @@ private let textEditURL = URL(fileURLWithPath: "/System/Applications/TextEdit.ap
 final class HandlerDelegate: NSObject, NSApplicationDelegate {
   private let paths = SupportPaths(home: FileManager.default.homeDirectoryForCurrentUser)
   private var pending = 0
+  private var receivedOpen = false
+
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+      MainActor.assumeIsolated {
+        if !self.receivedOpen { NSApplication.shared.terminate(nil) }
+      }
+    }
+  }
 
   func application(_ application: NSApplication, open urls: [URL]) {
+    receivedOpen = true
+    guard !urls.isEmpty else { return NSApplication.shared.terminate(nil) }
     let sender = senderBundleID()
     let config: Config?
     do {
@@ -23,8 +34,8 @@ final class HandlerDelegate: NSObject, NSApplicationDelegate {
       senderBundleID: sender,
       previousHandler: previous,
       handlerExists: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil })
+    pending += urls.count
     for url in urls {
-      pending += 1
       handle(url, destination: destination, config: config)
     }
   }
@@ -59,8 +70,15 @@ final class HandlerDelegate: NSObject, NSApplicationDelegate {
   private func open(_ url: URL, with appURL: URL) {
     NSWorkspace.shared.open(
       [url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()
-    ) { _, _ in
-      DispatchQueue.main.async { MainActor.assumeIsolated { self.finishOne() } }
+    ) { _, error in
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          if let error {
+            self.logError("cannot open \(url.path) with \(appURL.path): \(error.localizedDescription)")
+          }
+          self.finishOne()
+        }
+      }
     }
   }
 
