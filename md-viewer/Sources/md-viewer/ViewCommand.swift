@@ -52,6 +52,7 @@ enum ViewCommand {
 final class ViewerSession {
   private static let frameInterval: UInt64 = 33_000_000
   private static let lineRows = 3
+  private static let focusPadding: CGFloat = 4
 
   private enum Anchor {
     case top
@@ -75,6 +76,15 @@ final class ViewerSession {
   private var lastDraw: UInt64 = 0
   private var placed: Set<UInt32> = []
   private var layoutSize: TerminalSize?
+  private var documentGeneration = 0
+  private var history = History()
+  private var links: [PageLink] = []
+  private var focusedLink: Int?
+  private var prompt: String?
+  private var searchQuery: String?
+  private var matches: [CGRect] = []
+  private var matchIndex: Int?
+  private var posters: [String: String] = [:]
   private(set) var file: URL?
   private(set) var viewport: Viewport?
   private(set) var message: String?
@@ -128,13 +138,20 @@ final class ViewerSession {
   }
 
   func open(file: URL, pushHistory: Bool, fragment: String?) {
+    if pushHistory, let current = self.file {
+      history.push(History.Entry(file: current, offset: viewport?.offset ?? 0))
+    }
+    load(file, anchor: fragment.map(Anchor.fragment) ?? .top)
+  }
+
+  private func load(_ file: URL, anchor: Anchor) {
     watcher?.stop()
     self.file = file
     watcher = FileWatcher(
       url: file,
       onChange: { [unowned self] in requestReload(.offset(viewport?.offset ?? 0)) },
       onMissing: { [unowned self] in show("file missing; r to reload") })
-    requestReload(fragment.map(Anchor.fragment) ?? .top)
+    requestReload(anchor)
   }
 
   func scroll(by delta: CGFloat) {
@@ -181,6 +198,10 @@ final class ViewerSession {
   }
 
   private func handle(_ event: InputEvent) {
+    if prompt != nil, case .key(let key) = event {
+      handlePrompt(key)
+      return
+    }
     let line = CGFloat(Self.lineRows * cellHeight)
     let view = CGFloat(viewRows * cellHeight)
     switch event {
@@ -206,11 +227,198 @@ final class ViewerSession {
       scroll(to: .greatestFiniteMagnitude)
     case .key(.char("r")):
       reload()
+    case .mouse(let mouse) where mouse.kind == .press:
+      click(at: mouse)
+    case .key(.tab):
+      moveFocus(forward: true)
+    case .key(.backTab):
+      moveFocus(forward: false)
+    case .key(.enter):
+      if let focusedLink { activate(links[focusedLink]) }
+    case .key(.escape):
+      setFocus(nil)
+    case .key(.backspace), .key(.char("h")):
+      goBack()
+    case .key(.char("/")):
+      prompt = ""
+      redraw()
+    case .key(.char("n")):
+      stepMatch(forward: true)
+    case .key(.char("N")):
+      stepMatch(forward: false)
     case .key(.char("q")), .key(.ctrl("q")), .key(.ctrl("c")):
       quit()
     default:
       break
     }
+  }
+
+  private var pixelsPerCSS: CGFloat? {
+    tiles.layout.map { CGFloat($0.pixelWidth) / $0.cssWidth }
+  }
+
+  private func handlePrompt(_ key: Key) {
+    switch key {
+    case .char(let character):
+      prompt?.append(character)
+    case .backspace:
+      if prompt?.isEmpty == true { prompt = nil } else { prompt?.removeLast() }
+    case .enter:
+      let query = prompt ?? ""
+      prompt = nil
+      search(query)
+    case .escape:
+      prompt = nil
+    case .ctrl("c"), .ctrl("q"):
+      quit()
+    default:
+      break
+    }
+    redraw()
+  }
+
+  private func click(at mouse: MouseEvent) {
+    guard let viewport, let pixelsPerCSS, mouse.y < viewRows * cellHeight else { return }
+    let pageX = CGFloat(mouse.x) / pixelsPerCSS
+    let pageY = (CGFloat(mouse.y) + viewport.offset) / pixelsPerCSS
+    if let link = hitTest(links, pageX: pageX, pageY: pageY) { activate(link) }
+  }
+
+  private func activate(_ link: PageLink) {
+    guard let file else { return }
+    let action = linkAction(href: link.href, currentFile: file) { FileManager.default.fileExists(atPath: $0.path) }
+    switch action {
+    case .openMarkdown(let target, let fragment):
+      if target.path != file.path {
+        open(file: target, pushHistory: true, fragment: fragment)
+      } else if let fragment {
+        jump(toAnchor: fragment)
+      }
+    case .scrollToAnchor(let id):
+      jump(toAnchor: id)
+    case .openExternal(let url):
+      openExternal(url)
+    case .ignore:
+      show("cannot open \(link.href)")
+    }
+  }
+
+  private func jump(toAnchor id: String) {
+    let generation = documentGeneration
+    Task { @MainActor in
+      let offset = try? await renderer.anchorOffset(id)
+      guard generation == documentGeneration, let file, let viewport, let pixelsPerCSS else { return }
+      guard let offset else {
+        show("no anchor #\(id)")
+        return
+      }
+      history.push(History.Entry(file: file, offset: viewport.offset))
+      scroll(to: offset * pixelsPerCSS)
+    }
+  }
+
+  private func openExternal(_ url: URL) {
+    if url.isFileURL, !isSafeToOpenLocally(url) {
+      show("not opening \(url.lastPathComponent)")
+    } else if !NSWorkspace.shared.open(url) {
+      show("could not open \(url.absoluteString)")
+    }
+  }
+
+  private func goBack() {
+    guard let entry = history.pop() else {
+      show("no previous page")
+      return
+    }
+    if entry.file.path == file?.path, viewport != nil {
+      scroll(to: entry.offset)
+    } else {
+      load(entry.file, anchor: .offset(entry.offset))
+    }
+  }
+
+  private func moveFocus(forward: Bool) {
+    guard let next = cycle(from: focusedLink, count: links.count, forward: forward) else {
+      show("no links")
+      return
+    }
+    setFocus(next)
+  }
+
+  private func setFocus(_ index: Int?) {
+    guard index != focusedLink else { return }
+    let changed = [focusedLink, index].compactMap { $0 }.map { links[$0].rect }
+    focusedLink = index
+    statusTarget = index.map { links[$0].href }
+    if let index { reveal(links[index].rect) }
+    let generation = documentGeneration
+    Task { @MainActor in
+      guard generation == documentGeneration else { return }
+      try? await renderer.focusLink(index)
+      guard generation == documentGeneration, let viewport, let pixelsPerCSS else { return }
+      for rect in changed {
+        tiles.refresh(
+          viewport.tiles(
+            coveringTop: (rect.minY - Self.focusPadding) * pixelsPerCSS,
+            bottom: (rect.maxY + Self.focusPadding) * pixelsPerCSS))
+      }
+      redraw()
+    }
+  }
+
+  private func reveal(_ rect: CGRect) {
+    guard var viewport, let pixelsPerCSS else { return }
+    viewport.reveal(top: rect.minY * pixelsPerCSS, bottom: rect.maxY * pixelsPerCSS)
+    update(viewport)
+  }
+
+  private func search(_ query: String) {
+    searchQuery = query.isEmpty ? nil : query
+    matches = []
+    matchIndex = nil
+    guard let searchQuery else { return show(nil) }
+    let generation = documentGeneration
+    Task { @MainActor in
+      let found = (try? await renderer.search(searchQuery)) ?? []
+      guard generation == documentGeneration, searchQuery == self.searchQuery else { return }
+      matches = found
+      let top = (viewport?.offset ?? 0) / (pixelsPerCSS ?? 1)
+      matchIndex = matches.firstIndex { $0.minY >= top } ?? (matches.isEmpty ? nil : 0)
+      showMatch()
+    }
+  }
+
+  private func stepMatch(forward: Bool) {
+    guard searchQuery != nil else { return show("no search; / to search") }
+    matchIndex = cycle(from: matchIndex, count: matches.count, forward: forward)
+    showMatch()
+  }
+
+  private func showMatch() {
+    guard let searchQuery else { return }
+    guard let matchIndex else { return show("no matches for \(searchQuery)") }
+    reveal(matches[matchIndex])
+    show("\(searchQuery) \(matchIndex + 1)/\(matches.count)")
+  }
+
+  private func loadPosters(for file: URL) async {
+    guard let placeholders = try? await renderer.missingPosters() else { return }
+    for placeholder in placeholders {
+      let action = linkAction(href: placeholder.href, currentFile: file) {
+        FileManager.default.isReadableFile(atPath: $0.path)
+      }
+      guard case .openExternal(let url) = action, url.isFileURL, let poster = await poster(for: url) else { continue }
+      try? await renderer.setPoster(index: placeholder.index, dataURL: poster)
+    }
+  }
+
+  private func poster(for url: URL) async -> String? {
+    let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    let key = "\(url.path)|\(modified?.timeIntervalSince1970 ?? 0)"
+    if let cached = posters[key] { return cached }
+    guard let poster = try? await VideoPoster.dataURL(for: url) else { return nil }
+    posters[key] = poster
+    return poster
   }
 
   private func update(_ viewport: Viewport) {
@@ -239,6 +447,7 @@ final class ViewerSession {
 
   private func performReload(_ anchor: Anchor) async {
     guard let file else { return }
+    documentGeneration += 1
     if let measured = Terminal.size() { size = measured }
     if size != layoutSize { hideTiles() }
     guard size.pixelWidth > 0, size.pixelHeight > 0 else {
@@ -265,6 +474,13 @@ final class ViewerSession {
       case .fragment(let id):
         if let offset = try? await renderer.anchorOffset(id) { viewport.scroll(to: offset * scale) }
       }
+      links = (try? await renderer.links()) ?? []
+      focusedLink = nil
+      statusTarget = nil
+      await loadPosters(for: file)
+      matches = []
+      matchIndex = nil
+      if let searchQuery { matches = (try? await renderer.search(searchQuery)) ?? [] }
       tiles.reset(
         layout: TileLayout(
           pixelWidth: layoutWidth, tileHeight: viewHeight, scale: scale, pageHeight: height,
@@ -301,6 +517,7 @@ final class ViewerSession {
     for id in placed.subtracting(shown) {
       output += Kitty.deletePlacements(id: id)
     }
+    output += tiles.takeRetired().map(Kitty.deleteImage).joined()
     placed = shown
     output += statusLine()
     Terminal.write(output)
@@ -318,7 +535,8 @@ final class ViewerSession {
     if let viewport { parts.append("\(viewport.percent)%") }
     if let statusTarget { parts.append("->\(statusTarget)") }
     if let message { parts.append(message) }
-    let printable = parts.joined(separator: "  ").filter { character in
+    let line = prompt.map { "/" + $0 } ?? parts.joined(separator: "  ")
+    let printable = line.filter { character in
       character.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
     }
     let text = String(printable.prefix(size.columns))

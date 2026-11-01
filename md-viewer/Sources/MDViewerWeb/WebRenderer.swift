@@ -6,6 +6,7 @@ public enum WebRendererError: Error, Equatable, LocalizedError {
   case resourcesNotFound(searched: [String])
   case loadFailed(String)
   case unexpectedResult(String)
+  case posterEncodingFailed
 
   public var errorDescription: String? {
     switch self {
@@ -15,7 +16,19 @@ public enum WebRendererError: Error, Equatable, LocalizedError {
       return "could not load the markdown viewer page: \(reason)"
     case .unexpectedResult(let function):
       return "unexpected result from viewer function \(function)"
+    case .posterEncodingFailed:
+      return "could not encode the video poster"
     }
+  }
+}
+
+public struct VideoPlaceholder: Equatable, Sendable {
+  public var index: Int
+  public var href: String
+
+  public init(index: Int, href: String) {
+    self.index = index
+    self.href = href
   }
 }
 
@@ -130,7 +143,22 @@ public final class WebRenderer: NSObject, WKNavigationDelegate {
   }
 
   public func setPoster(index: Int, dataURL: String) async throws {
-    _ = try await serializedCall("return setPoster(index, dataURL)", arguments: ["index": index, "dataURL": dataURL])
+    _ = try await serializedCall(
+      "return await setPoster(index, dataURL)", arguments: ["index": index, "dataURL": dataURL])
+  }
+
+  public func missingPosters() async throws -> [VideoPlaceholder] {
+    guard let entries = try await serializedCall("return missingPosters()") as? [[String: Any]] else {
+      throw WebRendererError.unexpectedResult("missingPosters")
+    }
+    return entries.compactMap { entry in
+      guard let index = entry["index"] as? Int, let href = entry["href"] as? String else { return nil }
+      return VideoPlaceholder(index: index, href: href)
+    }
+  }
+
+  public func focusLink(_ index: Int?) async throws {
+    _ = try await serializedCall("return focusLink(index)", arguments: ["index": index.map { $0 as Any } ?? NSNull()])
   }
 
   func evaluate(_ javaScript: String) async throws -> Any? {

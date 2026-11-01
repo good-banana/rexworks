@@ -60,3 +60,9 @@ body {
   border-width: 14px 0 14px 24px;
   border-color: transparent transparent transparent #fff;
 }
+
+.md-focus {
+  outline: 2px solid #f0a020;
+  outline-offset: 2px;
+  border-radius: 2px;
+}

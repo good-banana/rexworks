@@ -65,3 +65,29 @@ final class ViewportTests: XCTestCase {
     XCTAssertEqual(v.tileCount, 10)
   }
 }
+
+final class ViewportRevealTests: XCTestCase {
+  func testRevealLeavesVisibleRangeAlone() {
+    var v = Viewport(pageHeight: 2000, viewHeight: 400, tileHeight: 400, offset: 200, cellHeight: 20)
+    v.reveal(top: 300, bottom: 340)
+    XCTAssertEqual(v.offset, 200)
+  }
+
+  func testRevealScrollsHiddenRangeNearTop() {
+    var v = Viewport(pageHeight: 2000, viewHeight: 400, tileHeight: 400, offset: 0, cellHeight: 20)
+    v.reveal(top: 1000, bottom: 1040)
+    XCTAssertEqual(v.offset, 900)
+    v.reveal(top: 100, bottom: 120)
+    XCTAssertEqual(v.offset, 0)
+    v.reveal(top: 1990, bottom: 2000)
+    XCTAssertEqual(v.offset, v.maximumOffset)
+  }
+
+  func testTilesCoveringRange() {
+    let v = Viewport(pageHeight: 2000, viewHeight: 400, tileHeight: 400, offset: 0, cellHeight: 20)
+    XCTAssertEqual(v.tiles(coveringTop: 390, bottom: 410), 0...1)
+    XCTAssertEqual(v.tiles(coveringTop: 500, bottom: 600), 1...1)
+    XCTAssertEqual(v.tiles(coveringTop: -10, bottom: 5), 0...0)
+    XCTAssertEqual(v.tiles(coveringTop: 1990, bottom: 2100), 4...4)
+  }
+}

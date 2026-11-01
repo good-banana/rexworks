@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import MDViewerCore
 import XCTest
@@ -166,6 +167,87 @@ final class RenderTests: XCTestCase {
     let source = try await r.evaluate(
       "document.querySelector('.video-placeholder img.video-poster').getAttribute('src')")
     XCTAssertEqual(source as? String, pixel)
+  }
+
+  func testFocusLinkOutlinesOneLinkAtATime() async throws {
+    let (r, _) = try await render("links")
+    let links = try await r.links()
+    XCTAssertGreaterThan(links.count, 1)
+    let focusedHref = "document.querySelector('.md-focus')?.getAttribute('href') ?? null"
+    try await r.focusLink(0)
+    let first = try await count(".md-focus", in: r)
+    XCTAssertEqual(first, 1)
+    let firstHref = try await r.evaluate(focusedHref) as? String
+    XCTAssertEqual(firstHref, links[0].href)
+    try await r.focusLink(1)
+    let second = try await count(".md-focus", in: r)
+    XCTAssertEqual(second, 1)
+    let secondHref = try await r.evaluate(focusedHref) as? String
+    XCTAssertEqual(secondHref, links[1].href)
+    let after = try await r.links()
+    XCTAssertEqual(after, links)
+    try await r.focusLink(nil)
+    let none = try await count(".md-focus", in: r)
+    XCTAssertEqual(none, 0)
+  }
+
+  func testMissingPostersListsPlaceholdersWithoutImages() async throws {
+    let (r, _) = try await render("links")
+    let missing = try await r.missingPosters()
+    XCTAssertEqual(missing, [VideoPlaceholder(index: 0, href: "clip.mp4")])
+    let pixel = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+    try await r.setPoster(index: 0, dataURL: pixel)
+    let remaining = try await r.missingPosters()
+    XCTAssertEqual(remaining, [])
+  }
+
+  func testVideoPosterFromLocalMovie() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let movie = directory.appendingPathComponent("clip.mov")
+    try await writeMovie(to: movie)
+    let poster = try await VideoPoster.dataURL(for: movie)
+    XCTAssertTrue(poster.hasPrefix("data:image/jpeg;base64,"))
+    let bytes = try XCTUnwrap(Data(base64Encoded: String(poster.dropFirst("data:image/jpeg;base64,".count))))
+    let image = try XCTUnwrap(NSBitmapImageRep(data: bytes))
+    XCTAssertEqual(image.pixelsWide, 64)
+    let notMovie = directory.appendingPathComponent("notes.mp4")
+    try Data("not a movie".utf8).write(to: notMovie)
+    do {
+      _ = try await VideoPoster.dataURL(for: notMovie)
+      XCTFail("expected an error for a file that is not a movie")
+    } catch {}
+  }
+
+  func writeMovie(to url: URL) async throws {
+    let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+    let input = AVAssetWriterInput(
+      mediaType: .video,
+      outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64])
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+      assetWriterInput: input,
+      sourcePixelBufferAttributes: [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: 64,
+        kCVPixelBufferHeightKey as String: 64,
+      ])
+    writer.add(input)
+    XCTAssertTrue(writer.startWriting())
+    writer.startSession(atSourceTime: .zero)
+    for frame in 0..<30 {
+      while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 1_000_000) }
+      let pool = try XCTUnwrap(adaptor.pixelBufferPool)
+      var buffer: CVPixelBuffer?
+      CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+      let pixels = try XCTUnwrap(buffer)
+      CVPixelBufferLockBaseAddress(pixels, [])
+      memset(CVPixelBufferGetBaseAddress(pixels), 0x80, CVPixelBufferGetDataSize(pixels))
+      CVPixelBufferUnlockBaseAddress(pixels, [])
+      XCTAssertTrue(adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 30)))
+    }
+    input.markAsFinished()
+    await writer.finishWriting()
+    XCTAssertEqual(writer.status, .completed)
   }
 
   func isMarkerRed(_ image: NSImage, x: CGFloat, y: CGFloat) throws -> Bool {

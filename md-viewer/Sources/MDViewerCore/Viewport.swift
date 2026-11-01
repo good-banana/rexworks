@@ -62,6 +62,20 @@ public struct Viewport: Equatable, Sendable {
     scroll(to: value * maximumOffset)
   }
 
+  public mutating func reveal(top: CGFloat, bottom: CGFloat) {
+    guard top < offset || bottom > offset + viewHeight else { return }
+    scroll(to: top - viewHeight / 4)
+  }
+
+  public func tiles(coveringTop top: CGFloat, bottom: CGFloat) -> ClosedRange<Int> {
+    let last = max(tileCount - 1, 0)
+    func index(_ y: CGFloat) -> Int {
+      tileHeight > 0 ? min(max(Int((y / tileHeight).rounded(.down)), 0), last) : 0
+    }
+    let first = index(top)
+    return first...max(first, index(bottom))
+  }
+
   public func visibleTiles() -> [TileSlice] {
     guard tileHeight > 0, cellHeight > 0 else { return [] }
     let bottom = min(offset + viewHeight, contentHeight)

@@ -267,26 +267,51 @@
     return { height: Math.ceil(bottom + parseFloat(bodyStyle.paddingBottom) + parseFloat(bodyStyle.marginBottom)) };
   };
 
-  window.setPoster = function (index, dataURL) {
+  window.setPoster = async function (index, dataURL) {
     const image = document.querySelector('.video-placeholder[data-index="' + index + '"] img.video-poster');
     if (!image) return false;
     image.src = dataURL;
     image.hidden = false;
+    await imageSettled(image);
     return true;
   };
 
+  window.missingPosters = function () {
+    return Array.from(document.querySelectorAll("article .video-placeholder"))
+      .filter(function (placeholder) {
+        return placeholder.querySelector("img.video-poster").hidden;
+      })
+      .map(function (placeholder) {
+        return { index: Number(placeholder.dataset.index), href: placeholder.dataset.href };
+      });
+  };
+
+  function linkElements() {
+    return Array.from(document.querySelectorAll("article a[href], article .video-placeholder")).filter(
+      function (element) {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }
+    );
+  }
+
   window.links = function () {
-    const result = [];
-    document.querySelectorAll("article a[href], article .video-placeholder").forEach(function (element) {
-      const rect = element.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
+    return linkElements().map(function (element) {
       const isVideo = element.classList.contains("video-placeholder");
-      const entry = pageRect(rect);
+      const entry = pageRect(element.getBoundingClientRect());
       entry.href = isVideo ? element.dataset.href : element.getAttribute("href");
       entry.kind = isVideo ? "video" : "link";
-      result.push(entry);
+      return entry;
     });
-    return result;
+  };
+
+  window.focusLink = function (index) {
+    document.querySelectorAll(".md-focus").forEach(function (element) {
+      element.classList.remove("md-focus");
+    });
+    const target = index === null ? null : linkElements()[index];
+    if (target) target.classList.add("md-focus");
+    return Boolean(target);
   };
 
   window.anchorOffset = function (id) {

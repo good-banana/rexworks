@@ -46,6 +46,8 @@ final class TileCache {
   private var images: [Int: UInt32] = [:]
   private var wanted: [Int] = []
   private var failed: Set<Int> = []
+  private var stale: Set<Int> = []
+  private var retired: [UInt32] = []
   private var busy = false
   private var nextImageID: UInt32 = 1
   private var nextFileNumber = 0
@@ -73,10 +75,22 @@ final class TileCache {
 
   func reset(layout: TileLayout) {
     invalidate()
-    Terminal.write(images.values.map(Kitty.deleteImage).joined())
+    Terminal.write((Array(images.values) + takeRetired()).map(Kitty.deleteImage).joined())
     images = [:]
     failed = []
+    stale = []
     self.layout = layout
+  }
+
+  func refresh(_ indices: ClosedRange<Int>) {
+    generation += 1
+    stale.formUnion(indices.filter { images[$0] != nil })
+    failed.subtract(indices)
+  }
+
+  func takeRetired() -> [UInt32] {
+    defer { retired = [] }
+    return retired
   }
 
   func want(_ indices: [Int], tileCount: Int) {
@@ -86,11 +100,12 @@ final class TileCache {
   }
 
   func evict(farFrom indices: ClosedRange<Int>) {
-    let stale = images.keys.filter {
+    let distant = images.keys.filter {
       $0 < indices.lowerBound - Self.keepDistance || $0 > indices.upperBound + Self.keepDistance
     }
     var output = ""
-    for index in stale {
+    for index in distant {
+      stale.remove(index)
       guard let id = images.removeValue(forKey: index) else { continue }
       output += Kitty.deletePlacements(id: id) + Kitty.deleteImage(id: id)
     }
@@ -102,16 +117,18 @@ final class TileCache {
   }
 
   private func pump() {
-    guard !busy, let layout, let index = wanted.first(where: { images[$0] == nil && !failed.contains($0) }) else {
-      return
-    }
+    guard !busy, let layout,
+      let index = wanted.first(where: { (images[$0] == nil || stale.contains($0)) && !failed.contains($0) })
+    else { return }
     busy = true
     let generation = generation
     Task { @MainActor in
       do {
         let image = try await snapshot(index: index, layout: layout)
         if generation == self.generation {
-          images[index] = try transmit(image)
+          let id = try transmit(image)
+          if let previous = images.updateValue(id, forKey: index) { retired.append(previous) }
+          stale.remove(index)
           onTileReady()
         }
       } catch {
