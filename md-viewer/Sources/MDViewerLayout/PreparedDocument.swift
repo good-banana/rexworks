@@ -378,8 +378,8 @@ private final class Preparer {
         let id = makeID()
         var inner = context
         inner.isTight = true
+        if context.unitKind != .tableCell { inner.style.size = context.style.size * typography.tableScale }
         inner.unitKind = .tableCell
-        inner.style.size = context.style.size * typography.tableScale
         if cell.isHeader { inner.style.weight = typography.strongWeight }
         let children: [Node]
         if cell.content.isEmpty {

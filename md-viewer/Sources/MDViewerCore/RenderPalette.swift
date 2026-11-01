@@ -50,10 +50,13 @@ public struct RenderPalette: Equatable, Sendable {
   public var alerts: Alerts
   public var selectionFill: RGB
   public var findHighlight: RGB
+  public var markHighlight: RGB
   public var currentMatchHighlight: RGB
   public var focusOutline: RGB
   public var statusBarBackground: RGB
   public var statusBarText: RGB
+  public var statusMutedText: RGB
+  public var statusHintText: RGB
   public var progressTrack: RGB
   public var progressFill: RGB
   public var frontmatterBackground: RGB
@@ -102,10 +105,13 @@ public struct RenderPalette: Equatable, Sendable {
     alerts = Alerts(note: blue, tip: green, important: magenta, warning: yellow, caution: red)
     selectionFill = colors.selectionBackground ?? bg.mixed(with: blue, 0.35)
     findHighlight = bg.mixed(with: yellow, 0.3)
+    markHighlight = bg.mixed(with: yellow.mixed(with: green, 0.35), 0.45)
     currentMatchHighlight = bg.mixed(with: yellow.mixed(with: red, 0.5), 0.55)
     focusOutline = blue
     statusBarBackground = tint(0.07)
     statusBarText = fg.mixed(with: bg, 0.2)
+    statusMutedText = fg.mixed(with: bg, 0.38)
+    statusHintText = fg.mixed(with: bg, 0.48)
     progressTrack = tint(0.18)
     progressFill = blue
     frontmatterBackground = tint(0.04)
@@ -169,11 +175,16 @@ public struct RenderPalette: Equatable, Sendable {
         [
           ("inlineCodeBackground", \.inlineCodeBackground), ("codeBlockBackground", \.codeBlockBackground),
           ("tableHeaderFill", \.tableHeaderFill), ("tableStripe", \.tableStripe),
-          ("selectionFill", \.selectionFill), ("findHighlight", \.findHighlight),
+          ("selectionFill", \.selectionFill), ("findHighlight", \.findHighlight), ("markHighlight", \.markHighlight),
           ("currentMatchHighlight", \.currentMatchHighlight), ("frontmatterBackground", \.frontmatterBackground),
         ])
       + on(\.inlineCodeBackground, textContrast, [("inlineCodeText", \.inlineCodeText)])
-      + on(\.statusBarBackground, textContrast, [("statusBarText", \.statusBarText)])
+      + on(
+        \.statusBarBackground, textContrast,
+        [
+          ("statusBarText", \.statusBarText), ("statusMutedText", \.statusMutedText),
+          ("statusHintText", \.statusHintText),
+        ])
       + on(\.statusBarBackground, uiContrast, [("progressFill", \.progressFill)])
       + on(\.frontmatterBackground, uiContrast, [("frontmatterBar", \.frontmatterBar)])
       + on(

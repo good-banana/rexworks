@@ -127,17 +127,18 @@ struct Glyphs {
     defer { context.restoreGState() }
     let width = max(hairline, rect.width * 0.1)
     strokeStyle(color, width: width)
-    let side = rect.width * 0.62
+    let side = rect.width * 0.6
     let radius = rect.width * 0.12
     let back = CGRect(x: rect.minX + width / 2, y: rect.minY + width / 2, width: side, height: side)
     let front = CGRect(x: rect.maxX - side - width / 2, y: rect.maxY - side - width / 2, width: side, height: side)
-    context.move(to: CGPoint(x: back.minX, y: front.minY - width))
-    context.addLine(to: CGPoint(x: back.minX, y: back.minY + radius))
-    context.addArc(
-      tangent1End: CGPoint(x: back.minX, y: back.minY), tangent2End: CGPoint(x: back.maxX, y: back.minY), radius: radius
-    )
-    context.addLine(to: CGPoint(x: front.minX - width, y: back.minY))
+    context.saveGState()
+    let gap = front.insetBy(dx: -width, dy: -width)
+    context.addRect(rect.insetBy(dx: -width, dy: -width))
+    context.addPath(CGPath(roundedRect: gap, cornerWidth: radius, cornerHeight: radius, transform: nil))
+    context.clip(using: .evenOdd)
+    context.addPath(CGPath(roundedRect: back, cornerWidth: radius, cornerHeight: radius, transform: nil))
     context.strokePath()
+    context.restoreGState()
     context.addPath(CGPath(roundedRect: front, cornerWidth: radius, cornerHeight: radius, transform: nil))
     context.strokePath()
   }

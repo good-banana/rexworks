@@ -153,7 +153,7 @@ final class HighlightTests: XCTestCase {
     let page = prepared.layout(width: 800)
     let palette = RenderPalette.fallback(dark: true)
     let id = try XCTUnwrap(prepared.codeBlocks.keys.first)
-    let result = highlight(code, language: "python")
+    let result = highlight(try XCTUnwrap(prepared.codeBlocks[id]).code, language: "python")
     let plain = try XCTUnwrap(
       Rasterizer(layout: page, palette: palette).render(CGRect(x: 0, y: 0, width: page.width, height: page.height)))
     let colored = try XCTUnwrap(

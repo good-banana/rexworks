@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreText
+import CryptoKit
 import MDViewerCore
 import MDViewerLayout
 
@@ -70,7 +71,9 @@ public struct Rasterizer: @unchecked Sendable {
   }
 
   public func render(_ rect: CGRect, scale: CGFloat = 1, overlay: RenderOverlay = RenderOverlay()) -> RasterBitmap? {
-    guard let bitmap = RasterBitmap(width: Self.pixels(rect.width * scale), height: Self.pixels(rect.height * scale))
+    guard Self.isDrawable(rect), scale.isFinite, scale > 0,
+      Self.isDrawable(CGRect(x: 0, y: 0, width: rect.width * scale, height: rect.height * scale)),
+      let bitmap = RasterBitmap(width: Self.pixels(rect.width * scale), height: Self.pixels(rect.height * scale))
     else { return nil }
     draw(rect, into: bitmap, scale: scale, overlay: overlay)
     return bitmap
@@ -80,7 +83,7 @@ public struct Rasterizer: @unchecked Sendable {
     _ rect: CGRect, into bitmap: RasterBitmap, at origin: CGPoint = .zero, scale: CGFloat = 1,
     overlay: RenderOverlay = RenderOverlay()
   ) {
-    guard rect.width > 0, rect.height > 0, scale > 0 else { return }
+    guard Self.isDrawable(rect), scale.isFinite, scale > 0, origin.x.isFinite, origin.y.isFinite else { return }
     let context = bitmap.context
     context.saveGState()
     defer { context.restoreGState() }
@@ -99,10 +102,10 @@ public struct Rasterizer: @unchecked Sendable {
     scrollY: CGFloat, size: CGSize, overlay: RenderOverlay = RenderOverlay(), status: StatusBarContent? = nil,
     statusBarHeight: CGFloat = 0
   ) -> RasterBitmap? {
-    guard let bitmap = RasterBitmap(width: Self.pixels(size.width), height: Self.pixels(size.height)) else {
-      return nil
-    }
-    let barHeight = status == nil ? 0 : min(max(statusBarHeight, 0), size.height)
+    guard Self.isDrawable(CGRect(origin: .zero, size: size)), scrollY.isFinite,
+      let bitmap = RasterBitmap(width: Self.pixels(size.width), height: Self.pixels(size.height))
+    else { return nil }
+    let barHeight = status == nil || !statusBarHeight.isFinite ? 0 : min(max(statusBarHeight, 0), size.height)
     let documentHeight = size.height - barHeight
     if documentHeight > 0 {
       draw(CGRect(x: 0, y: scrollY, width: size.width, height: documentHeight), into: bitmap, overlay: overlay)
@@ -114,7 +117,14 @@ public struct Rasterizer: @unchecked Sendable {
     return bitmap
   }
 
+  static let maximumPixels: CGFloat = 32_768
+
   static func pixels(_ value: CGFloat) -> Int { max(Int(value.rounded(.up)), 1) }
+
+  static func isDrawable(_ rect: CGRect) -> Bool {
+    [rect.minX, rect.minY, rect.width, rect.height].allSatisfy(\.isFinite) && rect.width >= 0.5
+      && rect.height >= 0.5 && rect.width <= maximumPixels && rect.height <= maximumPixels
+  }
 }
 
 final class SceneIndex: @unchecked Sendable {
@@ -134,14 +144,19 @@ final class SceneIndex: @unchecked Sendable {
   let copyButtons: [BlockID: CGRect]
   let cellEdges: [Int: CellEdges]
   let frontMatterBoxes: [Decoration]
+  let codeDigests: [BlockID: SHA256.Digest]
+  let regionFills: [BlockID: [Decoration]]
 
   init(_ layout: PageLayout) {
     var lines: [CodeLine] = []
+    var digests: [BlockID: SHA256.Digest] = [:]
     for (id, block) in layout.prepared.codeBlocks where !block.isDiagram {
+      digests[id] = SyntaxHighlighter.digest(block.code)
       for (line, range) in block.lineRanges.enumerated() where !range.isEmpty {
         lines.append(CodeLine(range: range, block: id, line: line))
       }
     }
+    codeDigests = digests
     codeLines = lines.sorted { $0.range.lowerBound < $1.range.lowerBound }
 
     var buttons: [BlockID: CGRect] = [:]
@@ -188,6 +203,11 @@ final class SceneIndex: @unchecked Sendable {
     closeGroup(decorations.count)
     cellEdges = edges
     frontMatterBoxes = decorations.filter { $0.kind == .frontMatterBackground }
+    var fills: [BlockID: [Decoration]] = [:]
+    for decoration in decorations where decoration.kind == .tableHeaderFill || decoration.kind == .tableStripe {
+      if let region = decoration.region { fills[region, default: []].append(decoration) }
+    }
+    regionFills = fills
   }
 
   func codeLine(containing offset: Int) -> CodeLine? {

@@ -158,10 +158,10 @@ public struct StatusBar {
       let folderRoom = available - name.width - separator.width
       if folderRoom >= points(24) {
         let folderLine = TextLine(folder, font: folderFont, truncateTo: folderRoom, truncation: .start)
-        context.setFillColor(textColor.cgColor(alpha: 0.62))
+        context.setFillColor(palette.statusMutedText.cgColor)
         folderLine.draw(in: context, at: CGPoint(x: x, y: baseline(folderLine)))
         x += folderLine.width
-        context.setFillColor(textColor.cgColor(alpha: 0.4))
+        context.setFillColor(palette.statusHintText.cgColor)
         separator.draw(in: context, at: CGPoint(x: x, y: baseline(separator)))
         x += separator.width
       }
@@ -174,7 +174,7 @@ public struct StatusBar {
       let hintFont = NSFont.systemFont(ofSize: fontSize * 0.92, weight: .regular) as CTFont
       let line = TextLine(hint, font: hintFont)
       if line.width <= right - x - gap {
-        context.setFillColor(textColor.cgColor(alpha: 0.48))
+        context.setFillColor(palette.statusHintText.cgColor)
         line.draw(in: context, at: CGPoint(x: right - line.width, y: baseline(line)))
       }
     }

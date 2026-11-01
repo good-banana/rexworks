@@ -115,7 +115,7 @@ struct Painter {
       fill(CGRect(x: rect.minX, y: rect.maxY - hairline * 2, width: rect.width, height: hairline * 2), colors(\.border))
       context.restoreGState()
     case .inlineBox(.mark):
-      fill(rect, colors(\.findHighlight), radius: radius)
+      fill(rect, colors(\.markHighlight), radius: radius)
     case .codeBlockBackground:
       fill(rect, colors(\.codeBlockBackground), radius: radius)
     case .headingRule, .footnoteSeparator, .thematicBreak:
@@ -204,7 +204,12 @@ struct Painter {
   private func paintHighlights() {
     for (position, match) in overlay.findMatches.enumerated() {
       let color = position == overlay.currentMatch ? colors(\.currentMatchHighlight) : colors(\.findHighlight)
-      for highlight in match.rects where visible.intersects(highlight.rect) {
+      if !match.rects.isEmpty,
+        !match.rects.contains(where: { $0.rect.maxY >= visible.minY && $0.rect.minY <= visible.maxY })
+      {
+        continue
+      }
+      for highlight in layout.rects(for: match.range) where visible.intersects(highlight.rect) {
         fill(highlight.rect, color, radius: css(2))
       }
     }
@@ -254,7 +259,8 @@ struct Painter {
 
   private func tokens(for fragment: TextFragment) -> (line: SceneIndex.CodeLine, spans: [TokenSpan])? {
     guard let line = index.codeLine(containing: fragment.range.lowerBound),
-      let result = highlights[line.block], result.isHighlighted
+      let result = highlights[line.block], result.isHighlighted,
+      result.codeDigest == index.codeDigests[line.block]
     else { return nil }
     let spans = result.tokens(line: line.line)
     return spans.isEmpty ? nil : (line, spans)

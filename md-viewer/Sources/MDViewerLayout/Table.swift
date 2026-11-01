@@ -127,7 +127,7 @@ extension LayoutEngine {
       laidOut.append((cell, cellStart, out.mark, cellY))
     }
 
-    let emptyRow = typography.pixels(em: typography.bodyLineHeight) + padding.height * 2
+    let emptyRow = typography.pixels(em: typography.bodyLineHeight * typography.tableScale) + padding.height * 2
     var rowHeights = [CGFloat](repeating: emptyRow, count: grid.rows)
     for entry in laidOut where entry.cell.rowSpan == 1 {
       rowHeights[entry.cell.row] = max(rowHeights[entry.cell.row], entry.height + padding.height * 2)

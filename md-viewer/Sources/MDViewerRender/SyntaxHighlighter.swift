@@ -9,16 +9,21 @@ public struct HighlightResult: Hashable, Sendable {
     case belowRelevanceThreshold
     case unsupportedLanguage
     case tooLarge
+    case timedOut
     case failed
   }
 
   public var outcome: Outcome
   public var lines: [[TokenSpan]]
+  public var codeDigest: SHA256.Digest?
 
-  public init(outcome: Outcome, lines: [[TokenSpan]] = []) {
+  public init(outcome: Outcome, lines: [[TokenSpan]] = [], codeDigest: SHA256.Digest? = nil) {
     self.outcome = outcome
     self.lines = lines
+    self.codeDigest = codeDigest
   }
+
+  var cost: Int { lines.reduce(lines.count + 1) { $0 + $1.count } }
 
   public var language: String? {
     if case .highlighted(let language) = outcome { return language }
@@ -36,6 +41,8 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     public var autoDetectMinimumRelevance = 5
     public var autoDetectSampleLength = 8_000
     public var cacheLimit = 512
+    public var cacheSpanLimit = 1_000_000
+    public var timeout: TimeInterval = 2
 
     public init() {}
   }
@@ -45,14 +52,15 @@ public final class SyntaxHighlighter: @unchecked Sendable {
 
   public let configuration: Configuration
   private let scriptURL: URL?
-  private let queue = DispatchQueue(label: "md-viewer.highlight", qos: .userInitiated)
+  private let queue = DispatchQueue(
+    label: "md-viewer.highlight", qos: .userInitiated, autoreleaseFrequency: .workItem)
   private let lock = NSLock()
   private var cache: [CacheKey: HighlightResult] = [:]
   private var cacheOrder: [CacheKey] = []
+  private var cacheCost = 0
   private var waiting: [CacheKey: [(DispatchQueue, @Sendable (HighlightResult) -> Void)]] = [:]
-  private var context: JSContext?
-  private var function: JSValue?
-  private var contextFailed = false
+  private var engine: ScriptEngine?
+  private var slowInputs: [String: Int] = [:]
 
   private struct CacheKey: Hashable {
     var digest: SHA256.Digest
@@ -116,7 +124,7 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     waiting[key] = [(callbackQueue, completion)]
     lock.unlock()
     queue.async { [self] in
-      let result = compute(code: code, language: language)
+      let result = compute(code: code, language: language, digest: key.digest)
       lock.lock()
       store(result, for: key)
       let callbacks = waiting.removeValue(forKey: key) ?? []
@@ -141,41 +149,62 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     return ready
   }
 
+  public static func digest(_ code: String) -> SHA256.Digest { SHA256.hash(data: Data(code.utf8)) }
+
   private func cacheKey(code: String, language: String?) -> CacheKey {
-    CacheKey(digest: SHA256.hash(data: Data(code.utf8)), language: Self.normalizedLanguage(language))
+    CacheKey(digest: Self.digest(code), language: Self.normalizedLanguage(language))
   }
 
   private func store(_ result: HighlightResult, for key: CacheKey) {
-    if cache.updateValue(result, forKey: key) == nil { cacheOrder.append(key) }
-    while cacheOrder.count > max(configuration.cacheLimit, 1) {
-      cache.removeValue(forKey: cacheOrder.removeFirst())
+    if let previous = cache.updateValue(result, forKey: key) {
+      cacheCost -= previous.cost
+    } else {
+      cacheOrder.append(key)
+    }
+    cacheCost += result.cost
+    while cacheOrder.count > 1,
+      cacheOrder.count > max(configuration.cacheLimit, 1) || cacheCost > configuration.cacheSpanLimit
+    {
+      if let evicted = cache.removeValue(forKey: cacheOrder.removeFirst()) { cacheCost -= evicted.cost }
     }
   }
 
-  private func compute(code: String, language: String?) -> HighlightResult {
-    let length = code.utf16.count
-    if length > configuration.maximumInputLength { return HighlightResult(outcome: .tooLarge) }
-    if let language, Self.plainLanguages.contains(language) { return HighlightResult(outcome: .unsupportedLanguage) }
-    if length == 0 { return HighlightResult(outcome: .failed) }
-    guard let function = loadedFunction() else { return HighlightResult(outcome: .failed) }
-    let arguments: [Any] = [
-      code, language ?? NSNull(), configuration.autoDetectMinimumRelevance, configuration.autoDetectSampleLength,
-    ]
-    guard let value = function.call(withArguments: arguments), context?.exception == nil, value.isObject,
-      let object = value.toDictionary()
-    else {
-      context?.exception = nil
-      return HighlightResult(outcome: .failed)
+  private func compute(code: String, language: String?, digest: SHA256.Digest) -> HighlightResult {
+    func result(_ outcome: HighlightResult.Outcome, _ lines: [[TokenSpan]] = []) -> HighlightResult {
+      HighlightResult(outcome: outcome, lines: lines, codeDigest: digest)
     }
+    let length = code.utf16.count
+    if length > configuration.maximumInputLength { return result(.tooLarge) }
+    if let language, Self.plainLanguages.contains(language) { return result(.unsupportedLanguage) }
+    if length == 0 { return result(.failed) }
+    let slowKey = language ?? ""
+    if let slow = slowInputs[slowKey], length >= slow { return result(.timedOut) }
+    guard let scriptURL else { return result(.failed) }
+    let engine = self.engine ?? ScriptEngine(scriptURL: scriptURL)
+    self.engine = engine
+    let output = ScriptOutput()
+    let finished = DispatchSemaphore(value: 0)
+    let relevance = configuration.autoDetectMinimumRelevance
+    let sample = configuration.autoDetectSampleLength
+    engine.queue.async {
+      output.set(engine.evaluate(code: code, language: language, relevance: relevance, sample: sample))
+      finished.signal()
+    }
+    if finished.wait(timeout: .now() + configuration.timeout) == .timedOut {
+      self.engine = nil
+      slowInputs[slowKey] = min(slowInputs[slowKey] ?? length, length)
+      return result(.timedOut)
+    }
+    guard let object = output.value else { return result(.failed) }
     switch object["status"] as? String {
-    case "unsupported": return HighlightResult(outcome: .unsupportedLanguage)
-    case "belowThreshold": return HighlightResult(outcome: .belowRelevanceThreshold)
+    case "unsupported": return result(.unsupportedLanguage)
+    case "belowThreshold": return result(.belowRelevanceThreshold)
     case "ok": break
-    default: return HighlightResult(outcome: .failed)
+    default: return result(.failed)
     }
     let detected = object["language"] as? String ?? language ?? ""
     let spans = object["spans"] as? [[Any]] ?? []
-    return HighlightResult(outcome: .highlighted(language: detected), lines: Self.lines(spans, code: code))
+    return result(.highlighted(language: detected), Self.lines(spans, code: code))
   }
 
   static func lines(_ spans: [[Any]], code: String) -> [[TokenSpan]] {
@@ -215,25 +244,7 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     return lines
   }
 
-  private func loadedFunction() -> JSValue? {
-    if let function { return function }
-    guard !contextFailed else { return nil }
-    contextFailed = true
-    guard let scriptURL, let script = try? String(contentsOf: scriptURL, encoding: .utf8),
-      let context = JSContext()
-    else { return nil }
-    context.evaluateScript(script)
-    context.evaluateScript(Self.glue)
-    guard context.exception == nil, let function = context.objectForKeyedSubscript("__mdvHighlight"),
-      !function.isUndefined
-    else { return nil }
-    self.context = context
-    self.function = function
-    contextFailed = false
-    return function
-  }
-
-  private static let glue = """
+  static let glue = """
     function __mdvHighlight(code, language, minimumRelevance, sampleLength) {
       var result;
       if (language) {
@@ -262,4 +273,61 @@ public final class SyntaxHighlighter: @unchecked Sendable {
       return { status: "ok", language: result.language || language, spans: spans };
     }
     """
+}
+
+private final class ScriptOutput: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: [String: Any]?
+
+  func set(_ value: [String: Any]?) {
+    lock.lock()
+    stored = value
+    lock.unlock()
+  }
+
+  var value: [String: Any]? {
+    lock.lock()
+    defer { lock.unlock() }
+    return stored
+  }
+}
+
+private final class ScriptEngine: @unchecked Sendable {
+  let queue = DispatchQueue(label: "md-viewer.highlight.js", qos: .userInitiated, autoreleaseFrequency: .workItem)
+  private let scriptURL: URL
+  private var context: JSContext?
+  private var function: JSValue?
+  private var failed = false
+
+  init(scriptURL: URL) {
+    self.scriptURL = scriptURL
+  }
+
+  func evaluate(code: String, language: String?, relevance: Int, sample: Int) -> [String: Any]? {
+    guard let function = loadedFunction() else { return nil }
+    let value = function.call(withArguments: [code, language ?? NSNull(), relevance, sample])
+    guard let value, context?.exception == nil, value.isObject else {
+      context?.exception = nil
+      return nil
+    }
+    return value.toDictionary() as? [String: Any]
+  }
+
+  private func loadedFunction() -> JSValue? {
+    if let function { return function }
+    guard !failed else { return nil }
+    failed = true
+    guard let script = try? String(contentsOf: scriptURL, encoding: .utf8), let context = JSContext() else {
+      return nil
+    }
+    context.evaluateScript(script)
+    context.evaluateScript(SyntaxHighlighter.glue)
+    guard context.exception == nil, let function = context.objectForKeyedSubscript("__mdvHighlight"),
+      !function.isUndefined
+    else { return nil }
+    self.context = context
+    self.function = function
+    failed = false
+    return function
+  }
 }

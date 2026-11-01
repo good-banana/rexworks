@@ -111,7 +111,8 @@ final class RenderPaletteTests: XCTestCase {
   func testContrastRequirementsCoverTextAndUITokens() {
     let names = Set(RenderPalette.contrastRequirements.map(\.name))
     for name in [
-      "text", "mutedText", "headingText", "link", "linkVisited", "inlineCodeText", "statusBarText", "alerts.note",
+      "text", "mutedText", "headingText", "link", "linkVisited", "inlineCodeText", "statusBarText", "statusMutedText",
+      "statusHintText", "alerts.note",
       "alerts.caution", "syntax.keyword", "syntax.comment", "syntax.punctuation",
     ] {
       let requirement = RenderPalette.contrastRequirements.first { $0.name == name }
