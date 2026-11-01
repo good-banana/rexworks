@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct SupportPaths: Sendable {
@@ -21,6 +22,8 @@ public struct SupportPaths: Sendable {
   }
 
   public func viewerSocket(block: String) -> URL {
-    viewersDirectory.appendingPathComponent("\(block).sock")
+    let digest = SHA256.hash(data: Data(block.utf8))
+    let name = digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    return viewersDirectory.appendingPathComponent("\(name).sock")
   }
 }

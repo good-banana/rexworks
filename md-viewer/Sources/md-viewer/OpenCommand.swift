@@ -29,7 +29,10 @@ enum OpenCommand {
         existing = previewBlock(blockListJSON: blocks, window: window)
       }
 
-      switch planOpen(target: target, existingPreview: existing, previewAlive: false) {
+      let delivered = existing.map {
+        ViewerSocketClient.send(path: file.path, to: paths.viewerSocket(block: $0))
+      }
+      switch planOpen(target: target, existingPreview: existing, previewAlive: delivered ?? false) {
       case .reused:
         exit(0)
       case .split(let target):

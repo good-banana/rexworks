@@ -27,9 +27,19 @@ final class ConfigTests: XCTestCase {
 
   func testViewerSocketPath() {
     let paths = SupportPaths(home: URL(fileURLWithPath: "/Users/x"))
-    XCTAssertEqual(
-      paths.viewerSocket(block: "block:01ab").path,
-      "/Users/x/Library/Application Support/md-viewer/viewers/block:01ab.sock")
+    let socket = paths.viewerSocket(block: "block:01ab")
+    XCTAssertEqual(socket.deletingLastPathComponent().path, paths.viewersDirectory.path)
+    XCTAssertEqual(socket.lastPathComponent.count, 21)
+    XCTAssertTrue(socket.lastPathComponent.hasSuffix(".sock"))
+    XCTAssertEqual(socket, paths.viewerSocket(block: "block:01ab"))
+    XCTAssertNotEqual(socket, paths.viewerSocket(block: "block:01ac"))
+  }
+
+  func testViewerSocketFitsSunPathForLongHome() {
+    let home = URL(fileURLWithPath: "/Users/" + String(repeating: "a", count: 20))
+    let socket = SupportPaths(home: home).viewerSocket(
+      block: "block:01a193b6-fe81-72ee-bab7-569aa3a4f5ca")
+    XCTAssertLessThan(socket.path.utf8.count, 104)
   }
 
   func testDerivedPaths() {

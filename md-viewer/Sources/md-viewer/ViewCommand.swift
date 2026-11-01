@@ -37,6 +37,7 @@ enum ViewCommand {
     guard Terminal.enterViewerMode() else { fail("could not configure the terminal", status: 1) }
     session.start()
     session.open(file: url, pushHistory: false, fragment: nil)
+    session.startControlSocket()
     RunLoop.main.perform {
       MainActor.assumeIsolated {
         application.run()
@@ -70,6 +71,7 @@ final class ViewerSession {
   private var signalSource: DispatchSourceSignal?
   private var inputSource: DispatchSourceRead?
   private var watcher: FileWatcher?
+  private var controlSocket: ViewerSocketServer?
   private var pendingAnchor: Anchor?
   private var deferredAnchor: Anchor?
   private var reloading = false
@@ -138,6 +140,16 @@ final class ViewerSession {
     return input
   }
 
+  func startControlSocket() {
+    guard let block = ProcessInfo.processInfo.environment["REX_BLOCK"], !block.isEmpty else { return }
+    let paths = SupportPaths(home: FileManager.default.homeDirectoryForCurrentUser)
+    controlSocket = try? ViewerSocketServer(socket: paths.viewerSocket(block: block)) { url in
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated { self.open(file: url, pushHistory: true, fragment: nil) }
+      }
+    }
+  }
+
   func open(file: URL, pushHistory: Bool, fragment: String?) {
     guard Self.isReadableDocument(file) else { return show("cannot read \(file.lastPathComponent)") }
     if pushHistory, let current = self.file {
@@ -187,6 +199,7 @@ final class ViewerSession {
   }
 
   func quit() -> Never {
+    controlSocket?.close()
     watcher?.stop()
     tiles.removeDirectory()
     Terminal.restore()
