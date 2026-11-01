@@ -282,7 +282,10 @@
         return placeholder.querySelector("img.video-poster").hidden;
       })
       .map(function (placeholder) {
-        return { index: Number(placeholder.dataset.index), href: placeholder.dataset.href };
+        const entry = pageRect(placeholder.getBoundingClientRect());
+        entry.index = Number(placeholder.dataset.index);
+        entry.href = placeholder.dataset.href;
+        return entry;
       });
   };
 

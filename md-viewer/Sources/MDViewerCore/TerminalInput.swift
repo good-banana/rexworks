@@ -7,14 +7,31 @@ public enum Key: Equatable {
 
 public struct MouseEvent: Equatable {
   public enum Kind: Equatable { case press, release, wheelUp, wheelDown }
+
+  public struct Modifiers: OptionSet, Equatable, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    public static let shift = Modifiers(rawValue: 4)
+    public static let alt = Modifiers(rawValue: 8)
+    public static let control = Modifiers(rawValue: 16)
+  }
+
   public var kind: Kind
   public var x: Int
   public var y: Int
+  public var button: Int
+  public var modifiers: Modifiers
 
-  public init(kind: Kind, x: Int, y: Int) {
+  public init(kind: Kind, x: Int, y: Int, button: Int = 0, modifiers: Modifiers = []) {
     self.kind = kind
     self.x = x
     self.y = y
+    self.button = button
+    self.modifiers = modifiers
+  }
+
+  public var isPrimaryClick: Bool {
+    kind == .press && button == 0 && modifiers.isEmpty
   }
 }
 
@@ -136,13 +153,17 @@ public struct InputParser {
     let button = fields[0]
     let x = fields[1] - 1
     let y = fields[2] - 1
+    let modifiers = MouseEvent.Modifiers(rawValue: button & 0x1c)
     let kind: MouseEvent.Kind
+    var pressed = 0
     switch button & ~0x1c {
     case 64: kind = .wheelUp
     case 65: kind = .wheelDown
-    case 0...2: kind = final == 0x4d ? .press : .release
+    case 0...2:
+      kind = final == 0x4d ? .press : .release
+      pressed = button & 0x3
     default: return nil
     }
-    return .mouse(MouseEvent(kind: kind, x: x, y: y))
+    return .mouse(MouseEvent(kind: kind, x: x, y: y, button: pressed, modifiers: modifiers))
   }
 }

@@ -194,9 +194,15 @@ final class RenderTests: XCTestCase {
   func testMissingPostersListsPlaceholdersWithoutImages() async throws {
     let (r, _) = try await render("links")
     let missing = try await r.missingPosters()
-    XCTAssertEqual(missing, [VideoPlaceholder(index: 0, href: "clip.mp4")])
+    XCTAssertEqual(missing.map(\.index), [0])
+    XCTAssertEqual(missing.map(\.href), ["clip.mp4"])
+    let video = try await r.links().first { $0.kind == .video }
+    XCTAssertEqual(missing.first?.rect, video?.rect)
     let pixel = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
-    try await r.setPoster(index: 0, dataURL: pixel)
+    let applied = try await r.setPoster(index: 0, dataURL: pixel)
+    XCTAssertTrue(applied)
+    let absent = try await r.setPoster(index: 5, dataURL: pixel)
+    XCTAssertFalse(absent)
     let remaining = try await r.missingPosters()
     XCTAssertEqual(remaining, [])
   }
@@ -212,6 +218,12 @@ final class RenderTests: XCTestCase {
     let bytes = try XCTUnwrap(Data(base64Encoded: String(poster.dropFirst("data:image/jpeg;base64,".count))))
     let image = try XCTUnwrap(NSBitmapImageRep(data: bytes))
     XCTAssertEqual(image.pixelsWide, 64)
+    do {
+      _ = try await VideoPoster.dataURL(for: movie, timeout: .nanoseconds(1))
+      XCTFail("expected the poster to time out")
+    } catch {
+      XCTAssertEqual(error as? WebRendererError, .posterTimedOut)
+    }
     let notMovie = directory.appendingPathComponent("notes.mp4")
     try Data("not a movie".utf8).write(to: notMovie)
     do {

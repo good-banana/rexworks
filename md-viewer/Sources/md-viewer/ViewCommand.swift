@@ -53,6 +53,7 @@ final class ViewerSession {
   private static let frameInterval: UInt64 = 33_000_000
   private static let lineRows = 3
   private static let focusPadding: CGFloat = 4
+  private static let posterLimit = 16
 
   private enum Anchor {
     case top
@@ -138,6 +139,7 @@ final class ViewerSession {
   }
 
   func open(file: URL, pushHistory: Bool, fragment: String?) {
+    guard Self.isReadableDocument(file) else { return show("cannot read \(file.lastPathComponent)") }
     if pushHistory, let current = self.file {
       history.push(History.Entry(file: current, offset: viewport?.offset ?? 0))
     }
@@ -227,7 +229,7 @@ final class ViewerSession {
       scroll(to: .greatestFiniteMagnitude)
     case .key(.char("r")):
       reload()
-    case .mouse(let mouse) where mouse.kind == .press:
+    case .mouse(let mouse) where mouse.isPrimaryClick:
       click(at: mouse)
     case .key(.tab):
       moveFocus(forward: true)
@@ -332,8 +334,10 @@ final class ViewerSession {
     }
     if entry.file.path == file?.path, viewport != nil {
       scroll(to: entry.offset)
-    } else {
+    } else if Self.isReadableDocument(entry.file) {
       load(entry.file, anchor: .offset(entry.offset))
+    } else {
+      show("cannot read \(entry.file.lastPathComponent)")
     }
   }
 
@@ -355,15 +359,25 @@ final class ViewerSession {
     Task { @MainActor in
       guard generation == documentGeneration else { return }
       try? await renderer.focusLink(index)
-      guard generation == documentGeneration, let viewport, let pixelsPerCSS else { return }
-      for rect in changed {
-        tiles.refresh(
-          viewport.tiles(
-            coveringTop: (rect.minY - Self.focusPadding) * pixelsPerCSS,
-            bottom: (rect.maxY + Self.focusPadding) * pixelsPerCSS))
-      }
-      redraw()
+      guard generation == documentGeneration else { return }
+      refreshTiles(covering: changed, padding: Self.focusPadding)
     }
+  }
+
+  private func refreshTiles(covering rects: [CGRect], padding: CGFloat) {
+    guard let viewport, let pixelsPerCSS else { return }
+    for rect in rects {
+      tiles.refresh(
+        viewport.tiles(
+          coveringTop: (rect.minY - padding) * pixelsPerCSS, bottom: (rect.maxY + padding) * pixelsPerCSS))
+    }
+    redraw()
+  }
+
+  private static func isReadableDocument(_ url: URL) -> Bool {
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && !isDirectory.boolValue
+      && FileManager.default.isReadableFile(atPath: url.path)
   }
 
   private func reveal(_ rect: CGRect) {
@@ -401,14 +415,18 @@ final class ViewerSession {
     show("\(searchQuery) \(matchIndex + 1)/\(matches.count)")
   }
 
-  private func loadPosters(for file: URL) async {
+  private func loadPosters(for file: URL, generation: Int) async {
     guard let placeholders = try? await renderer.missingPosters() else { return }
-    for placeholder in placeholders {
-      let action = linkAction(href: placeholder.href, currentFile: file) {
-        FileManager.default.isReadableFile(atPath: $0.path)
-      }
-      guard case .openExternal(let url) = action, url.isFileURL, let poster = await poster(for: url) else { continue }
-      try? await renderer.setPoster(index: placeholder.index, dataURL: poster)
+    for placeholder in placeholders.prefix(Self.posterLimit) {
+      guard generation == documentGeneration else { return }
+      let action = linkAction(href: placeholder.href, currentFile: file) { isPosterCandidate($0) }
+      guard case .openExternal(let url) = action, let poster = await poster(for: url),
+        generation == documentGeneration
+      else { continue }
+      guard (try? await renderer.setPoster(index: placeholder.index, dataURL: poster)) == true,
+        generation == documentGeneration
+      else { continue }
+      refreshTiles(covering: [placeholder.rect], padding: 0)
     }
   }
 
@@ -477,7 +495,6 @@ final class ViewerSession {
       links = (try? await renderer.links()) ?? []
       focusedLink = nil
       statusTarget = nil
-      await loadPosters(for: file)
       matches = []
       matchIndex = nil
       if let searchQuery { matches = (try? await renderer.search(searchQuery)) ?? [] }
@@ -491,6 +508,8 @@ final class ViewerSession {
       placed = []
       Terminal.write("\u{1b}[2J")
       draw()
+      let generation = documentGeneration
+      Task { @MainActor in await loadPosters(for: file, generation: generation) }
     } catch {
       show(error.localizedDescription)
     }

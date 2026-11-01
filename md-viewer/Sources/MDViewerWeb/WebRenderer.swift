@@ -7,6 +7,7 @@ public enum WebRendererError: Error, Equatable, LocalizedError {
   case loadFailed(String)
   case unexpectedResult(String)
   case posterEncodingFailed
+  case posterTimedOut
 
   public var errorDescription: String? {
     switch self {
@@ -18,6 +19,8 @@ public enum WebRendererError: Error, Equatable, LocalizedError {
       return "unexpected result from viewer function \(function)"
     case .posterEncodingFailed:
       return "could not encode the video poster"
+    case .posterTimedOut:
+      return "timed out generating the video poster"
     }
   }
 }
@@ -25,10 +28,12 @@ public enum WebRendererError: Error, Equatable, LocalizedError {
 public struct VideoPlaceholder: Equatable, Sendable {
   public var index: Int
   public var href: String
+  public var rect: CGRect
 
-  public init(index: Int, href: String) {
+  public init(index: Int, href: String, rect: CGRect) {
     self.index = index
     self.href = href
+    self.rect = rect
   }
 }
 
@@ -142,9 +147,11 @@ public final class WebRenderer: NSObject, WKNavigationDelegate {
     return entries.compactMap(Self.rect)
   }
 
-  public func setPoster(index: Int, dataURL: String) async throws {
-    _ = try await serializedCall(
+  @discardableResult
+  public func setPoster(index: Int, dataURL: String) async throws -> Bool {
+    let applied = try await serializedCall(
       "return await setPoster(index, dataURL)", arguments: ["index": index, "dataURL": dataURL])
+    return (applied as? Bool) ?? false
   }
 
   public func missingPosters() async throws -> [VideoPlaceholder] {
@@ -152,8 +159,9 @@ public final class WebRenderer: NSObject, WKNavigationDelegate {
       throw WebRendererError.unexpectedResult("missingPosters")
     }
     return entries.compactMap { entry in
-      guard let index = entry["index"] as? Int, let href = entry["href"] as? String else { return nil }
-      return VideoPlaceholder(index: index, href: href)
+      guard let index = entry["index"] as? Int, let href = entry["href"] as? String, let rect = Self.rect(entry)
+      else { return nil }
+      return VideoPlaceholder(index: index, href: href, rect: rect)
     }
   }
 

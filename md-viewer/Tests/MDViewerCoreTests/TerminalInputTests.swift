@@ -25,6 +25,30 @@ final class TerminalInputTests: XCTestCase {
       p.feed(Array("\u{1b}[<0;5;6m".utf8)), [.mouse(.init(kind: .release, x: 4, y: 5))])
   }
 
+  func firstMouse(_ events: [InputEvent]) -> MouseEvent? {
+    guard case .mouse(let mouse) = events.first else { return nil }
+    return mouse
+  }
+
+  func testMouseButtonsAndModifiers() {
+    var p = InputParser()
+    let left = p.feed(Array("\u{1b}[<0;10;20M".utf8))
+    XCTAssertEqual(left, [.mouse(.init(kind: .press, x: 9, y: 19))])
+    XCTAssertEqual(firstMouse(left)?.isPrimaryClick, true)
+    let middle = p.feed(Array("\u{1b}[<1;10;20M".utf8))
+    XCTAssertEqual(middle, [.mouse(.init(kind: .press, x: 9, y: 19, button: 1))])
+    let right = p.feed(Array("\u{1b}[<2;10;20M".utf8))
+    XCTAssertEqual(right, [.mouse(.init(kind: .press, x: 9, y: 19, button: 2))])
+    XCTAssertEqual(firstMouse(right)?.isPrimaryClick, false)
+    let ctrlLeft = p.feed(Array("\u{1b}[<16;10;20M".utf8))
+    XCTAssertEqual(ctrlLeft, [.mouse(.init(kind: .press, x: 9, y: 19, modifiers: .control))])
+    XCTAssertEqual(firstMouse(ctrlLeft)?.isPrimaryClick, false)
+    let shiftAltLeft = p.feed(Array("\u{1b}[<12;10;20M".utf8))
+    XCTAssertEqual(shiftAltLeft, [.mouse(.init(kind: .press, x: 9, y: 19, modifiers: [.shift, .alt]))])
+    let leftRelease = p.feed(Array("\u{1b}[<0;10;20m".utf8))
+    XCTAssertEqual(firstMouse(leftRelease)?.isPrimaryClick, false)
+  }
+
   func testNamedKeys() {
     var p = InputParser()
     XCTAssertEqual(p.feed(Array("\u{1b}[A".utf8)), [.key(.up)])

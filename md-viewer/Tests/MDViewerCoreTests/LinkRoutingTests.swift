@@ -96,10 +96,40 @@ final class LinkRoutingTests: XCTestCase {
     XCTAssertFalse(isSafeToOpenLocally(try make("img2.png", executable: true)))
     XCTAssertFalse(isSafeToOpenLocally(try make("page.webloc")))
     XCTAssertFalse(isSafeToOpenLocally(try make("archive.zip")))
+    XCTAssertFalse(isSafeToOpenLocally(try make("image.svg")))
+    XCTAssertFalse(isSafeToOpenLocally(try make("page.html")))
+    XCTAssertFalse(isSafeToOpenLocally(try make("page.htm")))
+    XCTAssertFalse(isSafeToOpenLocally(try make("page.xhtml")))
+    XCTAssertFalse(isSafeToOpenLocally(try make("list.m3u8")))
     let app = directory.appendingPathComponent("Evil.app")
     try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
     XCTAssertFalse(isSafeToOpenLocally(app))
     XCTAssertFalse(isSafeToOpenLocally(directory.appendingPathComponent("absent.png")))
+  }
+
+  func testPosterCandidates() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    func make(_ name: String) throws -> URL {
+      let url = directory.appendingPathComponent(name)
+      try Data("x".utf8).write(to: url)
+      return url
+    }
+    XCTAssertTrue(isPosterCandidate(try make("clip.mp4")))
+    XCTAssertTrue(isPosterCandidate(try make("clip.mov")))
+    XCTAssertFalse(isPosterCandidate(try make("live.m3u8")))
+    XCTAssertFalse(isPosterCandidate(try make("list.m3u")))
+    XCTAssertFalse(isPosterCandidate(try make("notes.txt")))
+    XCTAssertFalse(isPosterCandidate(try make("img.png")))
+    XCTAssertFalse(isPosterCandidate(URL(fileURLWithPath: "/dev/zero")))
+    XCTAssertFalse(isPosterCandidate(directory.appendingPathComponent("absent.mp4")))
+    let folder = directory.appendingPathComponent("folder.mp4")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    XCTAssertFalse(isPosterCandidate(folder))
+    let fifo = directory.appendingPathComponent("pipe.mp4")
+    XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+    XCTAssertFalse(isPosterCandidate(fifo))
   }
 
   func testCycleWraps() {

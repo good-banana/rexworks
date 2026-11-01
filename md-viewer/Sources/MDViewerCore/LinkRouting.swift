@@ -41,14 +41,26 @@ public func cycle(from current: Int?, count: Int, forward: Bool) -> Int? {
   return (current + (forward ? 1 : count - 1)) % count
 }
 
+private let blockedLocalTypes: [UTType] = [
+  .executable, .script, .application, .package, .svg, .html, .xml, .playlist,
+]
+
 public func isSafeToOpenLocally(_ url: URL) -> Bool {
+  localFileType(url, allowed: [.image, .audiovisualContent, .pdf, .plainText]) != nil
+}
+
+public func isPosterCandidate(_ url: URL) -> Bool {
+  localFileType(url, allowed: [.audiovisualContent]) != nil
+}
+
+private func localFileType(_ url: URL, allowed: [UTType]) -> UTType? {
   let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentTypeKey]
-  guard let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true,
-    let type = values.contentType, !FileManager.default.isExecutableFile(atPath: url.path)
-  else { return false }
-  let allowed: [UTType] = [.image, .audiovisualContent, .pdf, .plainText]
-  let blocked: [UTType] = [.executable, .script, .application, .package]
-  return allowed.contains { type.conforms(to: $0) } && !blocked.contains { type.conforms(to: $0) }
+  guard url.isFileURL, let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true,
+    let type = values.contentType, !FileManager.default.isExecutableFile(atPath: url.path),
+    allowed.contains(where: { type.conforms(to: $0) }),
+    !blockedLocalTypes.contains(where: { type.conforms(to: $0) })
+  else { return nil }
+  return type
 }
 
 private func scheme(of reference: String) -> String? {
