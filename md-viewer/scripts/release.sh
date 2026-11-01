@@ -19,6 +19,11 @@ case "$version" in
 esac
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+declared=$(sed -n 's/^public let mdViewerVersion = "\(.*\)"$/\1/p' "$root/md-viewer/Sources/MDViewerCore/Version.swift")
+if [ "$declared" != "$version" ]; then
+  echo "Version.swift declares $declared; update it to $version and commit before releasing." >&2
+  exit 1
+fi
 tag="md-viewer-v$version"
 prefix="rexworks-$tag"
 work=$(mktemp -d)

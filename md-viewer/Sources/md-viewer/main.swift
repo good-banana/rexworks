@@ -13,6 +13,7 @@ let usage = """
     agents <install|status|remove>
                   Manage the coding-agent skill that opens previews
     agent-guide   Print guidance for coding agents
+    -v, --version Print the version
     --help        Show this help
   """
 
@@ -26,6 +27,8 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 switch arguments.first {
 case nil, "--help", "-h":
   print(usage)
+case "-v", "--version":
+  print("md-viewer \(mdViewerVersion)")
 case "open":
   guard arguments.count == 2 else { fail("usage: md-viewer open <file>", status: 64) }
   OpenCommand.run(file: arguments[1])
