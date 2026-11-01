@@ -48,8 +48,8 @@ class MdViewer < Formula
   url "$url"
   sha256 "$sha"
 
-  depends_on macos: :sonoma
   depends_on xcode: ["15.0", :build]
+  depends_on macos: :sonoma
 
   def install
     cd "md-viewer" do
