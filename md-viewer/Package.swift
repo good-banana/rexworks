@@ -16,6 +16,7 @@ let package = Package(
         .product(name: "cmark-gfm", package: "swift-cmark"),
         .product(name: "cmark-gfm-extensions", package: "swift-cmark"),
       ]),
+    .target(name: "MDViewerLayout", dependencies: ["MDViewerDocument"]),
     .target(
       name: "MDViewerWeb",
       dependencies: ["MDViewerCore"],
@@ -29,6 +30,10 @@ let package = Package(
     .testTarget(
       name: "MDViewerDocumentTests",
       dependencies: ["MDViewerDocument"],
+      resources: [.copy("Fixtures")]),
+    .testTarget(
+      name: "MDViewerLayoutTests",
+      dependencies: ["MDViewerLayout", "MDViewerDocument"],
       resources: [.copy("Fixtures")]),
     .testTarget(
       name: "MDViewerRenderTests",
