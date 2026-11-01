@@ -64,15 +64,25 @@ public struct Typography: Hashable, Sendable {
   public var hairline: CGFloat = 1
   public var tabWidth: Int = 8
 
+  public static let bodySizeRange: ClosedRange<CGFloat> = 6...72
+  public static let zoomRange: ClosedRange<CGFloat> = 0.25...5
+  public static let backingScaleRange: ClosedRange<CGFloat> = 1...4
+
   public init(bodySize: CGFloat = Typography.defaultBodySize, zoom: CGFloat = 1, backingScale: CGFloat = 2) {
-    self.bodySize = bodySize
-    self.zoom = zoom
-    self.backingScale = backingScale
+    self.bodySize = Self.clamp(bodySize, Self.bodySizeRange, fallback: Self.defaultBodySize)
+    self.zoom = Self.clamp(zoom, Self.zoomRange, fallback: 1)
+    self.backingScale = Self.clamp(backingScale, Self.backingScaleRange, fallback: 2)
   }
 
-  public var scale: CGFloat { backingScale * zoom }
+  static func clamp(_ value: CGFloat, _ range: ClosedRange<CGFloat>, fallback: CGFloat) -> CGFloat {
+    value.isFinite ? min(max(value, range.lowerBound), range.upperBound) : fallback
+  }
 
-  public var bodyPixelSize: CGFloat { bodySize * scale }
+  public var scale: CGFloat {
+    Self.clamp(backingScale, Self.backingScaleRange, fallback: 2) * Self.clamp(zoom, Self.zoomRange, fallback: 1)
+  }
+
+  public var bodyPixelSize: CGFloat { Self.clamp(bodySize, Self.bodySizeRange, fallback: Self.defaultBodySize) * scale }
 
   public func pixels(em: CGFloat) -> CGFloat { em * bodyPixelSize }
 
@@ -83,7 +93,9 @@ public struct Typography: Hashable, Sendable {
   public func headingWeight(_ level: Int) -> FontWeight { headingWeights[min(max(level, 1), 6) - 1] }
 
   public static func backingScale(cellPixelHeight: CGFloat, screenScale: CGFloat?) -> CGFloat {
-    if let screenScale, screenScale > 0 { return screenScale }
+    if let screenScale, screenScale.isFinite, screenScale > 0 {
+      return clamp(screenScale, backingScaleRange, fallback: 2)
+    }
     return cellPixelHeight >= 24 ? 2 : 1
   }
 }

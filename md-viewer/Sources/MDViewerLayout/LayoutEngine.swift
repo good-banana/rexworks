@@ -51,7 +51,7 @@ struct LayoutBuilder {
 }
 
 struct LayoutContext {
-  var alignment: TextAlignment = .left
+  var alignment: TextAlignment?
   var isTight = false
 }
 
@@ -144,7 +144,7 @@ struct LayoutEngine {
     case .diagram(let id, let code):
       diagram(id, code: code, x: x, width: width, y: &y)
     case .table(let id, let table):
-      self.table(id, table, x: x, width: width, y: &y)
+      self.table(id, table, x: x, width: width, y: &y, alignment: context.alignment)
     case .footnote(_, let label, let marker, let isFirst, let children):
       footnote(label, marker: marker, isFirst: isFirst, children: children, x: x, width: width, y: &y, context: context)
     case .details(let id, let summary, let children):
@@ -297,15 +297,20 @@ struct LayoutEngine {
     var widest: CGFloat = 0
     y += padding
     for line in lines {
-      guard case .segment(let index)? = line.atoms.first else { continue }
-      let segment = prepared.segments[index]
       let baseline = y + line.strutAbove
-      let origin = CGPoint(x: x + padding, y: baseline)
-      out.fragments.append(
-        TextFragment(
-          segment: index, range: segment.range, origin: origin, minX: origin.x, maxX: origin.x + segment.width,
-          lineTop: y, lineBottom: baseline + line.strutBelow, region: nil, isClipped: false))
-      widest = max(widest, segment.width)
+      var lineX = x + padding
+      for atom in line.atoms {
+        guard case .segment(let index) = atom else { continue }
+        let segment = prepared.segments[index]
+        out.fragments.append(
+          TextFragment(
+            segment: index, range: segment.range, origin: CGPoint(x: lineX + segment.drawOffset, y: baseline),
+            minX: lineX,
+            maxX: lineX + segment.width, lineTop: y, lineBottom: baseline + line.strutBelow, region: nil,
+            isClipped: false))
+        lineX += segment.width
+      }
+      widest = max(widest, lineX - x - padding)
       y = baseline + line.strutBelow
     }
     y += padding
@@ -314,7 +319,9 @@ struct LayoutEngine {
     if contentWidth > width {
       out.assignRegion(id, since: start)
       out.regions.append(
-        ScrollRegion(id: id, rect: box, contentWidth: contentWidth, offset: clampedOffset(id, contentWidth, width)))
+        ScrollRegion(
+          id: id, rect: box, contentWidth: contentWidth, offset: clampedOffset(id, contentWidth, width),
+          kind: .codeBlock(language: prepared.codeBlocks[id]?.language)))
     }
     out.decorations.insert(
       Decoration(rect: box, kind: .codeBlockBackground, region: nil, cornerRadius: em(typography.cornerRadius)),
@@ -324,7 +331,16 @@ struct LayoutEngine {
     let button = CGRect(x: box.maxX - inset - size, y: top + inset, width: size, height: size)
     out.decorations.append(
       Decoration(rect: button, kind: .copyButton, region: nil, cornerRadius: em(typography.cornerRadius)))
-    out.targets.append(TargetArea(rect: button, target: .copyCode(id), region: nil))
+    out.targets.append(
+      TargetArea(rect: button, target: .copyCode(id, language: prepared.codeBlocks[id]?.language), region: nil))
+  }
+
+  func lineWidth(_ line: Run) -> CGFloat {
+    var width: CGFloat = 0
+    for atom in line.atoms {
+      if case .segment(let index) = atom { width += prepared.segments[index].width }
+    }
+    return width
   }
 
   private func clampedOffset(_ id: BlockID, _ contentWidth: CGFloat, _ width: CGFloat) -> CGFloat {
@@ -358,7 +374,7 @@ struct LayoutEngine {
     out.detailsTops.append((id, top))
     let markerWidth = em(typography.detailsMarkerWidth)
     let start = out.fragments.count
-    flow(summary, x: x + markerWidth, width: max(width - markerWidth, em(1)), y: &y, alignment: .left)
+    flow(summary, x: x + markerWidth, width: max(width - markerWidth, em(1)), y: &y, alignment: nil)
     let line = firstLine(from: start, top: top)
     let size = em(typography.detailsMarkerSize)
     out.decorations.append(
@@ -390,8 +406,8 @@ struct LayoutEngine {
     for row in rows {
       var keyY = y
       var valueY = y
-      flow(row.key, x: x + bar + padX, width: max(keyWidth, em(1)), y: &keyY, alignment: .left)
-      flow(row.value, x: x + bar + padX + keyWidth + gap, width: valueWidth, y: &valueY, alignment: .left)
+      flow(row.key, x: x + bar + padX, width: max(keyWidth, em(1)), y: &keyY, alignment: nil)
+      flow(row.value, x: x + bar + padX + keyWidth + gap, width: valueWidth, y: &valueY, alignment: nil)
       y = max(keyY, valueY)
     }
     y += padY

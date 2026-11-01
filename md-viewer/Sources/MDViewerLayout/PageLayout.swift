@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import MDViewerDocument
 
-public struct PageLayout: Equatable {
+public struct PageLayout: Equatable, Sendable {
   public let prepared: PreparedDocument
   public let width: CGFloat
   public let height: CGFloat
@@ -101,18 +101,18 @@ extension PageLayout {
   }
 
   public func target(at point: CGPoint) -> HitTarget? {
-    for area in targets.reversed() where isVisible(point, in: area.region) {
-      if displayRect(area.rect, region: area.region).contains(point) { return area.target }
-    }
-    for image in images.reversed() where image.link != nil && isVisible(point, in: image.region) {
-      if displayRect(image.rect, region: image.region).contains(point), let link = image.link { return .link(link) }
-    }
     for fragment in fragments where isVisible(point, in: fragment.region) {
       let shift = offset(of: fragment.region)
       guard point.y >= fragment.lineTop, point.y < fragment.lineBottom, point.x >= fragment.minX - shift,
         point.x <= fragment.maxX - shift
       else { continue }
       if let link = prepared.segments[fragment.segment].style.link { return .link(link) }
+    }
+    for image in images.reversed() where image.link != nil && isVisible(point, in: image.region) {
+      if displayRect(image.rect, region: image.region).contains(point), let link = image.link { return .link(link) }
+    }
+    for area in targets.reversed() where isVisible(point, in: area.region) {
+      if displayRect(area.rect, region: area.region).contains(point) { return area.target }
     }
     return nil
   }
@@ -135,7 +135,16 @@ extension PageLayout {
     let fragment = fragments[best.index]
     let segment = prepared.segments[fragment.segment]
     let local = point.x - (fragment.origin.x - offset(of: fragment.region))
-    let offset = min(max(segment.index(at: local), fragment.range.lowerBound), fragment.range.upperBound)
+    var offset = min(max(segment.index(at: local), fragment.range.lowerBound), fragment.range.upperBound)
+    if offset < prepared.text.length {
+      let composed = prepared.text.rangeOfComposedCharacterSequence(at: offset)
+      if composed.location < offset {
+        let end = composed.location + composed.length
+        let before = abs(segment.offset(at: composed.location) - local)
+        let after = abs(segment.offset(at: end) - local)
+        offset = before <= after ? composed.location : end
+      }
+    }
     return TextPosition(offset: offset, block: block(containing: offset) ?? BlockID(0))
   }
 
@@ -175,8 +184,9 @@ extension PageLayout {
       guard lower < upper else { continue }
       let segment = prepared.segments[fragment.segment]
       let shift = offset(of: fragment.region)
-      var minX = max(fragment.origin.x + segment.offset(at: lower), fragment.minX) - shift
-      var maxX = min(fragment.origin.x + segment.offset(at: upper), fragment.maxX) - shift
+      guard let span = segment.span(from: lower, to: upper) else { continue }
+      var minX = max(fragment.origin.x + span.lowerBound, fragment.minX) - shift
+      var maxX = min(fragment.origin.x + span.upperBound, fragment.maxX) - shift
       if let region = fragment.region, let index = regionIndex[region] {
         let clip = regions[index].rect
         minX = max(minX, clip.minX)
@@ -271,18 +281,20 @@ extension PageLayout {
 
   public func wordRange(at offset: Int) -> Range<Int> {
     let text = prepared.text
-    let word = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
-    func isWord(_ index: Int) -> Bool {
-      guard index >= 0, index < text.length, let scalar = UnicodeScalar(text.character(at: index)) else {
-        return false
-      }
-      return word.contains(scalar)
+    guard text.length > 0 else { return offset..<offset }
+    let unit = unitRange(at: offset)
+    let scope = unit.isEmpty ? 0..<text.length : unit
+    let probe = min(max(offset, scope.lowerBound), scope.upperBound - 1)
+    guard probe >= scope.lowerBound else { return offset..<offset }
+    let tokenizer = CFStringTokenizerCreate(
+      nil, text, CFRange(location: scope.lowerBound, length: scope.count), kCFStringTokenizerUnitWordBoundary, nil)
+    _ = CFStringTokenizerGoToTokenAtIndex(tokenizer, probe)
+    let token = CFStringTokenizerGetCurrentTokenRange(tokenizer)
+    guard token.location != kCFNotFound, token.length > 0 else {
+      let composed = text.rangeOfComposedCharacterSequence(at: probe)
+      return composed.location..<(composed.location + composed.length)
     }
-    var lower = offset
-    var upper = offset
-    while isWord(lower - 1) { lower -= 1 }
-    while isWord(upper) { upper += 1 }
-    return lower..<upper
+    return token.location..<(token.location + token.length)
   }
 
   public func link(at offset: Int) -> String? {

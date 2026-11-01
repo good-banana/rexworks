@@ -12,7 +12,14 @@ struct SourceSpan {
   var source: SourceRange
 }
 
-public final class PreparedDocument {
+public struct CodeBlockInfo: Hashable, Sendable {
+  public var language: String?
+  public var code: String
+  public var lineRanges: [Range<Int>]
+  public var isDiagram: Bool
+}
+
+public final class PreparedDocument: @unchecked Sendable {
   public let document: Document
   public let source: String
   public let typography: Typography
@@ -22,12 +29,13 @@ public final class PreparedDocument {
   public let units: [TextUnit]
   public let links: [LinkSpan]
   public let initiallyExpandedDetails: Set<BlockID>
+  public let codeBlocks: [BlockID: CodeBlockInfo]
   let nodes: [Node]
   let images: [ImageAtom]
   let detailsBodies: [BlockID: Range<Int>]
   let anchorAncestors: [String: [BlockID]]
   let sourceSpans: [SourceSpan]
-  let sourceLines: [Substring]
+  let sourceLines: [String]
 
   public convenience init(markdown: String, typography: Typography = Typography()) {
     self.init(document: Document.parse(markdown), source: markdown, typography: typography)
@@ -45,14 +53,36 @@ public final class PreparedDocument {
     units = preparer.units
     links = preparer.links
     initiallyExpandedDetails = preparer.initiallyExpanded
+    codeBlocks = preparer.codeBlocks
     images = preparer.images
     detailsBodies = preparer.detailsBodies
     anchorAncestors = preparer.anchorAncestors
     sourceSpans = preparer.sourceSpans
-    sourceLines = source.split(separator: "\n", omittingEmptySubsequences: false)
+    sourceLines = Self.lines(source)
   }
 
   public var anchorNames: Set<String> { Set(anchorAncestors.keys) }
+
+  static func lines(_ source: String) -> [String] {
+    var lines: [String] = []
+    var current = String.UnicodeScalarView()
+    var previousWasReturn = false
+    for scalar in source.unicodeScalars {
+      if scalar == "\n", previousWasReturn {
+        previousWasReturn = false
+        continue
+      }
+      previousWasReturn = scalar == "\r"
+      if scalar == "\n" || scalar == "\r" {
+        lines.append(String(current))
+        current = String.UnicodeScalarView()
+      } else {
+        current.append(scalar)
+      }
+    }
+    lines.append(String(current))
+    return lines
+  }
 }
 
 private struct SpanStyle: Hashable {
@@ -86,7 +116,23 @@ private enum RunItem {
   case anchor(String)
 }
 
+private enum Direction {
+  case leftToRight, rightToLeft
+
+  init?(strong scalar: Unicode.Scalar) {
+    guard scalar.properties.isAlphabetic else { return nil }
+    switch scalar.value {
+    case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF, 0x10800...0x10FFF, 0x1E800...0x1EFFF:
+      self = .rightToLeft
+    default:
+      self = .leftToRight
+    }
+  }
+}
+
 private final class Preparer {
+  static let maximumSegmentLength = 256
+
   let typography: Typography
   let source: String
   let fonts: FontCache
@@ -100,6 +146,7 @@ private final class Preparer {
   var detailsBodies: [BlockID: Range<Int>] = [:]
   var anchorAncestors: [String: [BlockID]] = [:]
   var sourceSpans: [SourceSpan] = []
+  var codeBlocks: [BlockID: CodeBlockInfo] = [:]
   private var nextID = 0
   private var nextGroup = 0
   private var pendingSeparator: String?
@@ -295,6 +342,7 @@ private final class Preparer {
   private func codeNode(_ code: CodeBlock, id: BlockID, source: SourceRange, context: Context) -> Node {
     if code.language?.lowercased() == "mermaid" {
       endUnit(beginUnit(id, kind: .diagram, source: source))
+      codeBlocks[id] = CodeBlockInfo(language: "mermaid", code: code.code, lineRanges: [], isDiagram: true)
       return .diagram(id, code: code.code)
     }
     var lines = code.code.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
@@ -304,12 +352,15 @@ private final class Preparer {
     var inner = context
     inner.lineHeight = typography.codeLineHeight
     var runs: [Run] = []
+    var lineRanges: [Range<Int>] = []
     for (index, line) in lines.enumerated() {
       if index > 0 { pendingSeparator = "\n" }
       let unit = beginUnit(id, kind: .codeLine, source: source)
       runs.append(run([.text(line, style, source)], base: style, context: inner, wrap: false))
       endUnit(unit)
+      lineRanges.append(units[unit].range)
     }
+    codeBlocks[id] = CodeBlockInfo(language: code.language, code: code.code, lineRanges: lineRanges, isDiagram: false)
     return .code(id, lines: runs)
   }
 
@@ -338,7 +389,8 @@ private final class Preparer {
         }
         cells.append(
           CellNode(
-            id: id, children: children, alignment: cell.alignment, columnSpan: cell.columnSpan,
+            id: id, children: children, alignment: cell.alignment,
+            isHeader: cell.isHeader || (rowIndex == 0 && table.header != nil), columnSpan: cell.columnSpan,
             rowSpan: cell.rowSpan))
       }
       nodes.append(cells)
@@ -515,6 +567,12 @@ private final class Preparer {
     text.append(local as String)
     let breaks = wrap ? breakOpportunities(local) : []
     var cutIndex = 0
+    let isRightToLeft = baseDirection(local) == .rightToLeft
+    if isRightToLeft {
+      attributed.addAttribute(
+        .init(kCTParagraphStyleAttributeName as String), value: fonts.metrics(fontKey(base)).rightToLeftParagraph,
+        range: NSRange(location: 0, length: attributed.length))
+    }
     let typesetter = local.length > 0 ? CTTypesetterCreateWithAttributedString(attributed) : nil
 
     struct Spec {
@@ -533,7 +591,20 @@ private final class Preparer {
         while start < piece.range.upperBound {
           let cut = cutIndex < breaks.count ? min(breaks[cutIndex], piece.range.upperBound) : piece.range.upperBound
           let breakAfter = cutIndex < breaks.count && breaks[cutIndex] == cut
-          specs.append(Spec(range: start..<cut, style: piece.style, breakAfter: breakAfter))
+          var chunkStart = start
+          while cut - chunkStart > Self.maximumSegmentLength {
+            var chunkEnd = chunkStart
+            while chunkEnd - chunkStart < Self.maximumSegmentLength {
+              let composed = local.rangeOfComposedCharacterSequence(at: chunkEnd)
+              let next = min(composed.location + composed.length, cut)
+              if next - chunkStart > Self.maximumSegmentLength, chunkEnd > chunkStart { break }
+              chunkEnd = next
+            }
+            specs.append(Spec(range: chunkStart..<chunkEnd, style: piece.style, breakAfter: false))
+            atomsPlan.append(specs.count - 1)
+            chunkStart = chunkEnd
+          }
+          specs.append(Spec(range: chunkStart..<cut, style: piece.style, breakAfter: breakAfter))
           atomsPlan.append(specs.count - 1)
           if breakAfter { cutIndex += 1 }
           start = cut
@@ -562,13 +633,15 @@ private final class Preparer {
       groupLast[group] = index
     }
 
+    let levels = bidiLevels(specs.map(\.range), in: local, isRightToLeft: isRightToLeft)
     let firstSegment = segments.count
     for (index, spec) in specs.enumerated() {
       segments.append(
         shape(
           spec.range, globalStart: globalStart, style: spec.style, typesetter: typesetter, context: context,
           breakAfter: spec.breakAfter, isGroupStart: spec.style.group.map { groupFirst[$0] == index } ?? false,
-          isGroupEnd: spec.style.group.map { groupLast[$0] == index } ?? false))
+          isGroupEnd: spec.style.group.map { groupLast[$0] == index } ?? false, bidiLevel: levels[index],
+          inRightToLeftParagraph: isRightToLeft))
     }
 
     var merged: [Atom] = []
@@ -581,7 +654,46 @@ private final class Preparer {
         otherIndex += 1
       }
     }
-    return finishRun(merged, base: base, context: context)
+    return finishRun(merged, base: base, context: context, isRightToLeft: isRightToLeft)
+  }
+
+  private func baseDirection(_ string: NSString) -> Direction? {
+    for scalar in (string as String).unicodeScalars {
+      if let direction = Direction(strong: scalar) { return direction }
+    }
+    return nil
+  }
+
+  private func bidiLevels(_ ranges: [Range<Int>], in string: NSString, isRightToLeft: Bool) -> [Int] {
+    let directions = ranges.map { range -> Direction? in
+      let piece = string.substring(with: NSRange(location: range.lowerBound, length: range.count))
+      for scalar in piece.unicodeScalars {
+        if let direction = Direction(strong: scalar) ?? (scalar.properties.numericType != nil ? .leftToRight : nil) {
+          return direction
+        }
+      }
+      return nil
+    }
+    let base: Direction = isRightToLeft ? .rightToLeft : .leftToRight
+    var resolved = [Direction](repeating: base, count: ranges.count)
+    var previous: Direction?
+    for index in ranges.indices {
+      if let direction = directions[index] {
+        resolved[index] = direction
+        previous = direction
+        continue
+      }
+      let next = directions[(index + 1)...].lazy.compactMap { $0 }.first
+      resolved[index] = previous != nil && previous == next ? previous ?? base : base
+    }
+    return resolved.map { direction in
+      switch (base, direction) {
+      case (.leftToRight, .leftToRight): 0
+      case (.leftToRight, .rightToLeft): 1
+      case (.rightToLeft, .rightToLeft): 1
+      case (.rightToLeft, .leftToRight): 2
+      }
+    }
   }
 
   private func breakOpportunities(_ string: NSString) -> [Int] {
@@ -604,7 +716,7 @@ private final class Preparer {
 
   private func shape(
     _ range: Range<Int>, globalStart: Int, style: SpanStyle, typesetter: CTTypesetter?, context: Context,
-    breakAfter: Bool, isGroupStart: Bool, isGroupEnd: Bool
+    breakAfter: Bool, isGroupStart: Bool, isGroupEnd: Bool, bidiLevel: Int, inRightToLeftParagraph: Bool
   ) -> ShapedSegment {
     let metrics = fonts.metrics(fontKey(style))
     let line: CTLine
@@ -633,7 +745,8 @@ private final class Preparer {
     case .mark, nil:
       break
     }
-    let trailing = style.box == nil ? CGFloat(CTLineGetTrailingWhitespaceWidth(line)) : 0
+    let hanging = CGFloat(CTLineGetTrailingWhitespaceWidth(line))
+    let trailing = style.box == nil ? hanging : 0
     return ShapedSegment(
       range: (globalStart + range.lowerBound)..<(globalStart + range.upperBound), line: line,
       lineStart: range.lowerBound,
@@ -642,10 +755,11 @@ private final class Preparer {
       baselineShift: style.shift * fontSize, above: ascent + halfLeading, below: descent + halfLeading,
       leadingPad: isGroupStart ? horizontalPad : 0, trailingPad: isGroupEnd ? horizontalPad : 0,
       boxVerticalPad: verticalPad, breakAfter: breakAfter, boxGroup: style.group,
-      affectsLineHeight: style.affectsLineHeight)
+      affectsLineHeight: style.affectsLineHeight, bidiLevel: bidiLevel,
+      drawOffset: inRightToLeftParagraph ? min(hanging, width) : 0)
   }
 
-  private func finishRun(_ atoms: [Atom], base: SpanStyle, context: Context) -> Run {
+  private func finishRun(_ atoms: [Atom], base: SpanStyle, context: Context, isRightToLeft: Bool) -> Run {
     var words: [Word] = []
     var start = 0
     var advance: CGFloat = 0
@@ -694,7 +808,7 @@ private final class Preparer {
     let halfLeading = (fontSize * context.lineHeight - metrics.ascent - metrics.descent) / 2
     return Run(
       atoms: atoms, words: words, strutAbove: metrics.ascent + halfLeading, strutBelow: metrics.descent + halfLeading,
-      minWidth: minWidth, maxWidth: maxWidth)
+      minWidth: minWidth, maxWidth: maxWidth, isRightToLeft: isRightToLeft)
   }
 
   private func label(_ value: String, style: SpanStyle, role: LabelRole) -> Int {

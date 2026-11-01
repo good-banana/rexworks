@@ -13,6 +13,7 @@ struct FontMetrics {
   var ascent: CGFloat
   var descent: CGFloat
   var attributes: [NSAttributedString.Key: Any]
+  var rightToLeftParagraph: CTParagraphStyle
 }
 
 final class FontCache {
@@ -28,27 +29,38 @@ final class FontCache {
     let font = Self.makeFont(key)
     let space = NSAttributedString(string: " ", attributes: [.init(kCTFontAttributeName as String): font])
     let spaceWidth = CTLineGetTypographicBounds(CTLineCreateWithAttributedString(space), nil, nil, nil)
-    var interval = CGFloat(spaceWidth) * CGFloat(tabWidth)
-    var noStops: CFArray = [] as CFArray
-    let paragraph = withUnsafeMutablePointer(to: &interval) { intervalPointer in
-      withUnsafeMutablePointer(to: &noStops) { stopsPointer in
-        let settings = [
-          CTParagraphStyleSetting(
-            spec: .defaultTabInterval, valueSize: MemoryLayout<CGFloat>.size, value: intervalPointer),
-          CTParagraphStyleSetting(spec: .tabStops, valueSize: MemoryLayout<CFArray>.size, value: stopsPointer),
-        ]
-        return CTParagraphStyleCreate(settings, settings.count)
-      }
-    }
+    let interval = CGFloat(spaceWidth) * CGFloat(tabWidth)
+    let paragraph = Self.paragraphStyle(tabInterval: interval, direction: .natural)
+    let rightToLeft = Self.paragraphStyle(tabInterval: interval, direction: .rightToLeft)
     let metrics = FontMetrics(
       font: font, ascent: CTFontGetAscent(font), descent: CTFontGetDescent(font),
       attributes: [
         .init(kCTFontAttributeName as String): font,
         .init(kCTForegroundColorFromContextAttributeName as String): true,
         .init(kCTParagraphStyleAttributeName as String): paragraph,
-      ])
+      ], rightToLeftParagraph: rightToLeft)
     fonts[key] = metrics
     return metrics
+  }
+
+  private static func paragraphStyle(tabInterval: CGFloat, direction: CTWritingDirection) -> CTParagraphStyle {
+    var interval = tabInterval
+    var noStops: CFArray = [] as CFArray
+    var writingDirection = direction
+    return withUnsafeMutablePointer(to: &interval) { intervalPointer in
+      withUnsafeMutablePointer(to: &noStops) { stopsPointer in
+        withUnsafeMutablePointer(to: &writingDirection) { directionPointer in
+          let settings = [
+            CTParagraphStyleSetting(
+              spec: .defaultTabInterval, valueSize: MemoryLayout<CGFloat>.size, value: intervalPointer),
+            CTParagraphStyleSetting(spec: .tabStops, valueSize: MemoryLayout<CFArray>.size, value: stopsPointer),
+            CTParagraphStyleSetting(
+              spec: .baseWritingDirection, valueSize: MemoryLayout<CTWritingDirection>.size, value: directionPointer),
+          ]
+          return CTParagraphStyleCreate(settings, settings.count)
+        }
+      }
+    }
   }
 
   private static func makeFont(_ key: FontKey) -> CTFont {

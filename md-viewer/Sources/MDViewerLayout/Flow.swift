@@ -22,7 +22,7 @@ struct LineBuffer {
 }
 
 extension LayoutEngine {
-  mutating func flow(_ run: Run, x: CGFloat, width: CGFloat, y: inout CGFloat, alignment: TextAlignment) {
+  mutating func flow(_ run: Run, x: CGFloat, width: CGFloat, y: inout CGFloat, alignment: TextAlignment?) {
     var buffer = LineBuffer()
     for word in run.words {
       if word.isHardBreak {
@@ -71,9 +71,8 @@ extension LayoutEngine {
 
   private mutating func split(
     _ word: Word, run: Run, buffer: inout LineBuffer, x: CGFloat, width: CGFloat, y: inout CGFloat,
-    alignment: TextAlignment
+    alignment: TextAlignment?
   ) {
-    let text = prepared.text
     for index in word.atoms {
       guard case .segment(let id) = run.atoms[index] else {
         append(run.atoms[index], to: &buffer)
@@ -84,50 +83,112 @@ extension LayoutEngine {
         append(run.atoms[index], to: &buffer)
         continue
       }
-      var start = segment.range.lowerBound
-      while start < segment.range.upperBound {
+      let boundaries = graphemeBoundaries(segment.range)
+      let allCarets = segment.caretOffsets()
+      let carets = boundaries.map { allCarets[$0 - segment.range.lowerBound] }
+      let last = boundaries.count - 1
+      var startIndex = 0
+      while startIndex < last {
+        let start = boundaries[startIndex]
         let lead = start == segment.range.lowerBound ? segment.leadingPad : 0
-        let startOffset = segment.offset(at: start)
         let available = width - buffer.cursor - lead
-        let remaining = segment.width - segment.trailingWhitespace - startOffset
-        if remaining <= available {
-          let pieceWidth = segment.width - startOffset
+        let origin = carets[startIndex]
+        func span(_ end: Int) -> CGFloat { abs(carets[end] - origin) }
+        if span(last) - segment.trailingWhitespace <= available {
           buffer.items.append(
             LineItem(
-              kind: .piece(id, start..<segment.range.upperBound, start: startOffset, width: pieceWidth),
+              kind: .piece(id, start..<segment.range.upperBound, start: min(origin, carets[last]), width: span(last)),
               x: buffer.cursor + lead))
-          buffer.visibleEnd = buffer.cursor + lead + remaining + segment.trailingPad
-          buffer.cursor += lead + pieceWidth + segment.trailingPad
+          buffer.visibleEnd = buffer.cursor + lead + span(last) - segment.trailingWhitespace + segment.trailingPad
+          buffer.cursor += lead + span(last) + segment.trailingPad
           break
         }
-        var end = segment.index(at: startOffset + max(available, 0))
-        if end < segment.range.upperBound {
-          end = text.rangeOfComposedCharacterSequence(at: end).location
+        var endIndex = startIndex
+        var low = startIndex + 1
+        var high = last
+        while low <= high {
+          let mid = (low + high) / 2
+          if span(mid) <= available {
+            endIndex = mid
+            low = mid + 1
+          } else {
+            high = mid - 1
+          }
         }
-        while end > start, segment.offset(at: end) - startOffset > available {
-          end = text.rangeOfComposedCharacterSequence(at: end - 1).location
-        }
-        if end <= start {
+        if endIndex == startIndex {
           if buffer.cursor > 0 {
             emitLine(&buffer, run: run, x: x, width: width, y: &y, alignment: alignment)
             continue
           }
-          let composed = text.rangeOfComposedCharacterSequence(at: start)
-          end = min(composed.location + composed.length, segment.range.upperBound)
+          endIndex = startIndex + 1
         }
-        let pieceWidth = segment.offset(at: end) - startOffset
         buffer.items.append(
-          LineItem(kind: .piece(id, start..<end, start: startOffset, width: pieceWidth), x: buffer.cursor + lead))
-        buffer.cursor += lead + pieceWidth
+          LineItem(
+            kind: .piece(
+              id, start..<boundaries[endIndex], start: min(origin, carets[endIndex]), width: span(endIndex)),
+            x: buffer.cursor + lead))
+        buffer.cursor += lead + span(endIndex)
         buffer.visibleEnd = buffer.cursor
         emitLine(&buffer, run: run, x: x, width: width, y: &y, alignment: alignment)
-        start = end
+        startIndex = endIndex
       }
     }
   }
 
+  private func graphemeBoundaries(_ range: Range<Int>) -> [Int] {
+    let text = prepared.text
+    var boundaries = [range.lowerBound]
+    var position = range.lowerBound
+    while position < range.upperBound {
+      let composed = text.rangeOfComposedCharacterSequence(at: position)
+      position = min(max(composed.location + composed.length, position + 1), range.upperBound)
+      boundaries.append(position)
+    }
+    return boundaries
+  }
+
+  private func reorder(_ buffer: inout LineBuffer, baseLevel: Int) {
+    let count = buffer.items.count
+    guard count > 1 else { return }
+    var advances = [CGFloat](repeating: 0, count: count)
+    var levels = [Int](repeating: baseLevel, count: count)
+    for index in 0..<count {
+      let next = index + 1 < count ? buffer.items[index + 1].x : buffer.cursor
+      advances[index] = next - buffer.items[index].x
+      switch buffer.items[index].kind {
+      case .segment(let id), .piece(let id, _, _, _):
+        levels[index] = prepared.segments[id].bidiLevel
+      case .image:
+        levels[index] = baseLevel
+      case .anchor:
+        levels[index] = index > 0 ? levels[index - 1] : baseLevel
+      }
+    }
+    var order = Array(0..<count)
+    var level = levels.max() ?? 0
+    while level >= 1 {
+      var start = 0
+      while start < count {
+        guard levels[order[start]] >= level else {
+          start += 1
+          continue
+        }
+        var end = start
+        while end < count, levels[order[end]] >= level { end += 1 }
+        order[start..<end].reverse()
+        start = end
+      }
+      level -= 1
+    }
+    var position: CGFloat = 0
+    for index in order {
+      buffer.items[index].x = position
+      position += advances[index]
+    }
+  }
+
   private mutating func emitLine(
-    _ buffer: inout LineBuffer, run: Run, x: CGFloat, width: CGFloat, y: inout CGFloat, alignment: TextAlignment
+    _ buffer: inout LineBuffer, run: Run, x: CGFloat, width: CGFloat, y: inout CGFloat, alignment: TextAlignment?
   ) {
     var above = run.strutAbove
     var below = run.strutBelow
@@ -147,12 +208,24 @@ extension LayoutEngine {
     let top = y
     let baseline = top + above
     let bottom = baseline + below
-    let slack = max(width - buffer.visibleEnd, 0)
+    let needsReorder =
+      run.isRightToLeft
+      || buffer.items.contains {
+        switch $0.kind {
+        case .segment(let id), .piece(let id, _, _, _): prepared.segments[id].bidiLevel > 0
+        default: false
+        }
+      }
+    if needsReorder { reorder(&buffer, baseLevel: run.isRightToLeft ? 1 : 0) }
+    let hang = max(buffer.cursor - buffer.visibleEnd, 0)
+    let extentLeft: CGFloat = run.isRightToLeft ? hang : 0
+    let extentRight: CGFloat = run.isRightToLeft ? buffer.cursor : buffer.visibleEnd
+    let slack = max(width - (extentRight - extentLeft), 0)
     let shift: CGFloat =
-      switch alignment {
-      case .center: (slack / 2).rounded()
-      case .right: slack
-      case .left, .justify: 0
+      switch alignment ?? (run.isRightToLeft ? .right : .left) {
+      case .center: (slack / 2).rounded() - extentLeft
+      case .right: slack - extentLeft
+      case .left, .justify: -extentLeft
       }
     var boxes: [(group: Int, kind: InlineBoxKind, rect: CGRect)] = []
     for item in buffer.items {
@@ -161,9 +234,9 @@ extension LayoutEngine {
       case .segment(let id), .piece(let id, _, _, _):
         let segment = prepared.segments[id]
         var range = segment.range
-        var origin = CGPoint(x: left + segment.leadingPad, y: baseline + segment.baselineShift)
-        var minX = origin.x
-        var maxX = origin.x + segment.width
+        var origin = CGPoint(x: left + segment.leadingPad + segment.drawOffset, y: baseline + segment.baselineShift)
+        var minX = left + segment.leadingPad
+        var maxX = minX + segment.width
         var clipped = false
         var boxRight = left + segment.advance
         if case .piece(_, let pieceRange, let start, let pieceWidth) = item.kind {

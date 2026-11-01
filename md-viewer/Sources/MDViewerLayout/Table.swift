@@ -87,13 +87,22 @@ extension LayoutEngine {
     return ColumnSizing(minimum: minimum, maximum: maximum)
   }
 
-  mutating func table(_ id: BlockID, _ table: TableNode, x: CGFloat, width: CGFloat, y: inout CGFloat) {
+  mutating func table(
+    _ id: BlockID, _ table: TableNode, x origin: CGFloat, width: CGFloat, y: inout CGFloat, alignment: TextAlignment?
+  ) {
     let grid = TableGrid(table)
     guard grid.columns > 0 else { return }
     let widths = columnSizing(grid).widths(available: width)
     var columnX = [CGFloat](repeating: 0, count: grid.columns + 1)
     for column in 0..<grid.columns { columnX[column + 1] = columnX[column] + widths[column] }
     let tableWidth = columnX[grid.columns]
+    let slack = max(width - tableWidth, 0)
+    let x: CGFloat =
+      switch alignment {
+      case .center: origin + (slack / 2).rounded()
+      case .right: origin + slack
+      default: origin
+      }
     let padding = cellPadding
     let start = out.mark
     let top = y
@@ -109,7 +118,8 @@ extension LayoutEngine {
         switch cell.node.alignment {
         case .center: .center
         case .right: .right
-        case .left, .none: .left
+        case .left: .left
+        case .none: cell.node.isHeader ? .center : nil
         }
       container(
         cell.node.children, x: x + columnX[cell.column] + padding.width,
@@ -161,8 +171,8 @@ extension LayoutEngine {
       out.assignRegion(id, since: start)
       out.regions.append(
         ScrollRegion(
-          id: id, rect: CGRect(x: x, y: top, width: width, height: y - top), contentWidth: tableWidth,
-          offset: min(max(input.scrollOffsets[id] ?? 0, 0), tableWidth - width)))
+          id: id, rect: CGRect(x: origin, y: top, width: width, height: y - top), contentWidth: tableWidth,
+          offset: min(max(input.scrollOffsets[id] ?? 0, 0), tableWidth - width), kind: .table))
     }
   }
 
@@ -194,9 +204,7 @@ extension LayoutEngine {
       return inset(intrinsic(list.items.flatMap(\.children)), em(typography.listIndent))
     case .code(_, let lines):
       var widest: CGFloat = 0
-      for line in lines {
-        if case .segment(let index)? = line.atoms.first { widest = Swift.max(widest, prepared.segments[index].width) }
-      }
+      for line in lines { widest = Swift.max(widest, lineWidth(line)) }
       let width = widest + em(typography.codePadding) * 2
       return (width, width)
     case .diagram(_, let code):

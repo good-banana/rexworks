@@ -23,6 +23,7 @@ struct Run {
   var strutBelow: CGFloat
   var minWidth: CGFloat
   var maxWidth: CGFloat
+  var isRightToLeft: Bool
 }
 
 struct ImageAtom {
@@ -72,6 +73,7 @@ struct CellNode {
   var id: BlockID
   var children: [Node]
   var alignment: TableAlignment
+  var isHeader: Bool
   var columnSpan: Int
   var rowSpan: Int
 }

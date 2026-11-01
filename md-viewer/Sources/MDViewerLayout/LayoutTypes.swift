@@ -37,7 +37,7 @@ public struct TextStyle: Hashable, Sendable {
   public var link: String?
 }
 
-public struct ShapedSegment {
+public struct ShapedSegment: @unchecked Sendable {
   public let range: Range<Int>
   public let line: CTLine
   public let lineStart: Int
@@ -56,6 +56,10 @@ public struct ShapedSegment {
   let breakAfter: Bool
   let boxGroup: Int?
   let affectsLineHeight: Bool
+  public let bidiLevel: Int
+  public let drawOffset: CGFloat
+
+  public var isRightToLeft: Bool { bidiLevel % 2 == 1 }
 
   var advance: CGFloat { leadingPad + width + trailingPad }
   var visibleAdvance: CGFloat { leadingPad + width - trailingWhitespace + trailingPad }
@@ -63,6 +67,52 @@ public struct ShapedSegment {
   public func offset(at globalIndex: Int) -> CGFloat {
     let local = min(max(globalIndex, range.lowerBound), range.upperBound) - range.lowerBound
     return CTLineGetOffsetForStringIndex(line, lineStart + local, nil)
+  }
+
+  func caretOffsets() -> [CGFloat] {
+    let count = range.count
+    var carets = [CGFloat](repeating: .nan, count: count + 1)
+    var trailing = [CGFloat](repeating: .nan, count: count)
+    CTLineEnumerateCaretOffsets(line) { offset, index, leadingEdge, _ in
+      let local = index - lineStart
+      guard local >= 0, local < count else { return }
+      if leadingEdge {
+        if carets[local].isNaN { carets[local] = offset }
+      } else if trailing[local].isNaN {
+        trailing[local] = offset
+      }
+    }
+    if count > 0 { carets[count] = trailing[count - 1].isNaN ? width : trailing[count - 1] }
+    var previous: CGFloat = 0
+    for index in carets.indices {
+      if carets[index].isNaN { carets[index] = previous }
+      previous = carets[index]
+    }
+    return carets
+  }
+
+  public func span(from lower: Int, to upper: Int) -> ClosedRange<CGFloat>? {
+    let start = lineStart + min(max(lower, range.lowerBound), range.upperBound) - range.lowerBound
+    let end = lineStart + min(max(upper, range.lowerBound), range.upperBound) - range.lowerBound
+    guard start < end else { return nil }
+    var low = CGFloat.infinity
+    var high = -CGFloat.infinity
+    for run in CTLineGetGlyphRuns(line) as? [CTRun] ?? [] {
+      let count = CTRunGetGlyphCount(run)
+      guard count > 0 else { continue }
+      var indices = [CFIndex](repeating: 0, count: count)
+      var positions = [CGPoint](repeating: .zero, count: count)
+      var advances = [CGSize](repeating: .zero, count: count)
+      let all = CFRange(location: 0, length: count)
+      CTRunGetStringIndices(run, all, &indices)
+      CTRunGetPositions(run, all, &positions)
+      CTRunGetAdvances(run, all, &advances)
+      for glyph in 0..<count where indices[glyph] >= start && indices[glyph] < end {
+        low = min(low, positions[glyph].x)
+        high = max(high, positions[glyph].x + advances[glyph].width)
+      }
+    }
+    return low <= high ? low...high : nil
   }
 
   public func index(at x: CGFloat) -> Int {
@@ -77,7 +127,7 @@ public enum LabelRole: Hashable, Sendable {
   case alertTitle(AlertKind)
 }
 
-public struct ShapedLabel {
+public struct ShapedLabel: @unchecked Sendable {
   public let text: String
   public let line: CTLine
   public let width: CGFloat
@@ -165,7 +215,7 @@ public struct ImageBox: Hashable, Sendable {
 public enum HitTarget: Hashable, Sendable {
   case link(String)
   case detailsToggle(BlockID)
-  case copyCode(BlockID)
+  case copyCode(BlockID, language: String?)
   case task(BlockID, checked: Bool)
 }
 
@@ -175,11 +225,17 @@ public struct TargetArea: Hashable, Sendable {
   public var region: BlockID?
 }
 
+public enum ScrollRegionKind: Hashable, Sendable {
+  case codeBlock(language: String?)
+  case table
+}
+
 public struct ScrollRegion: Hashable, Sendable {
   public var id: BlockID
   public var rect: CGRect
   public var contentWidth: CGFloat
   public var offset: CGFloat
+  public var kind: ScrollRegionKind
 
   public var maxOffset: CGFloat { max(0, contentWidth - rect.width) }
 }
@@ -205,18 +261,18 @@ public struct HitResult: Hashable, Sendable {
   public var region: BlockID?
 }
 
-public struct LayoutInput {
+public struct LayoutInput: Sendable {
   public var width: CGFloat
   public var expandedDetails: Set<BlockID>
   public var prefersDark: Bool
   public var scrollOffsets: [BlockID: CGFloat]
-  public var imageSize: (String) -> CGSize?
-  public var diagramSize: (String) -> CGSize?
+  public var imageSize: @Sendable (String) -> CGSize?
+  public var diagramSize: @Sendable (String) -> CGSize?
 
   public init(
     width: CGFloat, expandedDetails: Set<BlockID> = [], prefersDark: Bool = false,
-    scrollOffsets: [BlockID: CGFloat] = [:], imageSize: @escaping (String) -> CGSize? = { _ in nil },
-    diagramSize: @escaping (String) -> CGSize? = { _ in nil }
+    scrollOffsets: [BlockID: CGFloat] = [:], imageSize: @escaping @Sendable (String) -> CGSize? = { _ in nil },
+    diagramSize: @escaping @Sendable (String) -> CGSize? = { _ in nil }
   ) {
     self.width = width
     self.expandedDetails = expandedDetails
