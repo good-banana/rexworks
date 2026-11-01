@@ -375,31 +375,80 @@ final class ThemeResolverTests: XCTestCase {
 }
 
 final class ThemeRefreshSchedulerTests: XCTestCase {
-  func testColorSchemeRightAfterTimedOutQueryTriggersNoSecondResolve() {
+  private func timedOutScheduler() -> ThemeRefreshScheduler {
     var scheduler = ThemeRefreshScheduler()
     scheduler.request(.colorScheme, now: 0)
     XCTAssertFalse(scheduler.start(now: 0.05))
-    XCTAssertTrue(scheduler.start(now: 0.1))
+    XCTAssertTrue(scheduler.start(now: 0.11))
     scheduler.finish(now: 0.3, queryTimedOut: true)
-    scheduler.request(.colorScheme, now: 0.35)
-    XCTAssertNil(scheduler.dueAt)
-    XCTAssertFalse(scheduler.start(now: 1))
-    scheduler.request(.colorScheme, now: 0.61)
-    XCTAssertTrue(scheduler.start(now: 0.72))
+    return scheduler
   }
 
-  func testColorSchemeDuringResolveIsIgnoredButReloadQueuesOne() {
+  func testLateRepliesAfterTimeoutStartNoResolveUntilDeviceAttributes() {
+    var scheduler = timedOutScheduler()
+    XCTAssertFalse(scheduler.sendsColorSchemeQuery)
+    scheduler.request(.colorScheme, now: 2.3)
+    scheduler.deviceAttributesReceived()
+    XCTAssertNil(scheduler.dueAt)
+    XCTAssertFalse(scheduler.start(now: 3))
+    XCTAssertTrue(scheduler.sendsColorSchemeQuery)
+    scheduler.request(.colorScheme, now: 4)
+    XCTAssertTrue(scheduler.start(now: 4.11))
+  }
+
+  func testWaitForLateReplyExpires() {
+    var scheduler = timedOutScheduler()
+    scheduler.request(.colorScheme, now: 5)
+    XCTAssertNil(scheduler.dueAt)
+    scheduler.request(.colorScheme, now: 10.3 + 0.01)
+    XCTAssertTrue(scheduler.sendsColorSchemeQuery)
+    XCTAssertTrue(scheduler.start(now: 10.5))
+  }
+
+  func testReloadWhileWaitingStillResolvesWithoutSchemeQuery() {
+    var scheduler = timedOutScheduler()
+    scheduler.request(.reload, now: 1)
+    XCTAssertTrue(scheduler.start(now: 1.11))
+    XCTAssertFalse(scheduler.sendsColorSchemeQuery)
+    scheduler.finish(now: 1.2, queryTimedOut: false)
+    XCTAssertTrue(scheduler.sendsColorSchemeQuery)
+  }
+
+  func testColorSchemeDuringResolveSchedulesOneTrailingResolve() {
     var scheduler = ThemeRefreshScheduler()
     scheduler.request(.reload, now: 0)
     XCTAssertTrue(scheduler.start(now: 0.1))
     scheduler.request(.colorScheme, now: 0.12)
+    scheduler.request(.colorScheme, now: 0.13)
     XCTAssertNil(scheduler.dueAt)
+    scheduler.finish(now: 0.5, queryTimedOut: false)
+    XCTAssertFalse(scheduler.start(now: 0.55))
+    XCTAssertTrue(scheduler.start(now: 0.61))
+    scheduler.finish(now: 0.7, queryTimedOut: false)
+    XCTAssertFalse(scheduler.start(now: 2))
+  }
+
+  func testColorSchemeDuringTimedOutResolveIsDiscarded() {
+    var scheduler = ThemeRefreshScheduler()
+    scheduler.request(.reload, now: 0)
+    XCTAssertTrue(scheduler.start(now: 0.1))
+    scheduler.request(.colorScheme, now: 0.12)
+    scheduler.finish(now: 0.3, queryTimedOut: true)
+    XCTAssertNil(scheduler.dueAt)
+    XCTAssertFalse(scheduler.start(now: 2))
+    scheduler.deviceAttributesReceived()
+    XCTAssertFalse(scheduler.start(now: 3))
+  }
+
+  func testReloadDuringResolveQueuesExactlyOne() {
+    var scheduler = ThemeRefreshScheduler()
+    scheduler.request(.reload, now: 0)
+    XCTAssertTrue(scheduler.start(now: 0.1))
     scheduler.request(.reload, now: 0.13)
     scheduler.request(.reload, now: 0.14)
     XCTAssertFalse(scheduler.start(now: 0.5))
     scheduler.finish(now: 0.5, queryTimedOut: false)
     XCTAssertTrue(scheduler.start(now: 0.5))
-    XCTAssertFalse(scheduler.start(now: 0.6))
     scheduler.finish(now: 0.6, queryTimedOut: false)
     XCTAssertFalse(scheduler.start(now: 2))
   }
@@ -410,17 +459,8 @@ final class ThemeRefreshSchedulerTests: XCTestCase {
     scheduler.request(.colorScheme, now: 0.05)
     scheduler.request(.colorScheme, now: 0.09)
     XCTAssertFalse(scheduler.start(now: 0.15))
-    XCTAssertTrue(scheduler.start(now: 0.19))
-    scheduler.finish(now: 0.2, queryTimedOut: false)
+    XCTAssertTrue(scheduler.start(now: 0.2))
+    scheduler.finish(now: 0.25, queryTimedOut: false)
     XCTAssertFalse(scheduler.start(now: 1))
-  }
-
-  func testReloadIsNotSuppressedAfterTimeout() {
-    var scheduler = ThemeRefreshScheduler()
-    scheduler.request(.reload, now: 0)
-    XCTAssertTrue(scheduler.start(now: 0.1))
-    scheduler.finish(now: 0.3, queryTimedOut: true)
-    scheduler.request(.reload, now: 0.31)
-    XCTAssertTrue(scheduler.start(now: 0.42))
   }
 }

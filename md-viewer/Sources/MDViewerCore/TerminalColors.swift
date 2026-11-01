@@ -126,11 +126,11 @@ public struct TerminalColorSet: Equatable, Sendable {
 }
 
 public enum TerminalColorQuery {
-  public static func request(includePalette: Bool) -> String {
+  public static func request(includePalette: Bool, includeColorSchemeQuery: Bool = true) -> String {
     let dynamic = "\u{1b}]10;?\u{1b}\\\u{1b}]11;?\u{1b}\\"
     let palette =
       includePalette ? (0..<TerminalColorSet.paletteSize).map { "\u{1b}]4;\($0);?\u{1b}\\" }.joined() : ""
-    return dynamic + palette + colorSchemeQuery + primaryDeviceAttributes
+    return dynamic + palette + (includeColorSchemeQuery ? colorSchemeQuery : "") + primaryDeviceAttributes
   }
 
   public static let colorSchemeQuery = "\u{1b}[?996n"
@@ -143,10 +143,12 @@ public struct TerminalColorReplyReader {
   public private(set) var colors = TerminalColorSet()
   public private(set) var terminalFinishedReplying = false
   private let expectsPalette: Bool
+  private let expectsColorScheme: Bool
   private var pending: [UInt8] = []
 
-  public init(expectsPalette: Bool) {
+  public init(expectsPalette: Bool, expectsColorScheme: Bool = true) {
     self.expectsPalette = expectsPalette
+    self.expectsColorScheme = expectsColorScheme
   }
 
   public var isComplete: Bool {
@@ -154,7 +156,7 @@ public struct TerminalColorReplyReader {
   }
 
   private var allColorsReceived: Bool {
-    colors.colorScheme != nil && colors.foreground != nil && colors.background != nil
+    (!expectsColorScheme || colors.colorScheme != nil) && colors.foreground != nil && colors.background != nil
       && (!expectsPalette || !colors.palette.contains(nil))
   }
 

@@ -101,7 +101,9 @@ enum Terminal {
     return (colors.foreground?.tuple, colors.background?.tuple)
   }
 
-  static func queryColorSet(includePalette: Bool = true, timeoutMilliseconds: Int = 200) -> (
+  static func queryColorSet(
+    includePalette: Bool = true, includeColorSchemeQuery: Bool = true, timeoutMilliseconds: Int = 200
+  ) -> (
     colors: TerminalColorSet, timedOut: Bool
   ) {
     let wasRaw = rawModeActive
@@ -116,8 +118,8 @@ enum Terminal {
       if !wasRaw { tcsetattr(STDIN_FILENO, TCSAFLUSH, &original) }
     }
 
-    write(TerminalColorQuery.request(includePalette: includePalette))
-    var reader = TerminalColorReplyReader(expectsPalette: includePalette)
+    write(TerminalColorQuery.request(includePalette: includePalette, includeColorSchemeQuery: includeColorSchemeQuery))
+    var reader = TerminalColorReplyReader(expectsPalette: includePalette, expectsColorScheme: includeColorSchemeQuery)
     let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeoutMilliseconds) * 1_000_000
     while !reader.isComplete {
       let now = DispatchTime.now().uptimeNanoseconds
@@ -135,10 +137,11 @@ enum Terminal {
       rexPath: config?.rexPath ?? locateExecutable("rex"), environment: ProcessInfo.processInfo.environment)
   }
 
-  static func resolveTheme(themeSourceBlock: String?, timeoutMilliseconds: Int = 200) -> (
-    theme: ResolvedTheme, queryTimedOut: Bool
-  ) {
-    let query = queryColorSet(timeoutMilliseconds: timeoutMilliseconds)
+  static func resolveTheme(
+    themeSourceBlock: String?, includeColorSchemeQuery: Bool = true, timeoutMilliseconds: Int = 200
+  ) -> (theme: ResolvedTheme, queryTimedOut: Bool) {
+    let query = queryColorSet(
+      includeColorSchemeQuery: includeColorSchemeQuery, timeoutMilliseconds: timeoutMilliseconds)
     return (themeResolver().resolve(inBand: query.colors, sourceBlock: themeSourceBlock), query.timedOut)
   }
 

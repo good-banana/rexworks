@@ -18,6 +18,15 @@ final class ColorQueryTests: XCTestCase {
       TerminalColorQuery.request(includePalette: false), "\u{1b}]10;?\(st)\u{1b}]11;?\(st)\u{1b}[?996n\u{1b}[c")
   }
 
+  func testSchemeQueryCanBeLeftOut() {
+    let request = TerminalColorQuery.request(includePalette: false, includeColorSchemeQuery: false)
+    XCTAssertEqual(request, "\u{1b}]10;?\(st)\u{1b}]11;?\(st)\u{1b}[c")
+    var reader = TerminalColorReplyReader(expectsPalette: false, expectsColorScheme: false)
+    reader.feed(Array("\u{1b}]10;rgb:ff/ff/ff\(st)\u{1b}]11;rgb:00/00/00\(st)".utf8))
+    XCTAssertTrue(reader.isComplete)
+    XCTAssertNil(reader.colors.colorScheme)
+  }
+
   func testParsesEveryReplyForm() {
     let fourDigit = parseOSCColorReply("4;12;rgb:7a7a/a6a6/dada")
     XCTAssertEqual(fourDigit?.target, .palette(12))

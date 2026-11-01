@@ -130,4 +130,13 @@ final class TerminalInputTests: XCTestCase {
     XCTAssertEqual(
       p.feed(Array("\u{1b}];k".utf8)), [.key(.escape), .key(.char("]")), .key(.char(";")), .key(.char("k"))])
   }
+
+  func testDeviceAttributesReplies() {
+    var p = InputParser()
+    XCTAssertEqual(p.feed(Array("\u{1b}[?62;22c".utf8)), [.deviceAttributes])
+    XCTAssertEqual(p.feed(Array("\u{1b}[?997;1n\u{1b}[?6".utf8)), [.colorScheme(.dark)])
+    XCTAssertEqual(p.feed(Array("2cj".utf8)), [.deviceAttributes, .key(.char("j"))])
+    XCTAssertEqual(p.feed(Array("\u{1b}[c\u{1b}[>1;10;0c".utf8)), [])
+    XCTAssertFalse(InputEvent.deviceAttributes.requestsThemeResolve)
+  }
 }

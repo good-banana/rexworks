@@ -52,6 +52,7 @@ public enum InputEvent: Equatable {
   case key(Key)
   case mouse(MouseEvent)
   case colorScheme(ColorScheme)
+  case deviceAttributes
 
   public var requestsThemeResolve: Bool {
     switch self {
@@ -175,6 +176,7 @@ public struct InputParser {
     if let scheme = ColorScheme(reportParams: params, final: final) {
       return .colorScheme(scheme)
     }
+    if final == 0x63, params.hasPrefix("?") { return .deviceAttributes }
     switch final {
     case 0x41: return .key(.up)
     case 0x42: return .key(.down)

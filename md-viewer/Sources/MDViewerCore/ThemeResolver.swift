@@ -316,16 +316,28 @@ public struct ThemeRefreshScheduler: Equatable, Sendable {
   }
 
   public static let debounce: TimeInterval = 0.1
-  public static let quietAfterTimeout: TimeInterval = 0.3
+  public static let maximumLateReplyWait: TimeInterval = 10
 
   public private(set) var inFlight = false
   public private(set) var dueAt: TimeInterval?
-  private var ignoreColorSchemeUntil: TimeInterval = -.infinity
+  private var pendingColorScheme = false
+  private var awaitingLateReplySince: TimeInterval?
 
   public init() {}
 
+  public var sendsColorSchemeQuery: Bool { awaitingLateReplySince == nil }
+
   public mutating func request(_ trigger: Trigger, now: TimeInterval) {
-    if trigger == .colorScheme, inFlight || now < ignoreColorSchemeUntil { return }
+    if trigger == .colorScheme {
+      if let since = awaitingLateReplySince {
+        guard now - since >= Self.maximumLateReplyWait else { return }
+        awaitingLateReplySince = nil
+      }
+      if inFlight {
+        pendingColorScheme = true
+        return
+      }
+    }
     dueAt = now + Self.debounce
   }
 
@@ -338,6 +350,16 @@ public struct ThemeRefreshScheduler: Equatable, Sendable {
 
   public mutating func finish(now: TimeInterval, queryTimedOut: Bool) {
     inFlight = false
-    if queryTimedOut { ignoreColorSchemeUntil = now + Self.quietAfterTimeout }
+    if queryTimedOut {
+      awaitingLateReplySince = now
+    } else {
+      awaitingLateReplySince = nil
+      if pendingColorScheme { dueAt = now + Self.debounce }
+    }
+    pendingColorScheme = false
+  }
+
+  public mutating func deviceAttributesReceived() {
+    awaitingLateReplySince = nil
   }
 }
