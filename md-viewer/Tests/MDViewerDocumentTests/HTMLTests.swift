@@ -23,7 +23,7 @@ final class HTMLTests: XCTestCase {
     XCTAssertEqual(
       paragraphShape("x <a href=\"https://a.example\" title='T'>go *now*</a>"),
       "\"x \" link(https://a.example title=T: \"go \" em(\"now\"))")
-    XCTAssertEqual(paragraphShape("x <a name=\"anchor\">named</a>"), "\"x named\"")
+    XCTAssertEqual(paragraphShape("x <a name=\"anchor\">named</a>"), "\"x \" anchor(anchor) \"named\"")
     XCTAssertEqual(
       paragraphShape("line<br>next<br/>last<BR />end"), "\"line\" hard \"next\" hard \"last\" hard \"end\"")
     XCTAssertEqual(

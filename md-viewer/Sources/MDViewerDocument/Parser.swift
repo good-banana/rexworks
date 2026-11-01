@@ -40,9 +40,9 @@ private struct Converter {
     guard let root = cmark_parser_finish(parser) else { return [] }
     defer { cmark_node_free(root) }
     footnoteLabels = children(root).filter { cmark_node_get_type($0) == CMARK_NODE_FOOTNOTE_DEFINITION }.map(literal)
-    let documentRange = range(root)
+    let documentRange = shifted(rawRange(root))
     let builder = TreeBuilder(range: documentRange)
-    emitChildren(of: root, into: builder)
+    emit(root, into: builder)
     return Lowering().blocks(builder.finish(end: documentRange.end).children)
   }
 
@@ -68,7 +68,7 @@ private struct Converter {
     pointer.map { String(cString: $0) } ?? ""
   }
 
-  private func range(_ node: Node) -> SourceRange {
+  private func rawRange(_ node: Node) -> SourceRange {
     let startLine = Int(cmark_node_get_start_line(node))
     var startColumn = Int(cmark_node_get_start_column(node))
     var endLine = Int(cmark_node_get_end_line(node))
@@ -89,8 +89,19 @@ private struct Converter {
       endColumn = lineLength(endLine)
     }
     return SourceRange(
-      start: SourcePosition(line: startLine + lineOffset, column: startColumn),
-      end: SourcePosition(line: endLine + lineOffset, column: endColumn))
+      start: SourcePosition(line: startLine, column: clamped(startColumn, line: startLine)),
+      end: SourcePosition(line: endLine, column: clamped(endColumn, line: endLine)))
+  }
+
+  private func clamped(_ column: Int, line: Int) -> Int {
+    guard lines.indices.contains(line - 1) else { return column }
+    return min(column, max(lineLength(line), 1))
+  }
+
+  private func shifted(_ range: SourceRange) -> SourceRange {
+    SourceRange(
+      start: SourcePosition(line: range.start.line + lineOffset, column: range.start.column),
+      end: SourcePosition(line: range.end.line + lineOffset, column: range.end.column))
   }
 
   private func lineLength(_ line: Int) -> Int {
@@ -107,44 +118,171 @@ private struct Converter {
       .map { $0 + 1 }
   }
 
-  private mutating func emitChildren(of parent: Node, into builder: TreeBuilder) {
-    var previousEnd = range(parent).start
-    for child in children(parent) {
-      var childRange = range(child)
-      if childRange.start.line == lineOffset {
-        let start = SourcePosition(line: previousEnd.line, column: previousEnd.column + 1)
-        childRange = SourceRange(start: start, end: start)
+  private struct Cursor {
+    var line: Int
+    var index: Int
+  }
+
+  private struct Frame {
+    var cursor: Cursor
+    var closes: SourcePosition?
+  }
+
+  private mutating func emit(_ root: Node, into builder: TreeBuilder) {
+    guard let iterator = cmark_iter_new(root) else { return }
+    defer { cmark_iter_free(iterator) }
+    var frames: [Frame] = []
+    while true {
+      let event = cmark_iter_next(iterator)
+      guard event != CMARK_EVENT_DONE, let node = cmark_iter_get_node(iterator) else { break }
+      if event == CMARK_EVENT_EXIT {
+        if let end = frames.popLast()?.closes { builder.closeMarkdown(end: end) }
+        continue
       }
-      previousEnd = childRange.end
-      emit(child, range: childRange, into: builder)
+      guard node != root else {
+        let start = rawRange(root).start
+        frames.append(Frame(cursor: Cursor(line: start.line, index: start.column - 1), closes: nil))
+        continue
+      }
+      let cursor = frames[frames.count - 1].cursor
+      let raw = locatedRange(node, after: cursor)
+      frames[frames.count - 1].cursor = next(after: node, raw)
+      let range = shifted(raw)
+      if let tag = containerTag(node) {
+        builder.openMarkdown(tag, range: range)
+        frames.append(Frame(cursor: Cursor(line: raw.start.line, index: raw.start.column - 1), closes: range.end))
+      } else {
+        emitLeaf(node, range: range, into: builder)
+        if !isLeaf(node) {
+          frames.append(Frame(cursor: Cursor(line: raw.start.line, index: raw.start.column - 1), closes: nil))
+        }
+      }
     }
   }
 
-  private mutating func emitContainer(_ tag: MarkdownTag, _ node: Node, range: SourceRange, into builder: TreeBuilder) {
-    builder.openMarkdown(tag, range: range)
-    emitChildren(of: node, into: builder)
-    builder.closeMarkdown(end: range.end)
+  private func isLeaf(_ node: Node) -> Bool {
+    switch cmark_node_get_type(node) {
+    case CMARK_NODE_HTML_BLOCK, CMARK_NODE_THEMATIC_BREAK, CMARK_NODE_CODE_BLOCK, CMARK_NODE_TEXT,
+      CMARK_NODE_SOFTBREAK, CMARK_NODE_LINEBREAK, CMARK_NODE_CODE, CMARK_NODE_HTML_INLINE:
+      true
+    default:
+      false
+    }
   }
 
-  private mutating func emit(_ node: Node, range: SourceRange, into builder: TreeBuilder) {
+  private func next(after node: Node, _ range: SourceRange) -> Cursor {
+    switch cmark_node_get_type(node) {
+    case CMARK_NODE_SOFTBREAK, CMARK_NODE_LINEBREAK: Cursor(line: range.start.line + 1, index: 0)
+    default: Cursor(line: range.end.line, index: range.end.column)
+    }
+  }
+
+  private func locatedRange(_ node: Node, after cursor: Cursor) -> SourceRange {
+    let raw = rawRange(node)
+    let point = SourceRange(
+      start: SourcePosition(line: cursor.line, column: cursor.index + 1),
+      end: SourcePosition(line: cursor.line, column: cursor.index + 1))
+    switch cmark_node_get_type(node) {
+    case CMARK_NODE_TEXT:
+      return locate(literal(node), after: cursor, bracketed: false) ?? (raw.start.line == 0 ? point : raw)
+    case CMARK_NODE_SOFTBREAK, CMARK_NODE_LINEBREAK:
+      let column = min(cursor.index + 1, max(lineLength(cursor.line), 1))
+      let position = SourcePosition(line: cursor.line, column: column)
+      return SourceRange(start: position, end: position)
+    case CMARK_NODE_LINK:
+      let content = children(node)
+      if content.count == 1, cmark_node_get_type(content[0]) == CMARK_NODE_TEXT,
+        isAutolink(node, destination: string(cmark_node_get_url(node))),
+        let located = locate(literal(content[0]), after: cursor, bracketed: true)
+      {
+        return located
+      }
+      return raw.start.line == 0 ? point : raw
+    default:
+      return raw.start.line == 0 ? point : raw
+    }
+  }
+
+  private func locate(_ text: String, after cursor: Cursor, bracketed: Bool) -> SourceRange? {
+    guard lines.indices.contains(cursor.line - 1), !text.isEmpty else { return nil }
+    let line = Array(lines[cursor.line - 1])
+    let needle = Array(text.utf8)
+    var index = max(cursor.index, 0)
+    while index + needle.count <= line.count {
+      if line[index..<(index + needle.count)].elementsEqual(needle) {
+        var start = index
+        var end = index + needle.count
+        if bracketed, start > 0, line[start - 1] == UInt8(ascii: "<"), end < line.count,
+          line[end] == UInt8(ascii: ">")
+        {
+          start -= 1
+          end += 1
+        }
+        return SourceRange(
+          start: SourcePosition(line: cursor.line, column: start + 1),
+          end: SourcePosition(line: cursor.line, column: end))
+      }
+      index += 1
+    }
+    return nil
+  }
+
+  private mutating func containerTag(_ node: Node) -> MarkdownTag? {
     switch cmark_node_get_type(node) {
     case CMARK_NODE_PARAGRAPH:
-      emitContainer(.paragraph, node, range: range, into: builder)
+      return .paragraph
     case CMARK_NODE_HEADING:
-      let tag = MarkdownTag.heading(level: Int(cmark_node_get_heading_level(node)), slug: slugger.slug(slugText(node)))
-      emitContainer(tag, node, range: range, into: builder)
+      return .heading(level: Int(cmark_node_get_heading_level(node)), slug: slugger.slug(slugText(node)))
     case CMARK_NODE_BLOCK_QUOTE:
-      emitContainer(.blockQuote(alert: alertKind(node)), node, range: range, into: builder)
+      return .blockQuote(alert: alertKind(node))
     case CMARK_NODE_LIST:
       let kind: List.Kind =
         cmark_node_get_list_type(node) == CMARK_ORDERED_LIST
         ? .ordered(start: Int(cmark_node_get_list_start(node))) : .bullet
-      emitContainer(.list(kind, isTight: cmark_node_get_list_tight(node) != 0), node, range: range, into: builder)
+      return .list(kind, isTight: cmark_node_get_list_tight(node) != 0)
     case CMARK_NODE_ITEM:
       let task: TaskState? =
         typeString(node) == "tasklist"
         ? (cmark_gfm_extensions_get_tasklist_item_checked(node) ? .checked : .unchecked) : nil
-      emitContainer(.item(task), node, range: range, into: builder)
+      return .item(task)
+    case CMARK_NODE_FOOTNOTE_DEFINITION:
+      let label = literal(node)
+      return .footnoteDefinition(
+        label: label, number: (footnoteLabels.firstIndex(of: label) ?? footnoteLabels.count) + 1)
+    case CMARK_NODE_EMPH:
+      return .emphasis
+    case CMARK_NODE_STRONG:
+      return .strong
+    case CMARK_NODE_LINK:
+      let destination = string(cmark_node_get_url(node))
+      return .link(
+        destination: destination, title: string(cmark_node_get_title(node)),
+        isAutolink: isAutolink(node, destination: destination))
+    case CMARK_NODE_IMAGE:
+      return .image(source: string(cmark_node_get_url(node)), title: string(cmark_node_get_title(node)))
+    default:
+      switch typeString(node) {
+      case "table":
+        let columns = Int(cmark_gfm_extensions_get_table_columns(node))
+        return .table(
+          (0..<columns).map { index in
+            switch cmark_gfm_extensions_get_table_alignments(node)?[index] {
+            case UInt8(ascii: "l"): .left
+            case UInt8(ascii: "c"): .center
+            case UInt8(ascii: "r"): .right
+            default: .none
+            }
+          })
+      case "table_header", "table_row": return .tableRow
+      case "table_cell": return .tableCell
+      case "strikethrough": return .strikethrough
+      default: return nil
+      }
+    }
+  }
+
+  private func emitLeaf(_ node: Node, range: SourceRange, into builder: TreeBuilder) {
+    switch cmark_node_get_type(node) {
     case CMARK_NODE_CODE_BLOCK:
       var length: Int32 = 0
       var offset: Int32 = 0
@@ -156,10 +294,6 @@ private struct Converter {
       for token in HTMLTokenizer.tokenize(literal(node)) { builder.html(token, range: range, fromBlock: true) }
     case CMARK_NODE_THEMATIC_BREAK:
       builder.leafMarkdown(.thematicBreak, range: range)
-    case CMARK_NODE_FOOTNOTE_DEFINITION:
-      let label = literal(node)
-      let number = (footnoteLabels.firstIndex(of: label) ?? footnoteLabels.count) + 1
-      emitContainer(.footnoteDefinition(label: label, number: number), node, range: range, into: builder)
     case CMARK_NODE_TEXT:
       builder.text(literal(node), range: range, fromHTML: false)
     case CMARK_NODE_SOFTBREAK:
@@ -170,45 +304,12 @@ private struct Converter {
       builder.leafMarkdown(.code(literal(node)), range: range)
     case CMARK_NODE_HTML_INLINE:
       for token in HTMLTokenizer.tokenize(literal(node)) { builder.html(token, range: range, fromBlock: false) }
-    case CMARK_NODE_EMPH:
-      emitContainer(.emphasis, node, range: range, into: builder)
-    case CMARK_NODE_STRONG:
-      emitContainer(.strong, node, range: range, into: builder)
-    case CMARK_NODE_LINK:
-      let destination = string(cmark_node_get_url(node))
-      let tag = MarkdownTag.link(
-        destination: destination, title: string(cmark_node_get_title(node)),
-        isAutolink: isAutolink(node, destination: destination))
-      emitContainer(tag, node, range: range, into: builder)
-    case CMARK_NODE_IMAGE:
-      let tag = MarkdownTag.image(source: string(cmark_node_get_url(node)), title: string(cmark_node_get_title(node)))
-      emitContainer(tag, node, range: range, into: builder)
     case CMARK_NODE_FOOTNOTE_REFERENCE:
       let number = Int(literal(node)) ?? 0
       let label = footnoteLabels.indices.contains(number - 1) ? footnoteLabels[number - 1] : ""
       builder.leafMarkdown(.footnoteReference(label: label, number: number), range: range)
     default:
-      switch typeString(node) {
-      case "table":
-        let columns = Int(cmark_gfm_extensions_get_table_columns(node))
-        let alignments: [TableAlignment] = (0..<columns).map { index in
-          switch cmark_gfm_extensions_get_table_alignments(node)?[index] {
-          case UInt8(ascii: "l"): .left
-          case UInt8(ascii: "c"): .center
-          case UInt8(ascii: "r"): .right
-          default: .none
-          }
-        }
-        emitContainer(.table(alignments), node, range: range, into: builder)
-      case "table_header", "table_row":
-        emitContainer(.tableRow, node, range: range, into: builder)
-      case "table_cell":
-        emitContainer(.tableCell, node, range: range, into: builder)
-      case "strikethrough":
-        emitContainer(.strikethrough, node, range: range, into: builder)
-      default:
-        break
-      }
+      break
     }
   }
 
@@ -242,14 +343,22 @@ private struct Converter {
   }
 
   private func slugText(_ node: Node) -> String {
-    children(node).map { child -> String in
+    guard let iterator = cmark_iter_new(node) else { return "" }
+    defer { cmark_iter_free(iterator) }
+    var text = ""
+    var imageDepth = 0
+    while true {
+      let event = cmark_iter_next(iterator)
+      guard event != CMARK_EVENT_DONE, let child = cmark_iter_get_node(iterator) else { break }
       switch cmark_node_get_type(child) {
-      case CMARK_NODE_TEXT, CMARK_NODE_CODE: literal(child)
-      case CMARK_NODE_IMAGE, CMARK_NODE_HTML_INLINE, CMARK_NODE_FOOTNOTE_REFERENCE, CMARK_NODE_SOFTBREAK,
-        CMARK_NODE_LINEBREAK:
-        ""
-      default: slugText(child)
+      case CMARK_NODE_IMAGE:
+        imageDepth += event == CMARK_EVENT_ENTER ? 1 : -1
+      case CMARK_NODE_TEXT, CMARK_NODE_CODE:
+        if imageDepth == 0 { text += literal(child) }
+      default:
+        break
       }
-    }.joined()
+    }
+    return text
   }
 }

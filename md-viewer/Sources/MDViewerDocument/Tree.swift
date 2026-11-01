@@ -44,6 +44,7 @@ final class TreeElement {
   var children: [TreeNode] = []
   let start: SourcePosition
   var end: SourcePosition
+  var closedExplicitly = false
 
   init(_ tag: TreeTag, attributes: [String: String] = [:], range: SourceRange) {
     self.tag = tag
@@ -60,6 +61,13 @@ final class TreeElement {
 
   var isMarkdown: Bool {
     if case .markdown = tag { true } else { false }
+  }
+
+  var elementName: String? {
+    switch tag {
+    case .html(let name), .dropped(let name): name
+    default: nil
+    }
   }
 }
 
@@ -96,7 +104,7 @@ enum HTMLVocabulary {
   static let closesParagraph: Set<String> = blockLevel.subtracting(["li", "td", "th", "tr", "summary"])
   static let allowedAttributes: Set<String> = [
     "align", "href", "title", "src", "srcset", "alt", "width", "height", "media", "open", "start", "colspan",
-    "rowspan",
+    "rowspan", "id", "name",
   ]
 
   static func isKnown(_ name: String) -> Bool {
@@ -105,8 +113,12 @@ enum HTMLVocabulary {
 }
 
 final class TreeBuilder {
+  static let maximumDepth = 100
+
   let root: TreeElement
   private var stack: [TreeElement]
+  private var markdownOpens: [Bool] = []
+  private var openCounts: [String: Int] = [:]
 
   init(range: SourceRange) {
     root = TreeElement(.root, range: range)
@@ -114,17 +126,24 @@ final class TreeBuilder {
   }
 
   private var current: TreeElement { stack[stack.count - 1] }
+  private var isFull: Bool { stack.count > Self.maximumDepth }
 
   func openMarkdown(_ tag: MarkdownTag, range: SourceRange) {
     if tag.isBlock { closeHTML(["p"], boundary: []) }
+    guard !isFull else {
+      markdownOpens.append(false)
+      return
+    }
     let element = TreeElement(.markdown(tag), range: range)
     current.children.append(.element(element))
-    stack.append(element)
+    push(element)
+    markdownOpens.append(true)
   }
 
   func closeMarkdown(end: SourcePosition) {
+    guard markdownOpens.popLast() == true else { return }
     while stack.count > 1 {
-      let element = stack.removeLast()
+      let element = pop()
       if element.isMarkdown {
         element.end = end
         return
@@ -157,14 +176,12 @@ final class TreeBuilder {
     }
   }
 
-  private func start(
-    _ name: String, attributes: [String: String], range: SourceRange
-  ) {
+  private func start(_ name: String, attributes: [String: String], range: SourceRange) {
     if HTMLVocabulary.dropped.contains(name) {
-      guard !HTMLVocabulary.droppedVoid.contains(name) else { return }
+      guard !HTMLVocabulary.droppedVoid.contains(name), !isFull else { return }
       let element = TreeElement(.dropped(name), range: range)
       current.children.append(.element(element))
-      stack.append(element)
+      push(element)
       return
     }
     guard HTMLVocabulary.isKnown(name) else { return }
@@ -185,31 +202,44 @@ final class TreeBuilder {
         closeHTML([open], boundary: [])
       }
     }
+    let isVoid = HTMLVocabulary.void.contains(name)
+    guard isVoid || !isFull else { return }
     let kept = attributes.filter { HTMLVocabulary.allowedAttributes.contains($0.key) }
     let element = TreeElement(.html(name), attributes: kept, range: range)
     current.children.append(.element(element))
-    if !HTMLVocabulary.void.contains(name) { stack.append(element) }
+    if !isVoid { push(element) }
+  }
+
+  private func push(_ element: TreeElement) {
+    stack.append(element)
+    if let name = element.elementName { openCounts[name, default: 0] += 1 }
+  }
+
+  private func pop() -> TreeElement {
+    let element = stack.removeLast()
+    if let name = element.elementName { openCounts[name, default: 1] -= 1 }
+    return element
   }
 
   private func closeHTML(_ names: Set<String>, boundary: Set<String>, explicitEnd: SourcePosition? = nil) {
+    guard names.contains(where: { openCounts[$0, default: 0] > 0 }) else { return }
     var index = stack.count - 1
     while index > 0 {
       let element = stack[index]
-      if element.isMarkdown { return }
-      let name: String
-      switch element.tag {
-      case .html(let html): name = html
-      case .dropped(let dropped): name = dropped
-      default: return
-      }
+      guard let name = element.elementName else { return }
       if names.contains(name) { break }
       if boundary.contains(name) { return }
       index -= 1
     }
     guard index > 0 else { return }
     while stack.count > index {
-      let element = stack.removeLast()
-      element.end = stack.count == index ? (explicitEnd ?? lastChildEnd(element)) : lastChildEnd(element)
+      let element = pop()
+      if stack.count == index {
+        element.end = explicitEnd ?? lastChildEnd(element)
+        element.closedExplicitly = explicitEnd != nil
+      } else {
+        element.end = lastChildEnd(element)
+      }
     }
   }
 
@@ -219,7 +249,7 @@ final class TreeBuilder {
 
   func finish(end: SourcePosition) -> TreeElement {
     while stack.count > 1 {
-      let element = stack.removeLast()
+      let element = pop()
       element.end = max(element.end, lastChildEnd(element))
     }
     root.end = end

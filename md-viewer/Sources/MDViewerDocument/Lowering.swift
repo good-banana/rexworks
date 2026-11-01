@@ -10,7 +10,7 @@ struct Lowering {
       guard !content.isEmpty, let first = run.first, let last = run.last else { return }
       result.append(Block(.plain(content), range: SourceRange(start: first.range.start, end: last.range.end)))
     }
-    for node in nodes {
+    for node in expanded(nodes) {
       switch role(node) {
       case .inline:
         run.append(node)
@@ -123,7 +123,8 @@ struct Lowering {
       return aligned(Block(.paragraph(content), range: range), alignment)
     case _ where HTMLVocabulary.headings.contains(name):
       let level = Int(String(name.dropFirst())) ?? 1
-      let heading = Heading(level: level, slug: nil, content: normalizedHTMLRun(inlines(element.children)))
+      let heading = Heading(
+        level: level, slug: element.attributes["id"], content: normalizedHTMLRun(inlines(element.children)))
       return aligned(Block(.heading(heading), range: range), alignment)
     case "div", "center":
       let content = blocks(element.children)
@@ -149,7 +150,7 @@ struct Lowering {
     case "details":
       var summary: [Inline]?
       var body: [TreeNode] = []
-      for node in element.children {
+      for node in expanded(element.children) {
         if summary == nil, case .element(let child) = node, child.htmlName == "summary" {
           summary = normalizedHTMLRun(inlines(child.children))
         } else {
@@ -188,7 +189,7 @@ struct Lowering {
       items.append(
         ListItem(task: nil, blocks: content, range: SourceRange(start: first.range.start, end: last.range.end)))
     }
-    for node in element.children {
+    for node in expanded(element.children) {
       if case .element(let child) = node, child.htmlName == "li" {
         flushStray()
         items.append(ListItem(task: nil, blocks: blocks(child.children), range: child.range))
@@ -241,11 +242,24 @@ struct Lowering {
   }
 
   private func childElements(_ element: TreeElement) -> [TreeElement] {
-    element.children.compactMap { if case .element(let child) = $0 { child } else { nil } }
+    expanded(element.children).compactMap { if case .element(let child) = $0 { child } else { nil } }
+  }
+
+  private func expanded(_ nodes: [TreeNode]) -> [TreeNode] {
+    var result: [TreeNode] = []
+    var pending = Array(nodes.reversed())
+    while let node = pending.popLast() {
+      guard case .element(let element) = node, case .dropped = element.tag else {
+        result.append(node)
+        continue
+      }
+      if !element.closedExplicitly { pending += element.children.reversed() }
+    }
+    return result
   }
 
   private func preformattedText(_ nodes: [TreeNode]) -> String {
-    nodes.map { node -> String in
+    expanded(nodes).map { node -> String in
       switch node {
       case .text(let text, _, _): return text
       case .element(let element):
@@ -257,7 +271,7 @@ struct Lowering {
 
   func inlines(_ nodes: [TreeNode]) -> [Inline] {
     var result: [Inline] = []
-    for node in nodes {
+    for node in expanded(nodes) {
       switch node {
       case .text(let text, let range, let fromHTML):
         append(Inline(.text(fromHTML ? collapsingWhitespace(text) : text), range: range), to: &result)
@@ -307,8 +321,12 @@ struct Lowering {
     let kind: Inline.Kind
     switch name {
     case "a":
-      guard let href = attributes["href"], URLSafety.isSafe(href) else { return children() }
-      kind = .link(Link(destination: href, title: attributes["title"] ?? "", content: children(), isAutolink: false))
+      let anchors = [attributes["id"], attributes["name"]].compactMap { $0 }.filter { !$0.isEmpty }
+      let markers = (anchors.first.map { [$0] } ?? []) + anchors.dropFirst().filter { $0 != anchors.first }
+      let anchorInlines = markers.map { Inline(.anchor($0), range: range) }
+      guard let href = attributes["href"], URLSafety.isSafe(href) else { return anchorInlines + children() }
+      let link = Link(destination: href, title: attributes["title"] ?? "", content: children(), isAutolink: false)
+      return anchorInlines + [Inline(.link(link), range: range)]
     case "img":
       guard let image = image(attributes) else { return [] }
       kind = .image(image)

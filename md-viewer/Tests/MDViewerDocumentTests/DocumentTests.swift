@@ -177,7 +177,7 @@ final class DocumentTests: XCTestCase {
     XCTAssertEqual(
       breaks.map(\.range.start),
       [
-        .init(line: 8, column: 68), .init(line: 9, column: 84), .init(line: 10, column: 15),
+        .init(line: 8, column: 67), .init(line: 9, column: 83), .init(line: 10, column: 15),
         .init(line: 11, column: 21),
       ])
   }

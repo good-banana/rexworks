@@ -182,6 +182,7 @@ public struct Inline: Hashable, Sendable {
     case link(Link)
     case image(Image)
     case footnoteReference(label: String, number: Int)
+    case anchor(String)
   }
 
   public var kind: Kind
@@ -232,10 +233,79 @@ extension Inline {
     case .link(let link): link.content.plainText
     case .image(let image): image.alt
     case .footnoteReference(_, let number): "[\(number)]"
+    case .anchor: ""
     }
   }
 }
 
 extension Array where Element == Inline {
   public var plainText: String { map(\.plainText).joined() }
+}
+
+extension Document {
+  public static let anchorPrefix = "user-content-"
+
+  public var anchorNames: [String] {
+    var names: [String] = []
+    var pending = Array(blocks.reversed())
+    while let block = pending.popLast() {
+      switch block.kind {
+      case .heading(let heading):
+        if let slug = heading.slug { names.append(slug) }
+        names += anchors(in: heading.content)
+      case .paragraph(let inlines), .plain(let inlines):
+        names += anchors(in: inlines)
+      case .blockQuote(let children):
+        pending += children.reversed()
+      case .alert(let alert):
+        pending += alert.blocks.reversed()
+      case .list(let list):
+        pending += list.items.flatMap(\.blocks).reversed()
+      case .table(let table):
+        let rows = (table.header.map { [$0] } ?? []) + table.rows
+        pending += rows.flatMap(\.cells).flatMap(\.content).reversed()
+      case .footnoteDefinition(let footnote):
+        pending += footnote.blocks.reversed()
+      case .details(let details):
+        names += anchors(in: details.summary)
+        pending += details.blocks.reversed()
+      case .division(let division):
+        pending += division.blocks.reversed()
+      case .codeBlock, .thematicBreak:
+        break
+      }
+    }
+    return names
+  }
+
+  public func resolveAnchor(_ fragment: String) -> String? {
+    let name = fragment.hasPrefix("#") ? String(fragment.dropFirst()) : fragment
+    let names = Set(anchorNames)
+    if names.contains(name) { return name }
+    if name.hasPrefix(Self.anchorPrefix) {
+      let bare = String(name.dropFirst(Self.anchorPrefix.count))
+      if names.contains(bare) { return bare }
+    }
+    return nil
+  }
+
+  private func anchors(in inlines: [Inline]) -> [String] {
+    var names: [String] = []
+    var pending = Array(inlines.reversed())
+    while let inline = pending.popLast() {
+      switch inline.kind {
+      case .anchor(let name):
+        names.append(name)
+      case .emphasis(let children), .strong(let children), .strikethrough(let children), .keyboard(let children),
+        .subscript(let children), .superscript(let children), .inserted(let children), .marked(let children),
+        .small(let children), .abbreviation(_, let children):
+        pending += children.reversed()
+      case .link(let link):
+        pending += link.content.reversed()
+      default:
+        break
+      }
+    }
+    return names
+  }
 }

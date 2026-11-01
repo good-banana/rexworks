@@ -45,6 +45,7 @@ func shape(_ inline: Inline) -> String {
     }
     return "img(\(image.source)\(attributes): \"\(image.alt)\")"
   case .footnoteReference(let label, let number): return "fn(\(label) \(number))"
+  case .anchor(let name): return "anchor(\(name))"
   }
 }
 
