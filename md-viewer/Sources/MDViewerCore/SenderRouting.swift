@@ -24,3 +24,7 @@ public func route(
   }
   return .textEditFallback
 }
+
+public func forwardRoute(previousHandler: String?, handlerExists: (String) -> Bool) -> OpenRoute {
+  route(senderBundleID: nil, previousHandler: previousHandler, handlerExists: handlerExists)
+}

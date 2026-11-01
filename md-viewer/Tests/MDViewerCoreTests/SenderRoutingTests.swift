@@ -36,4 +36,14 @@ final class SenderRoutingTests: XCTestCase {
         handlerExists: { _ in true }),
       .textEditFallback)
   }
+
+  func testForwardRouteAfterFailedPreviewNeverPreviews() {
+    XCTAssertEqual(
+      forwardRoute(previousHandler: "com.microsoft.VSCode", handlerExists: { _ in true }),
+      .forward(bundleID: "com.microsoft.VSCode"))
+    XCTAssertEqual(forwardRoute(previousHandler: "com.gone", handlerExists: { _ in false }), .textEditFallback)
+    XCTAssertEqual(forwardRoute(previousHandler: nil, handlerExists: { _ in true }), .textEditFallback)
+    XCTAssertEqual(
+      forwardRoute(previousHandler: HandlerIdentity.bundleID, handlerExists: { _ in true }), .textEditFallback)
+  }
 }

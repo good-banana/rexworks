@@ -54,9 +54,9 @@ final class HandlerDelegate: NSObject, NSApplicationDelegate {
     case .rexPreview:
       guard let config else {
         logError("cannot preview \(url.path): config missing or unreadable at \(paths.configFile.path)")
-        return finishOne()
+        return forward(url, config: nil)
       }
-      launchPreview(url, mdViewerPath: config.mdViewerPath)
+      launchPreview(url, config: config)
     case .forward(let bundleID):
       guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
         return open(url, with: textEditURL)
@@ -65,6 +65,13 @@ final class HandlerDelegate: NSObject, NSApplicationDelegate {
     case .textEditFallback:
       open(url, with: textEditURL)
     }
+  }
+
+  private func forward(_ url: URL, config: Config?) {
+    let destination = forwardRoute(
+      previousHandler: config?.previousHandlers[markdownContentType],
+      handlerExists: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil })
+    handle(url, destination: destination, config: config)
   }
 
   private func open(_ url: URL, with appURL: URL) {
@@ -82,22 +89,29 @@ final class HandlerDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
-  private func launchPreview(_ url: URL, mdViewerPath: String) {
+  private func launchPreview(_ url: URL, config: Config) {
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: mdViewerPath)
+    process.executableURL = URL(fileURLWithPath: config.mdViewerPath)
     process.arguments = ["open", url.path]
     process.standardInput = FileHandle.nullDevice
     let log = openLog()
     process.standardOutput = log
     process.standardError = log
-    process.terminationHandler = { _ in
-      DispatchQueue.main.async { MainActor.assumeIsolated { self.finishOne() } }
+    process.terminationHandler = { process in
+      let status = process.terminationStatus
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          guard status != 0 else { return self.finishOne() }
+          self.logError("md-viewer open exited with \(status); forwarding \(url.path)")
+          self.forward(url, config: config)
+        }
+      }
     }
     do {
       try process.run()
     } catch {
-      log?.write(Data("cannot launch \(mdViewerPath): \(error.localizedDescription)\n".utf8))
-      finishOne()
+      logError("cannot launch \(config.mdViewerPath): \(error.localizedDescription); forwarding \(url.path)")
+      forward(url, config: config)
     }
   }
 
