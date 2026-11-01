@@ -18,7 +18,7 @@ let package = Package(
       resources: [.copy("Fixtures")]),
     .testTarget(
       name: "MDViewerRenderTests",
-      dependencies: ["MDViewerWeb"],
+      dependencies: ["MDViewerCore", "MDViewerWeb"],
       resources: [.copy("Fixtures")]),
   ]
 )

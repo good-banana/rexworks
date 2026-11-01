@@ -1,0 +1,62 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  overflow: hidden;
+}
+
+.markdown-body {
+  box-sizing: border-box;
+  min-width: 200px;
+  padding: 24px 32px 32px;
+  background-color: transparent;
+  color: inherit;
+}
+
+.markdown-body pre.mermaid {
+  background-color: transparent;
+  text-align: center;
+}
+
+.video-placeholder {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  aspect-ratio: 16 / 9;
+  margin: 0 0 16px;
+  border-radius: 6px;
+  overflow: hidden;
+  background-color: #000;
+}
+
+.video-placeholder img.video-poster {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.video-placeholder .video-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 72px;
+  height: 72px;
+  margin: -36px 0 0 -36px;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.6);
+}
+
+.video-placeholder .video-play::after {
+  content: "";
+  position: absolute;
+  top: 22px;
+  left: 28px;
+  border-style: solid;
+  border-width: 14px 0 14px 24px;
+  border-color: transparent transparent transparent #fff;
+}
