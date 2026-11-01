@@ -35,12 +35,28 @@ public struct MouseEvent: Equatable {
   }
 }
 
+public enum ColorScheme: Equatable, Sendable {
+  case dark, light
+
+  public init?(reportParams params: String, final: UInt8) {
+    guard final == 0x6e else { return nil }
+    switch params {
+    case "?997;1": self = .dark
+    case "?997;2": self = .light
+    default: return nil
+    }
+  }
+}
+
 public enum InputEvent: Equatable {
   case key(Key)
   case mouse(MouseEvent)
+  case colorScheme(ColorScheme)
 }
 
 public struct InputParser {
+  private static let maximumStringSequence = 4096
+
   private var pending: [UInt8] = []
 
   public init() {}
@@ -71,6 +87,7 @@ public struct InputParser {
       if pending.count == 1 { return .event(.key(.escape), 1) }
       if pending[1] == 0x5b { return parseCSI() }
       if pending[1] == 0x4f { return parseSS3() }
+      if pending[1] == 0x5d { return skipOSC() }
       return .event(.key(.escape), 1)
     }
     return parseSimple(first)
@@ -112,6 +129,22 @@ public struct InputParser {
     }
   }
 
+  private func skipOSC() -> Parsed {
+    var index = 2
+    while index < pending.count {
+      switch pending[index] {
+      case 0x07:
+        return .event(nil, index + 1)
+      case 0x1b:
+        guard index + 1 < pending.count else { return .incomplete }
+        return .event(nil, pending[index + 1] == 0x5c ? index + 2 : index)
+      default:
+        index += 1
+      }
+    }
+    return pending.count > Self.maximumStringSequence ? .event(nil, pending.count) : .incomplete
+  }
+
   private func parseCSI() -> Parsed {
     var index = 2
     while index < pending.count {
@@ -128,6 +161,9 @@ public struct InputParser {
   private func decodeCSI(params: String, final: UInt8) -> InputEvent? {
     if params.hasPrefix("<") {
       return decodeMouse(String(params.dropFirst()), final: final)
+    }
+    if let scheme = ColorScheme(reportParams: params, final: final) {
+      return .colorScheme(scheme)
     }
     switch final {
     case 0x41: return .key(.up)

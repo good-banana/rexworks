@@ -97,47 +97,36 @@ enum Terminal {
   static func queryColors(timeoutMilliseconds: Int = 200) -> (
     foreground: (r: Double, g: Double, b: Double)?, background: (r: Double, g: Double, b: Double)?
   ) {
+    let colors = queryColorSet(includePalette: false, timeoutMilliseconds: timeoutMilliseconds)
+    return (colors.foreground?.tuple, colors.background?.tuple)
+  }
+
+  static func queryColorSet(includePalette: Bool = true, timeoutMilliseconds: Int = 200) -> TerminalColorSet {
     let wasRaw = rawModeActive
     var original = termios()
     if !wasRaw {
-      guard tcgetattr(STDIN_FILENO, &original) == 0 else { return (nil, nil) }
+      guard tcgetattr(STDIN_FILENO, &original) == 0 else { return TerminalColorSet() }
       var raw = original
       cfmakeraw(&raw)
-      guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0 else { return (nil, nil) }
+      guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0 else { return TerminalColorSet() }
     }
     defer {
       if !wasRaw { tcsetattr(STDIN_FILENO, TCSAFLUSH, &original) }
     }
 
-    write("\u{1b}]10;?\u{1b}\\\u{1b}]11;?\u{1b}\\")
-    var collected: [UInt8] = []
-    var foreground: (r: Double, g: Double, b: Double)?
-    var background: (r: Double, g: Double, b: Double)?
+    write(TerminalColorQuery.request(includePalette: includePalette))
+    var reader = TerminalColorReplyReader(expectsPalette: includePalette)
     let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeoutMilliseconds) * 1_000_000
-    while foreground == nil || background == nil {
+    while !reader.isComplete {
       let now = DispatchTime.now().uptimeNanoseconds
       guard now < deadline else { break }
       let remaining = Int32((deadline - now) / 1_000_000) + 1
-      collected.append(contentsOf: readAvailable(timeoutMilliseconds: remaining))
-      let text = String(decoding: collected, as: UTF8.self)
-      for reply in splitReplies(text) {
-        if reply.contains("]10;") { foreground = foreground ?? parseColorReply(reply) }
-        if reply.contains("]11;") { background = background ?? parseColorReply(reply) }
-      }
+      reader.feed(readAvailable(timeoutMilliseconds: remaining))
     }
-    return (foreground, background)
+    return reader.colors
   }
 
-  private static func splitReplies(_ text: String) -> [String] {
-    var replies: [String] = []
-    var current = ""
-    for character in text {
-      current.append(character)
-      if character == "\u{07}" || current.hasSuffix("\u{1b}\\") {
-        replies.append(current)
-        current = ""
-      }
-    }
-    return replies
+  static func queryRenderPalette(timeoutMilliseconds: Int = 200) -> RenderPalette {
+    RenderPalette(colors: queryColorSet(timeoutMilliseconds: timeoutMilliseconds))
   }
 }

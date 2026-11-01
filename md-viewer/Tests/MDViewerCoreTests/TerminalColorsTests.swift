@@ -18,7 +18,7 @@ final class TerminalColorsTests: XCTestCase {
   }
 
   func testRestoreSequenceUndoesEverything() {
-    for mode in ["?1016l", "?1006l", "?1000l", "?25h", "?1049l"] {
+    for mode in ["?2031l", "?1016l", "?1006l", "?1000l", "?25h", "?1049l"] {
       XCTAssertTrue(TerminalSequences.restore.contains(mode))
     }
     XCTAssertTrue(TerminalSequences.restore.contains(Kitty.deleteAll()))
@@ -44,5 +44,11 @@ final class TerminalColorsTests: XCTestCase {
   func testThemeDerivesMissingForegroundFromBackground() {
     let theme = Theme(foreground: nil, background: (1, 1, 1))
     XCTAssertEqual(theme, Theme(dark: false, background: "#ffffff", foreground: "#1f2328"))
+  }
+
+  func testColorSchemeReportsAreOptInAndDisabledOnRestore() {
+    XCTAssertEqual(TerminalSequences.enableColorSchemeReports, "\u{1b}[?2031h")
+    XCTAssertFalse(TerminalSequences.enter.contains("?2031h"))
+    XCTAssertTrue(TerminalSequences.restore.hasPrefix("\u{1b}[?2031l"))
   }
 }

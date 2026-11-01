@@ -74,4 +74,40 @@ final class TerminalInputTests: XCTestCase {
     XCTAssertEqual(p.feed([0xc3]), [])
     XCTAssertEqual(p.feed([0xa9]), [.key(.char("é"))])
   }
+
+  func testColorSchemeNotifications() {
+    var p = InputParser()
+    XCTAssertEqual(p.feed(Array("\u{1b}[?997;1n".utf8)), [.colorScheme(.dark)])
+    XCTAssertEqual(p.feed(Array("\u{1b}[?997;2n".utf8)), [.colorScheme(.light)])
+    XCTAssertEqual(p.feed(Array("\u{1b}[?997;3n\u{1b}[?996n\u{1b}[997;1n".utf8)), [])
+    XCTAssertEqual(p.feed(Array("\u{1b}[?99".utf8)), [])
+    XCTAssertEqual(p.feed(Array("7;2nj".utf8)), [.colorScheme(.light), .key(.char("j"))])
+  }
+
+  func testColorSchemeNotificationsBetweenOtherInput() {
+    var p = InputParser()
+    let stream = "k\u{1b}[A\u{1b}[?997;1n\u{1b}[<0;5;6M\u{1b}[5~\u{1b}[?997;2nq"
+    XCTAssertEqual(
+      p.feed(Array(stream.utf8)),
+      [
+        .key(.char("k")), .key(.up), .colorScheme(.dark), .mouse(.init(kind: .press, x: 4, y: 5)),
+        .key(.pageUp), .colorScheme(.light), .key(.char("q")),
+      ])
+  }
+
+  func testLateColorRepliesAreNotKeystrokes() {
+    var p = InputParser()
+    let reply = "\u{1b}]4;1;rgb:cccc/6666/6666\u{1b}\\\u{1b}]11;rgb:1e/1e/1e\u{07}g"
+    XCTAssertEqual(p.feed(Array(reply.utf8)), [.key(.char("g"))])
+    XCTAssertEqual(p.feed(Array("\u{1b}]10;rgb:ff".utf8)), [])
+    XCTAssertEqual(p.feed(Array("/ff/ff\u{1b}".utf8)), [])
+    XCTAssertEqual(p.feed(Array("\\r".utf8)), [.key(.char("r"))])
+    XCTAssertEqual(p.feed(Array("\u{1b}]10;rgb:ff\u{1b}[B".utf8)), [.key(.down)])
+  }
+
+  func testUnterminatedOSCIsEventuallyDropped() {
+    var p = InputParser()
+    XCTAssertEqual(p.feed([0x1b, 0x5d] + Array(repeating: 0x41, count: 5000)), [])
+    XCTAssertEqual(p.feed(Array("j".utf8)), [.key(.char("j"))])
+  }
 }
