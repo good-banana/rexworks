@@ -88,6 +88,8 @@ final class RenderTests: XCTestCase {
     XCTAssertEqual(untouched, true)
     let scripts = try await count("article script", in: r)
     XCTAssertEqual(scripts, 0)
+    let audio = try await count("audio", in: r)
+    XCTAssertEqual(audio, 0)
     let handlers = try await r.evaluate(
       "Array.from(document.querySelectorAll('article *')).some(e => e.getAttributeNames().some(n => n.startsWith('on')))"
     )

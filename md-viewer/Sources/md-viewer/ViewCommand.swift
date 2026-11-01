@@ -388,9 +388,7 @@ final class ViewerSession {
   }
 
   private static func isReadableDocument(_ url: URL) -> Bool {
-    var isDirectory: ObjCBool = false
-    return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && !isDirectory.boolValue
-      && FileManager.default.isReadableFile(atPath: url.path)
+    isRegularFile(url.path) && (try? readMarkdown(at: url)) != nil
   }
 
   private func reveal(_ rect: CGRect) {
@@ -491,7 +489,7 @@ final class ViewerSession {
     let layoutWidth = size.columns * cellWidth
     let viewHeight = viewRows * cellHeight
     do {
-      let markdown = try String(contentsOf: file, encoding: .utf8)
+      let markdown = try readMarkdown(at: file)
       tiles.invalidate()
       let height = try await renderer.render(
         markdown: markdown, fileURL: file, width: CGFloat(layoutWidth) / scale, theme: theme)

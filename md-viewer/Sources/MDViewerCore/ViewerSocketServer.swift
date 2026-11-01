@@ -1,6 +1,40 @@
 import Darwin
 import Foundation
 
+private final class SocketFileRegistry: @unchecked Sendable {
+  static let shared = SocketFileRegistry()
+  private let lock = NSLock()
+  private var paths: Set<String> = []
+  private var installedExitHook = false
+
+  func add(_ path: String) {
+    lock.lock()
+    paths.insert(path)
+    let needsHook = !installedExitHook
+    installedExitHook = true
+    lock.unlock()
+    if needsHook { atexit { removeViewerSocketFiles() } }
+  }
+
+  func remove(_ path: String) {
+    lock.lock()
+    paths.remove(path)
+    lock.unlock()
+  }
+
+  func takeAll() -> Set<String> {
+    lock.lock()
+    defer { lock.unlock() }
+    let all = paths
+    paths = []
+    return all
+  }
+}
+
+func removeViewerSocketFiles() {
+  for path in SocketFileRegistry.shared.takeAll() { unlink(path) }
+}
+
 public final class ViewerSocketServer: @unchecked Sendable {
   private let socketURL: URL
   private let onOpen: (URL) -> Void
@@ -36,6 +70,7 @@ public final class ViewerSocketServer: @unchecked Sendable {
       throw BindError(description: "could not listen on \(socket.path): \(code)")
     }
     descriptor = fd
+    SocketFileRegistry.shared.add(socket.path)
     source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
     source.setEventHandler { [weak self] in self?.accept() }
     source.resume()
@@ -45,6 +80,7 @@ public final class ViewerSocketServer: @unchecked Sendable {
     source.cancel()
     Darwin.close(descriptor)
     unlink(socketURL.path)
+    SocketFileRegistry.shared.remove(socketURL.path)
   }
 
   private func accept() {

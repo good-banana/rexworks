@@ -9,7 +9,7 @@
     caution: "Caution",
   };
   const ALERT_MARKER = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(?:\n|$)/i;
-  const REMOVED_ELEMENTS = "script, meta, base, link, object, embed";
+  const REMOVED_ELEMENTS = "script, meta, base, link, object, embed, audio";
   const IMAGE_TIMEOUT_MS = 3000;
 
   function escapeHtml(text) {

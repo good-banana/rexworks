@@ -41,6 +41,18 @@ final class ViewerSocketTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: sock.path))
   }
 
+  func testExitHookRemovesOpenSocketFile() throws {
+    let dir = URL(fileURLWithPath: "/tmp").appendingPathComponent(String(UUID().uuidString.prefix(8)))
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let sock = dir.appendingPathComponent("b.sock")
+    let server = try ViewerSocketServer(socket: sock) { _ in }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: sock.path))
+    removeViewerSocketFiles()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: sock.path))
+    server.close()
+  }
+
   func testRejectsInvalidMessages() throws {
     let dir = URL(fileURLWithPath: "/tmp").appendingPathComponent(String(UUID().uuidString.prefix(8)))
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -54,6 +54,7 @@ public final class WebRenderer: NSObject, WKNavigationDelegate {
     viewerURL = resources.appendingPathComponent("viewer.html")
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = .nonPersistent()
+    configuration.mediaTypesRequiringUserActionForPlayback = .all
     let frame = NSRect(x: 0, y: 0, width: 800, height: 600)
     webView = WKWebView(frame: frame, configuration: configuration)
     window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
