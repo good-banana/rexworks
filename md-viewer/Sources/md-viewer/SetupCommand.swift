@@ -12,14 +12,6 @@ func ownExecutable() -> URL {
   URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
 }
 
-func bundledAppCandidates() -> [URL] {
-  let directory = ownExecutable().deletingLastPathComponent()
-  return [
-    directory.appendingPathComponent("../libexec/MD Viewer.app"),
-    directory.appendingPathComponent("../app/MD Viewer.app"),
-  ].map(\.standardizedFileURL)
-}
-
 func currentPaths() -> SupportPaths {
   SupportPaths(home: FileManager.default.homeDirectoryForCurrentUser)
 }
@@ -28,7 +20,7 @@ enum SetupCommand {
   static func setup() -> Never {
     guard let rex = locateExecutable("rex") else { fail("rex not found in PATH", status: 1) }
     guard
-      let bundled = bundledAppCandidates().first(where: {
+      let bundled = bundledAppCandidates(executable: URL(fileURLWithPath: CommandLine.arguments[0])).first(where: {
         FileManager.default.fileExists(atPath: $0.path)
       })
     else { fail("MD Viewer.app not found next to md-viewer", status: 1) }

@@ -1,3 +1,4 @@
+import AppKit
 import CoreServices
 import Foundation
 import UniformTypeIdentifiers
@@ -21,16 +22,27 @@ public struct SystemHandlerRegistry: HandlerRegistry {
   public init() {}
 
   public func defaultHandler(for contentType: String) -> String? {
-    LSCopyDefaultRoleHandlerForContentType(contentType as CFString, .viewer)?
-      .takeRetainedValue() as String?
+    guard let type = UTType(contentType),
+      let url = NSWorkspace.shared.urlForApplication(toOpen: type)
+    else { return nil }
+    return Bundle(url: url)?.bundleIdentifier
   }
 
   public func setDefaultHandler(_ bundleID: String, for contentType: String) throws {
-    let status = LSSetDefaultRoleHandlerForContentType(
-      contentType as CFString, .viewer, bundleID as CFString)
-    guard status == noErr else {
+    guard let type = UTType(contentType) else {
+      throw HandlerRegistryError(description: "unknown content type \(contentType)")
+    }
+    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+      throw HandlerRegistryError(description: "no installed application with id \(bundleID)")
+    }
+    let completion = CompletionBox()
+    NSWorkspace.shared.setDefaultApplication(at: url, toOpen: type) { error in
+      completion.finish(error)
+    }
+    if let error = completion.wait() {
       throw HandlerRegistryError(
-        description: "cannot set \(bundleID) as handler for \(contentType) (status \(status))")
+        description:
+          "cannot set \(bundleID) as handler for \(contentType): \(error.localizedDescription)")
     }
   }
 
@@ -79,4 +91,20 @@ public func restorePlan(previous: [String: String], types: [String]) -> [(
   type: String, bundleID: String
 )] {
   types.map { (type: $0, bundleID: previous[$0] ?? textEditBundleID) }
+}
+
+private final class CompletionBox: @unchecked Sendable {
+  private let semaphore = DispatchSemaphore(value: 0)
+  private let lock = NSLock()
+  private var error: Error?
+
+  func finish(_ error: Error?) {
+    lock.withLock { self.error = error }
+    semaphore.signal()
+  }
+
+  func wait() -> Error? {
+    semaphore.wait()
+    return lock.withLock { error }
+  }
 }

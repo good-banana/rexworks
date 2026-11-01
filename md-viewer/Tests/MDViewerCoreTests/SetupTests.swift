@@ -6,9 +6,11 @@ final class FakeRegistry: HandlerRegistry {
   var defaults: [String: String] = [:]
   var registered: [URL] = []
   var unregistered: [URL] = []
+  var failingSets: Set<String> = []
 
   func defaultHandler(for contentType: String) -> String? { defaults[contentType] }
   func setDefaultHandler(_ bundleID: String, for contentType: String) throws {
+    if failingSets.contains(bundleID) { throw HandlerRegistryError(description: "denied") }
     defaults[contentType] = bundleID
   }
   func register(app: URL) throws { registered.append(app) }
@@ -105,5 +107,63 @@ final class SetupTests: XCTestCase {
     XCTAssertEqual(env.registry.unregistered, [paths.installedApp])
     XCTAssertFalse(FileManager.default.fileExists(atPath: paths.installedApp.path))
     XCTAssertFalse(FileManager.default.fileExists(atPath: paths.root.path))
+  }
+
+  func testUninstallWithFailedRestoreKeepsConfigAndApp() throws {
+    let env = try makeEnvironment()
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    try env.installer.install(bundledApp: env.bundle, rexPath: "/r", mdViewerPath: "/m")
+    env.registry.failingSets = ["com.microsoft.VSCode"]
+    let failures = try env.installer.uninstall()
+
+    XCTAssertEqual(failures.count, 1)
+    let paths = SupportPaths(home: env.home)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: paths.installedApp.path))
+    XCTAssertEqual(
+      try ConfigStore.load(paths)?.previousHandlers, [markdown: "com.microsoft.VSCode"])
+    XCTAssertEqual(env.registry.unregistered, [])
+  }
+
+  func testUninstallWithoutSetupLeavesDefaultsAlone() throws {
+    let env = try makeEnvironment()
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    let failures = try env.installer.uninstall()
+
+    XCTAssertEqual(failures, [])
+    XCTAssertEqual(env.registry.defaults, [markdown: "com.microsoft.VSCode"])
+  }
+
+  func testInstallReplacesExistingAppAndLeavesNoStagedCopy() throws {
+    let env = try makeEnvironment()
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    try env.installer.install(bundledApp: env.bundle, rexPath: "/r", mdViewerPath: "/m")
+    try Data("y".utf8).write(to: env.bundle.appendingPathComponent("Contents/marker"))
+    try env.installer.install(bundledApp: env.bundle, rexPath: "/r", mdViewerPath: "/m")
+
+    let paths = SupportPaths(home: env.home)
+    let marker = paths.installedApp.appendingPathComponent("Contents/marker")
+    XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "y")
+    let siblings = try FileManager.default.contentsOfDirectory(
+      atPath: paths.installedApp.deletingLastPathComponent().path)
+    XCTAssertEqual(siblings, ["MD Viewer.app"])
+  }
+
+  func testFailedDefaultSetKeepsConfigForRestore() throws {
+    let env = try makeEnvironment()
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    env.registry.failingSets = [selfID]
+    XCTAssertThrowsError(
+      try env.installer.install(bundledApp: env.bundle, rexPath: "/r", mdViewerPath: "/m"))
+    let saved = try ConfigStore.load(SupportPaths(home: env.home))
+    XCTAssertEqual(saved?.previousHandlers, [markdown: "com.microsoft.VSCode"])
+  }
+
+  func testBundledAppCandidatesCoverHomebrewAndDevLayouts() {
+    let candidates = bundledAppCandidates(
+      executable: URL(fileURLWithPath: "/work/md-viewer/.build/debug/md-viewer")
+    ).map(\.path)
+    XCTAssertTrue(candidates.contains("/work/md-viewer/.build/app/MD Viewer.app"))
+    XCTAssertTrue(candidates.contains("/work/md-viewer/.build/libexec/MD Viewer.app"))
+    XCTAssertEqual(Set(candidates).count, candidates.count)
   }
 }
