@@ -3,16 +3,28 @@ import XCTest
 @testable import MDViewerCore
 
 final class ThemeResolverTests: XCTestCase {
-  private final class FakeRunner: ProcessRunning, @unchecked Sendable {
-    var stdout: Data
-    var status: Int32 = 0
-    var calls: [(String, [String])] = []
-
-    init(stdout: Data) { self.stdout = stdout }
+  private final class FakeRexCLI: ProcessRunning, @unchecked Sendable {
+    var palettes: [String: Data] = [:]
+    var foregrounds: [String: String] = [:]
+    var blocks: [String] = []
+    var failing = false
+    var calls: [[String]] = []
 
     func run(_ executable: String, _ arguments: [String]) throws -> (status: Int32, stdout: Data, stderr: Data) {
-      calls.append((executable, arguments))
-      return (status, stdout, Data())
+      calls.append(arguments)
+      guard !failing, executable == "/opt/rex" else { return (1, Data(), Data()) }
+      let block = arguments.firstIndex(of: "-b").map { arguments[$0 + 1] }
+      if arguments.starts(with: ["block", "ls"]) {
+        let list = blocks.map { ["block_id": $0, "creator_name": "com.superlogical.terminal"] }
+        return (0, try JSONSerialization.data(withJSONObject: ["blocks": list]), Data())
+      }
+      if arguments.contains("com.superlogical.terminal.process"), let block, let name = foregrounds[block] {
+        return (0, try JSONSerialization.data(withJSONObject: ["foreground": ["name": name]]), Data())
+      }
+      if arguments.contains("com.superlogical.terminal.format"), let block, let data = palettes[block] {
+        return (0, data, Data())
+      }
+      return (1, Data(), Data())
     }
   }
 
@@ -43,7 +55,7 @@ final class ThemeResolverTests: XCTestCase {
   }
 
   private func resolver(
-    runner: FakeRunner, prefs: [String: Any]? = nil, app: URL?? = nil, environment: [String: String]? = nil
+    runner: FakeRexCLI, prefs: [String: Any]? = nil, app: URL?? = nil, environment: [String: String]? = nil
   ) throws -> ThemeResolver {
     let appURL = app ?? self.app
     let files = FakeFiles(
@@ -68,10 +80,24 @@ final class ThemeResolverTests: XCTestCase {
       0x666666, 0xd54e53, 0xb9ca4a, 0xe7c547, 0x7aa6da, 0xc397d8, 0x70c0b1, 0xeaeaea,
     ].map { RGB(hex: $0) }, colorScheme: .dark)
 
-  func testMatchingThemeSuppliesBackgroundForegroundAndSelection() throws {
-    let runner = FakeRunner(stdout: try fixture("rex-format-palette"))
-    let resolved = try resolver(runner: runner).resolve(inBand: inBandDark)
+  private let ghosttyDefaults: [UInt32] = [
+    0x1d1f21, 0xcc6666, 0xb5bd68, 0xf0c674, 0x81a2be, 0xb294bb, 0x8abeb7, 0xc5c8c6,
+    0x666666, 0xd54e53, 0xb9ca4a, 0xe7c547, 0x7aa6da, 0xc397d8, 0x70c0b1, 0xeaeaea,
+  ]
+
+  private func commandPaneCLI() throws -> FakeRexCLI {
+    let cli = FakeRexCLI()
+    cli.palettes["block:source"] = try fixture("rex-format-palette")
+    cli.palettes["block:2"] = formatOutput(palette: ghosttyDefaults)
+    return cli
+  }
+
+  func testCommandPaneResolvesThemeConfirmedBySourcePane() throws {
+    let cli = try commandPaneCLI()
+    let resolved = try resolver(runner: cli).resolve(inBand: inBandDark, sourceBlock: "block:source")
     XCTAssertEqual(resolved.source, .rexTheme("charcoal-atelier"))
+    XCTAssertEqual(resolved.crossCheck, .confirmed(block: "block:source"))
+    XCTAssertNil(resolved.note)
     XCTAssertEqual(resolved.colors.background, RGB(hex: 0x161616))
     XCTAssertEqual(resolved.colors.foreground, RGB(hex: 0xd6d2cc))
     XCTAssertEqual(resolved.colors.selectionBackground, RGB(hex: 0x3a3835))
@@ -80,44 +106,80 @@ final class ThemeResolverTests: XCTestCase {
     XCTAssertEqual(resolved.colors.palette[1], RGB(hex: 0xd96a4d))
     XCTAssertEqual(resolved.palette.pageBackground, RGB(hex: 0x161616))
     XCTAssertEqual(resolved.palette.text, RGB(hex: 0xd6d2cc))
-    XCTAssertEqual(resolved.palette.selectionFill, RGB(hex: 0x3a3835))
-    XCTAssertEqual(runner.calls.first?.0, "/opt/rex")
     XCTAssertEqual(
-      runner.calls.first?.1,
+      cli.calls,
       [
-        "do", "com.superlogical.terminal.format", "-s", "session:1", "-b", "block:2", "format=vt",
-        "extra_palette=true", "max_bytes=8192", "--json",
+        [
+          "do", "com.superlogical.terminal.format", "-s", "session:1", "-b", "block:source", "format=vt",
+          "extra_palette=true", "max_bytes=8192", "--json",
+        ]
       ])
+  }
+
+  func testMismatchKeepsThemeFileColorsAndNotes() throws {
+    let cli = try commandPaneCLI()
+    let resolved = try resolver(runner: cli).resolve(inBand: inBandDark, sourceBlock: "block:2")
+    XCTAssertEqual(resolved.source, .rexTheme("charcoal-atelier"))
+    XCTAssertEqual(resolved.crossCheck, .mismatch(block: "block:2"))
+    XCTAssertEqual(resolved.colors.background, RGB(hex: 0x161616))
+    XCTAssertEqual(resolved.colors.palette[0], RGB(hex: 0x222222))
+    XCTAssertEqual(
+      resolved.note, "theme charcoal-atelier does not match the palette of block:2; using the theme colors")
+  }
+
+  func testWithoutSourceBlockCrossChecksAShellPane() throws {
+    let cli = try commandPaneCLI()
+    cli.blocks = ["block:2", "block:busy", "block:source"]
+    cli.foregrounds = ["block:2": "zsh", "block:busy": "vim", "block:source": "zsh"]
+    let resolved = try resolver(runner: cli).resolve(inBand: inBandDark, sourceBlock: nil)
+    XCTAssertEqual(resolved.source, .rexTheme("charcoal-atelier"))
+    XCTAssertEqual(resolved.crossCheck, .confirmed(block: "block:source"))
+    XCTAssertFalse(cli.calls.contains { $0.contains("block:2") })
+  }
+
+  func testWithoutAnyShellPaneSkipsTheCrossCheck() throws {
+    let cli = try commandPaneCLI()
+    cli.blocks = ["block:busy"]
+    cli.foregrounds = ["block:busy": "claude"]
+    let resolved = try resolver(runner: cli).resolve(inBand: inBandDark, sourceBlock: nil)
+    XCTAssertEqual(resolved.source, .rexTheme("charcoal-atelier"))
+    XCTAssertEqual(resolved.crossCheck, .skipped)
+    XCTAssertEqual(resolved.colors.foreground, RGB(hex: 0xd6d2cc))
+
+    cli.failing = true
+    let offline = try resolver(runner: cli).resolve(inBand: inBandDark, sourceBlock: "block:source")
+    XCTAssertEqual(offline.source, .rexTheme("charcoal-atelier"))
+    XCTAssertEqual(offline.crossCheck, .skipped)
   }
 
   func testLightSchemeSelectsLightThemeID() throws {
     let merinoLight = try lightTheme()
-    let runner = FakeRunner(stdout: formatOutput(palette: merinoLight.ansi.map(hexValue)))
     var inBand = inBandDark
     inBand.colorScheme = .light
-    let resolved = try resolver(runner: runner).resolve(inBand: inBand)
+    let resolved = try resolver(runner: FakeRexCLI()).resolve(inBand: inBand, sourceBlock: nil)
     XCTAssertEqual(resolved.source, .rexTheme("merino-light"))
     XCTAssertEqual(resolved.colors.background, merinoLight.background)
+    XCTAssertEqual(resolved.colors.palette.map { $0! }, merinoLight.ansi)
     XCTAssertFalse(resolved.palette.dark)
   }
 
   func testSchemeFallsBackToRexAppearanceThenSystemAppearance() throws {
-    let runner = FakeRunner(stdout: Data())
+    let cli = FakeRexCLI()
     var prefs: [String: Any] = rexPrefs
-    XCTAssertEqual(try resolver(runner: runner, prefs: prefs).colorScheme(inBand: TerminalColorSet()), .light)
+    XCTAssertEqual(try resolver(runner: cli, prefs: prefs).colorScheme(inBand: TerminalColorSet()), .light)
     prefs["\(kCFPreferencesAnyApplication as String) AppleInterfaceStyle"] = "Dark"
-    XCTAssertEqual(try resolver(runner: runner, prefs: prefs).colorScheme(inBand: TerminalColorSet()), .dark)
+    XCTAssertEqual(try resolver(runner: cli, prefs: prefs).colorScheme(inBand: TerminalColorSet()), .dark)
     prefs["com.superlogical.rex Workspace.appearance"] = "light"
-    XCTAssertEqual(try resolver(runner: runner, prefs: prefs).colorScheme(inBand: TerminalColorSet()), .light)
+    XCTAssertEqual(try resolver(runner: cli, prefs: prefs).colorScheme(inBand: TerminalColorSet()), .light)
     XCTAssertEqual(
-      try resolver(runner: runner, prefs: prefs).colorScheme(inBand: TerminalColorSet(colorScheme: .dark)), .dark)
+      try resolver(runner: cli, prefs: prefs).colorScheme(inBand: TerminalColorSet(colorScheme: .dark)), .dark)
   }
 
-  func testMismatchedActiveThemeFallsBackToPaletteMatch() throws {
-    let runner = FakeRunner(stdout: try fixture("rex-format-palette"))
+  func testUnknownThemeIDFallsBackToPaletteMatch() throws {
     var prefs: [String: Any] = rexPrefs
-    prefs["com.superlogical.rex Workspace.darkThemeID"] = "merino-dark"
-    let resolved = try resolver(runner: runner, prefs: prefs).resolve(inBand: inBandDark)
+    prefs["com.superlogical.rex Workspace.darkThemeID"] = "deleted-theme"
+    let resolved = try resolver(runner: try commandPaneCLI(), prefs: prefs)
+      .resolve(inBand: inBandDark, sourceBlock: "block:source")
     XCTAssertEqual(resolved.source, .rexPaletteMatch("charcoal-atelier"))
     XCTAssertEqual(resolved.colors.background, RGB(hex: 0x161616))
   }
@@ -125,10 +187,11 @@ final class ThemeResolverTests: XCTestCase {
   func testUnknownPaletteKeepsRexPaletteAndInBandColors() throws {
     var palette = (0..<16).map { UInt32($0 * 0x0f0f0f) }
     palette[3] = 0x123456
-    let runner = FakeRunner(stdout: formatOutput(palette: palette))
+    let cli = FakeRexCLI()
+    cli.palettes["block:source"] = formatOutput(palette: palette)
     var inBand = inBandDark
     inBand.background = RGB(hex: 0x101010)
-    let resolved = try resolver(runner: runner).resolve(inBand: inBand)
+    let resolved = try resolver(runner: cli, prefs: [:]).resolve(inBand: inBand, sourceBlock: "block:source")
     XCTAssertEqual(resolved.source, .rexPalette)
     XCTAssertEqual(resolved.colors.palette[3], RGB(hex: 0x123456))
     XCTAssertEqual(resolved.colors.background, RGB(hex: 0x101010))
@@ -136,28 +199,28 @@ final class ThemeResolverTests: XCTestCase {
   }
 
   func testMissingAppFallsBackToPaletteThenInBand() throws {
-    let runner = FakeRunner(stdout: try fixture("rex-format-palette"))
-    let noApp = try resolver(runner: runner, app: .some(nil)).resolve(inBand: inBandDark)
+    let cli = try commandPaneCLI()
+    let noApp = try resolver(runner: cli, app: .some(nil)).resolve(inBand: inBandDark, sourceBlock: "block:source")
     XCTAssertEqual(noApp.source, .rexPalette)
     XCTAssertEqual(noApp.colors.palette[1], RGB(hex: 0xd96a4d))
     XCTAssertNil(noApp.colors.background)
+
+    let noAppNoSource = try resolver(runner: cli, app: .some(nil)).resolve(inBand: inBandDark, sourceBlock: nil)
+    XCTAssertEqual(noAppNoSource, ResolvedTheme(colors: inBandDark, source: .terminalQuery))
   }
 
-  func testNoRexOrFailingCLIUsesInBandQuery() throws {
-    let runner = FakeRunner(stdout: try fixture("rex-format-palette"))
-    let outsideRex = try resolver(runner: runner, environment: [:]).resolve(inBand: inBandDark)
+  func testOutsideRexUsesInBandQueryOnly() throws {
+    let cli = try commandPaneCLI()
+    let outsideRex = try resolver(runner: cli, environment: [:]).resolve(inBand: inBandDark, sourceBlock: nil)
     XCTAssertEqual(outsideRex, ResolvedTheme(colors: inBandDark, source: .terminalQuery))
-    XCTAssertTrue(runner.calls.isEmpty)
+    XCTAssertTrue(cli.calls.isEmpty)
 
-    runner.status = 1
-    XCTAssertEqual(try resolver(runner: runner).resolve(inBand: inBandDark).source, .terminalQuery)
-
-    runner.status = 0
-    runner.stdout = Data("{\"content\":\"\\u001b]4;0;rgb:22/22/22\\u001b\\\\\"}".utf8)
-    XCTAssertEqual(try resolver(runner: runner).resolve(inBand: inBandDark).source, .terminalQuery)
-
-    let empty = try resolver(runner: FakeRunner(stdout: Data()), environment: [:]).resolve(inBand: TerminalColorSet())
+    let empty = try resolver(runner: cli, environment: [:]).resolve(inBand: TerminalColorSet(), sourceBlock: nil)
     XCTAssertEqual(empty.palette, RenderPalette.fallback(dark: true))
+
+    cli.palettes["block:source"] = Data("{\"content\":\"\\u001b]4;0;rgb:22/22/22\\u001b\\\\\"}".utf8)
+    let incomplete = try resolver(runner: cli, prefs: [:]).resolve(inBand: inBandDark, sourceBlock: "block:source")
+    XCTAssertEqual(incomplete.source, .terminalQuery)
   }
 
   func testCustomThemeFromPreferencesMatchesCaseInsensitively() throws {
@@ -174,9 +237,11 @@ final class ThemeResolverTests: XCTestCase {
     var prefs: [String: Any] = rexPrefs
     prefs["com.superlogical.rex Workspace.customThemes"] = try JSONSerialization.data(withJSONObject: custom)
     prefs["com.superlogical.rex Workspace.darkThemeID"] = "0123456789abcdef0123456789abcdef-mine"
-    let runner = FakeRunner(stdout: formatOutput(palette: ansi.map { hexValue(parseHexColor($0)!) }))
-    let resolved = try resolver(runner: runner, prefs: prefs).resolve(inBand: inBandDark)
+    let cli = FakeRexCLI()
+    cli.palettes["block:source"] = formatOutput(palette: ansi.map { hexValue(parseHexColor($0)!) })
+    let resolved = try resolver(runner: cli, prefs: prefs).resolve(inBand: inBandDark, sourceBlock: "block:source")
     XCTAssertEqual(resolved.source, .rexTheme("0123456789abcdef0123456789abcdef-mine"))
+    XCTAssertEqual(resolved.crossCheck, .confirmed(block: "block:source"))
     XCTAssertEqual(resolved.colors.background, RGB(hex: 0x0b0c0d))
     XCTAssertEqual(resolved.colors.selectionBackground, RGB(hex: 0x334455))
   }

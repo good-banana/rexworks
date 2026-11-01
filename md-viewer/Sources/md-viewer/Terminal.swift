@@ -126,11 +126,12 @@ enum Terminal {
     return reader.colors
   }
 
-  static func resolveTheme(timeoutMilliseconds: Int = 200) -> ResolvedTheme {
+  static func resolveTheme(themeSourceBlock: String?, timeoutMilliseconds: Int = 200) -> ResolvedTheme {
     let config = try? ConfigStore.load(currentPaths())
     let resolver = ThemeResolver(
       runner: ProcessRunner(timeout: 2), preferences: SystemPreferenceReader(), files: SystemThemeFileAccess(),
       rexPath: config?.rexPath ?? locateExecutable("rex"), environment: ProcessInfo.processInfo.environment)
-    return resolver.resolve(inBand: queryColorSet(timeoutMilliseconds: timeoutMilliseconds))
+    return resolver.resolve(
+      inBand: queryColorSet(timeoutMilliseconds: timeoutMilliseconds), sourceBlock: themeSourceBlock)
   }
 }

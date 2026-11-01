@@ -97,15 +97,29 @@ public struct ResolvedTheme: Equatable, Sendable {
     case terminalQuery
   }
 
+  public enum CrossCheck: Equatable, Sendable {
+    case confirmed(block: String)
+    case mismatch(block: String)
+    case skipped
+  }
+
   public var colors: TerminalColorSet
   public var source: Source
+  public var crossCheck: CrossCheck = .skipped
 
   public var palette: RenderPalette { RenderPalette(colors: colors) }
+
+  public var note: String? {
+    guard case .rexTheme(let id) = source, case .mismatch(let block) = crossCheck else { return nil }
+    return "theme \(id) does not match the palette of \(block); using the theme colors"
+  }
 }
 
 public struct ThemeResolver {
   public static let rexBundleID = "com.superlogical.rex"
   static let themesPath = "Contents/Resources/SuperUI_SuperDesignTokens.bundle/Contents/Resources/themes.json"
+  static let shellNames: Set<String> = ["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "xonsh"]
+  static let maximumShellProbes = 8
 
   public var runner: ProcessRunning
   public var preferences: PreferenceReading
@@ -124,26 +138,32 @@ public struct ThemeResolver {
     self.environment = environment
   }
 
-  public func resolve(inBand: TerminalColorSet) -> ResolvedTheme {
-    guard let rexPalette = rexAPIPalette() else {
+  public func resolve(inBand: TerminalColorSet, sourceBlock: String?) -> ResolvedTheme {
+    guard let session = environment["REX_SESSION"] else {
       return ResolvedTheme(colors: inBand, source: .terminalQuery)
     }
     let scheme = colorScheme(inBand: inBand)
     let themes = availableThemes()
     let themeID = preferences.value(
       forKey: scheme == .dark ? "Workspace.darkThemeID" : "Workspace.lightThemeID", domain: Self.rexBundleID)
-    if let themeID = themeID as? String,
-      let theme = themes.first(where: { $0.id == themeID }),
-      matches(theme, rexPalette)
-    {
-      return ResolvedTheme(colors: colors(theme, rexPalette, scheme), source: .rexTheme(theme.id))
+    let checkBlock = sourceBlock ?? shellBlock(session: session)
+    let checkPalette = checkBlock.flatMap { apiPalette(session: session, block: $0) }
+
+    if let themeID = themeID as? String, let theme = themes.first(where: { $0.id == themeID }) {
+      var resolved = ResolvedTheme(colors: colors(theme, scheme), source: .rexTheme(theme.id))
+      if let checkBlock, let checkPalette {
+        resolved.crossCheck =
+          matches(theme, checkPalette) ? .confirmed(block: checkBlock) : .mismatch(block: checkBlock)
+      }
+      return resolved
     }
-    let candidates = themes.filter { matches($0, rexPalette) }
+    guard let checkPalette else { return ResolvedTheme(colors: inBand, source: .terminalQuery) }
+    let candidates = themes.filter { matches($0, checkPalette) }
     if let theme = candidates.first(where: { $0.appearance == scheme }) ?? candidates.first {
-      return ResolvedTheme(colors: colors(theme, rexPalette, scheme), source: .rexPaletteMatch(theme.id))
+      return ResolvedTheme(colors: colors(theme, scheme), source: .rexPaletteMatch(theme.id))
     }
     var colors = inBand
-    colors.palette = rexPalette
+    colors.palette = checkPalette
     return ResolvedTheme(colors: colors, source: .rexPalette)
   }
 
@@ -166,30 +186,46 @@ public struct ThemeResolver {
     return custom + parseRexThemes(data)
   }
 
-  func rexAPIPalette() -> [RGB?]? {
-    guard let rexPath, let session = environment["REX_SESSION"], let block = environment["REX_BLOCK"],
-      let result = try? runner.run(
-        rexPath,
-        [
-          "do", "com.superlogical.terminal.format", "-s", session, "-b", block, "format=vt", "extra_palette=true",
-          "max_bytes=8192", "--json",
-        ]),
-      result.status == 0,
-      let json = try? JSONSerialization.jsonObject(with: result.stdout) as? [String: Any],
-      let content = json["content"] as? String
-    else { return nil }
+  func shellBlock(session: String) -> String? {
+    guard let list = rexJSON(["block", "ls", "-s", session, "--json"])?["blocks"] as? [[String: Any]] else {
+      return nil
+    }
+    let candidates = list.compactMap { block -> String? in
+      guard block["creator_name"] as? String == "com.superlogical.terminal",
+        let id = block["block_id"] as? String, id != environment["REX_BLOCK"]
+      else { return nil }
+      return id
+    }
+    return candidates.prefix(Self.maximumShellProbes).first { id in
+      let process = rexJSON(["do", "com.superlogical.terminal.process", "-s", session, "-b", id, "--json"])
+      let name = (process?["foreground"] as? [String: Any])?["name"] as? String
+      return name.map { Self.shellNames.contains($0) } ?? false
+    }
+  }
+
+  func apiPalette(session: String, block: String) -> [RGB?]? {
+    let arguments = [
+      "do", "com.superlogical.terminal.format", "-s", session, "-b", block, "format=vt", "extra_palette=true",
+      "max_bytes=8192", "--json",
+    ]
+    guard let content = rexJSON(arguments)?["content"] as? String else { return nil }
     var reader = TerminalColorReplyReader(expectsPalette: true)
     reader.feed(Array(content.utf8))
     return reader.colors.palette.contains(nil) ? nil : reader.colors.palette
+  }
+
+  private func rexJSON(_ arguments: [String]) -> [String: Any]? {
+    guard let rexPath, let result = try? runner.run(rexPath, arguments), result.status == 0 else { return nil }
+    return try? JSONSerialization.jsonObject(with: result.stdout) as? [String: Any]
   }
 
   private func matches(_ theme: RexTheme, _ palette: [RGB?]) -> Bool {
     zip(theme.ansi, palette).allSatisfy { $0.description == $1?.description }
   }
 
-  private func colors(_ theme: RexTheme, _ palette: [RGB?], _ scheme: ColorScheme) -> TerminalColorSet {
+  private func colors(_ theme: RexTheme, _ scheme: ColorScheme) -> TerminalColorSet {
     TerminalColorSet(
-      foreground: theme.foreground, background: theme.background, palette: palette,
+      foreground: theme.foreground, background: theme.background, palette: theme.ansi,
       colorScheme: theme.appearance ?? scheme, cursor: theme.cursor, selectionBackground: theme.selectionBackground)
   }
 }

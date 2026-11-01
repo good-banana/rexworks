@@ -43,8 +43,10 @@ case "agent-guide":
 case "doctor":
   DoctorCommand.run()
 case "view":
-  guard arguments.count == 2 else { fail("usage: md-viewer view <file>", status: 64) }
-  await ViewCommand.run(file: arguments[1])
+  guard let view = ViewArguments(Array(arguments.dropFirst())) else {
+    fail("usage: md-viewer view [--theme-source-block <block>] <file>", status: 64)
+  }
+  await ViewCommand.run(file: view.file)
 case let command?:
   fail("unknown command: \(command)\n\n\(usage)", status: 64)
 }

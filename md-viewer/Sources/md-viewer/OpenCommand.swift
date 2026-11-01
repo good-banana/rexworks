@@ -38,7 +38,10 @@ enum OpenCommand {
       case .split(let target):
         _ = try rexJSON(runner, rex, splitArguments(target: target, file: file, mdViewer: mdViewer))
       case .newTab(let session):
-        _ = try rexJSON(runner, rex, tabArguments(session: session, file: file, mdViewer: mdViewer))
+        _ = try rexJSON(
+          runner, rex,
+          tabArguments(
+            session: session, file: file, mdViewer: mdViewer, themeSourceBlock: target.block))
       }
       exit(0)
     } catch {

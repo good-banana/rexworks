@@ -132,23 +132,44 @@ public func previewBlock(blockListJSON: Data, window: String) -> String? {
   return list.blocks.first { $0.windowID == window && $0.label == previewBlockLabel }?.blockID
 }
 
-private func viewerCommand(file: URL, mdViewer: String) -> [String] {
+public let themeSourceBlockOption = "--theme-source-block"
+
+private func viewerCommand(file: URL, mdViewer: String, themeSourceBlock: String?) -> [String] {
   [
     "--focus=false", "--shell=none", "--label", previewBlockLabel,
     "--cwd", file.deletingLastPathComponent().path,
-    "--", mdViewer, "view", file.path,
-  ]
+    "--", mdViewer, "view",
+  ] + (themeSourceBlock.map { [themeSourceBlockOption, $0] } ?? []) + [file.path]
 }
 
 public func splitArguments(target: PaneTarget, file: URL, mdViewer: String) -> [String] {
   var arguments = ["run", "--session", target.session]
   if let block = target.block { arguments += ["--block", block] }
   arguments += ["--split", "right", "--ratio", "45"]
-  return arguments + viewerCommand(file: file, mdViewer: mdViewer)
+  return arguments + viewerCommand(file: file, mdViewer: mdViewer, themeSourceBlock: target.block)
 }
 
-public func tabArguments(session: String, file: URL, mdViewer: String) -> [String] {
-  ["run", "--session", session] + viewerCommand(file: file, mdViewer: mdViewer)
+public func tabArguments(session: String, file: URL, mdViewer: String, themeSourceBlock: String? = nil)
+  -> [String]
+{
+  ["run", "--session", session] + viewerCommand(file: file, mdViewer: mdViewer, themeSourceBlock: themeSourceBlock)
+}
+
+public struct ViewArguments: Equatable, Sendable {
+  public var file: String
+  public var themeSourceBlock: String?
+
+  public init?(_ arguments: [String]) {
+    switch arguments.count {
+    case 1:
+      file = arguments[0]
+    case 3 where arguments[0] == themeSourceBlockOption && !arguments[1].isEmpty:
+      themeSourceBlock = arguments[1]
+      file = arguments[2]
+    default:
+      return nil
+    }
+  }
 }
 
 public func planOpen(target: PaneTarget, existingPreview: String?, previewAlive: Bool)
