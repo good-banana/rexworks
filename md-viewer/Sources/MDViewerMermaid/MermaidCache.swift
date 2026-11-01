@@ -41,6 +41,13 @@ public struct MermaidCacheKey: Hashable, Sendable {
   public var themeDigest: String
   public var widthBucket: Int
   public var scale: Int
+
+  var source: MermaidSourceKey { MermaidSourceKey(sourceDigest: sourceDigest, themeDigest: themeDigest) }
+}
+
+struct MermaidSourceKey: Hashable, Sendable {
+  var sourceDigest: String
+  var themeDigest: String
 }
 
 public enum MermaidFailure: Equatable, Sendable {
@@ -53,13 +60,6 @@ public enum MermaidFailure: Equatable, Sendable {
     case .syntax(let message): message
     case .timedOut: "Rendering the diagram timed out."
     case .unavailable(let reason): "Mermaid is unavailable: \(reason)"
-    }
-  }
-
-  var isCacheable: Bool {
-    switch self {
-    case .syntax, .timedOut: true
-    case .unavailable: false
     }
   }
 }
@@ -76,12 +76,16 @@ struct MermaidImageCache {
   private struct Entry {
     var diagram: MermaidDiagram
     var lastUse: UInt64
+    var expiry: Date?
   }
 
   let byteLimit: Int
   private var entries: [MermaidCacheKey: Entry] = [:]
   private var clock: UInt64 = 0
   private(set) var totalBytes = 0
+  var pinned: Set<MermaidCacheKey> = [] {
+    didSet { trim() }
+  }
 
   init(byteLimit: Int) {
     self.byteLimit = byteLimit
@@ -89,25 +93,38 @@ struct MermaidImageCache {
 
   var count: Int { entries.count }
 
-  mutating func value(for key: MermaidCacheKey) -> MermaidDiagram? {
+  mutating func value(for key: MermaidCacheKey, now: Date = Date()) -> MermaidDiagram? {
     guard var entry = entries[key] else { return nil }
+    if let expiry = entry.expiry, expiry <= now {
+      remove(key)
+      return nil
+    }
     clock += 1
     entry.lastUse = clock
     entries[key] = entry
     return entry.diagram
   }
 
-  mutating func insert(_ diagram: MermaidDiagram, for key: MermaidCacheKey) {
-    guard diagram.byteCost <= byteLimit else { return }
+  mutating func insert(_ diagram: MermaidDiagram, for key: MermaidCacheKey, expiry: Date? = nil) {
+    remove(key)
+    guard diagram.byteCost <= byteLimit || pinned.contains(key) else { return }
+    clock += 1
+    entries[key] = Entry(diagram: diagram, lastUse: clock, expiry: expiry)
+    totalBytes += diagram.byteCost
+    trim()
+  }
+
+  mutating func remove(_ key: MermaidCacheKey) {
     if let previous = entries.removeValue(forKey: key) {
       totalBytes -= previous.diagram.byteCost
     }
-    clock += 1
-    entries[key] = Entry(diagram: diagram, lastUse: clock)
-    totalBytes += diagram.byteCost
-    while totalBytes > byteLimit, let oldest = entries.min(by: { $0.value.lastUse < $1.value.lastUse }) {
-      entries.removeValue(forKey: oldest.key)
-      totalBytes -= oldest.value.diagram.byteCost
+  }
+
+  private mutating func trim() {
+    while totalBytes > byteLimit,
+      let oldest = entries.filter({ !pinned.contains($0.key) }).min(by: { $0.value.lastUse < $1.value.lastUse })
+    {
+      remove(oldest.key)
     }
   }
 }

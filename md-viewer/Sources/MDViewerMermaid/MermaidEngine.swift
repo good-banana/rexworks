@@ -2,14 +2,27 @@ import AppKit
 import CoreGraphics
 import Foundation
 import MDViewerCore
+import WebKit
+
+enum MermaidOutcome: Sendable {
+  case rendered(MermaidDiagram)
+  case failed(MermaidFailure)
+}
 
 struct MermaidJob: Sendable {
   var request: MermaidRequest
+  var deadline: TimeInterval
+  var isWanted: @Sendable () -> Bool
+  var abandoned: @Sendable () -> Void
   var sizeReady: @Sendable (CGSize) -> Void
-  var finished: @Sendable (MermaidDiagram) -> Void
+  var finished: @Sendable (MermaidOutcome) -> Void
 }
 
 struct MermaidTimeout: Error {}
+
+struct MermaidLoadFailure: Error {
+  var reason: String
+}
 
 @MainActor
 final class MermaidEngine {
@@ -19,7 +32,9 @@ final class MermaidEngine {
   private var isBusy = false
   private var page: MermaidPage?
   private var idleShutdown: DispatchWorkItem?
+  private var startNotBefore: Date?
   private(set) var startCount = 0
+  private(set) var startedJobs: [String] = []
 
   nonisolated init(configuration: MermaidRenderer.Configuration, pageURL: URL?) {
     self.configuration = configuration
@@ -27,6 +42,7 @@ final class MermaidEngine {
   }
 
   var isRunning: Bool { page != nil }
+  var webViewForTesting: WKWebView? { page?.webViewForTesting }
 
   func enqueue(_ job: MermaidJob) {
     idleShutdown?.cancel()
@@ -46,20 +62,33 @@ final class MermaidEngine {
     try await page?.evaluate(javaScript)
   }
 
+  func hangForTesting() {
+    page?.startHangForTesting()
+  }
+
+  func simulateCrashForTesting() {
+    guard let page, let webView = page.webViewForTesting else { return }
+    page.webViewWebContentProcessDidTerminate(webView)
+  }
+
   private func pump() {
     guard !isBusy else { return }
-    guard !jobs.isEmpty else {
-      scheduleIdleShutdown()
+    while let job = jobs.popLast() {
+      guard job.isWanted() else {
+        job.abandoned()
+        continue
+      }
+      isBusy = true
+      startedJobs.append(job.request.code)
+      Task { @MainActor in
+        let outcome = await self.run(job)
+        job.finished(outcome)
+        self.isBusy = false
+        self.pump()
+      }
       return
     }
-    isBusy = true
-    let job = jobs.removeFirst()
-    Task { @MainActor in
-      let diagram = await self.run(job)
-      job.finished(diagram)
-      self.isBusy = false
-      self.pump()
-    }
+    scheduleIdleShutdown()
   }
 
   private func scheduleIdleShutdown() {
@@ -74,74 +103,96 @@ final class MermaidEngine {
     DispatchQueue.main.asyncAfter(deadline: .now() + configuration.idleTimeout, execute: work)
   }
 
-  private enum Outcome: Sendable {
+  private enum Rendered: Sendable {
     case syntax(String)
-    case rendered(SnapshotImage, size: CGSize, rasterScale: CGFloat)
+    case snapshot(SnapshotImage, size: CGSize, pixels: MermaidRaster.PixelSize)
   }
 
-  private func run(_ job: MermaidJob) async -> MermaidDiagram {
+  private func run(_ job: MermaidJob) async -> MermaidOutcome {
     let request = job.request
     let state = JobState()
     defer { state.isFinished = true }
+    let page: MermaidPage
     do {
-      let page = try await loadedPage()
-      let outcome = try await withDeadline(configuration.diagramTimeout) { () async throws -> Outcome in
+      page = try await loadedPage()
+    } catch {
+      let reason = (error as? MermaidLoadFailure)?.reason ?? error.localizedDescription
+      failQueuedJobs(reason)
+      return .failed(.unavailable(reason))
+    }
+    do {
+      let rendered = try await withDeadline(job.deadline) { () async throws -> Rendered in
         let reply = try await page.render(source: request.code, theme: request.theme)
         guard case .diagram(let layout) = reply else {
           if case .error(let message) = reply { return .syntax(message) }
           throw MermaidPageError(reason: "unexpected reply")
         }
-        let size = Self.fit(CGSize(width: layout.width, height: layout.height), within: request.effectiveWidth)
+        let size = MermaidRaster.fit(
+          CGSize(width: layout.width, height: layout.height), within: request.effectiveWidth,
+          maximumAspectRatio: self.configuration.maximumAspectRatio)
         guard !state.isFinished else { throw MermaidTimeout() }
         job.sizeReady(size)
-        let rasterScale = Self.rasterScale(
-          for: size, scale: request.effectiveScale, maximumPixels: self.configuration.maximumPixels)
+        let pixels = MermaidRaster.pixelSize(
+          size,
+          scale: MermaidRaster.rasterScale(
+            for: size, scale: request.effectiveScale, maximumPixels: self.configuration.maximumPixels))
         let display = CGSize(
-          width: size.width * rasterScale / layout.pixelRatio, height: size.height * rasterScale / layout.pixelRatio)
+          width: CGFloat(pixels.width) / layout.pixelRatio, height: CGFloat(pixels.height) / layout.pixelRatio)
         let snapshot = try await page.snapshot(displaySize: display)
-        return .rendered(snapshot, size: size, rasterScale: rasterScale)
+        return .snapshot(snapshot, size: size, pixels: pixels)
       }
-      switch outcome {
+      switch rendered {
       case .syntax(let message):
-        return failure(.syntax(message), request)
-      case .rendered(let snapshot, let size, let rasterScale):
-        guard
-          let image = Self.normalize(
-            snapshot.image, size: size, scale: rasterScale, background: request.theme.background)
-        else { return failure(.unavailable("could not draw the diagram"), request) }
-        return MermaidDiagram(size: size, image: image, failure: nil)
+        return .failed(.syntax(message))
+      case .snapshot(let snapshot, let size, let pixels):
+        let background = request.theme.background
+        let image = await MermaidRaster.offMain {
+          OptionalImage(image: MermaidRaster.normalize(snapshot.image, pixels: pixels, background: background))
+        }
+        guard let image = image.image else { return .failed(.unavailable("could not draw the diagram")) }
+        return .rendered(MermaidDiagram(size: size, image: image, failure: nil))
       }
     } catch is MermaidTimeout {
       shutDown()
-      return failure(.timedOut, request)
+      return .failed(.timedOut)
     } catch {
       shutDown()
-      let reason = (error as? MermaidPageError)?.reason ?? error.localizedDescription
-      return failure(.unavailable(reason), request)
+      return .failed(.unavailable((error as? MermaidPageError)?.reason ?? error.localizedDescription))
     }
   }
 
-  private func failure(_ failure: MermaidFailure, _ request: MermaidRequest) -> MermaidDiagram {
-    if let diagram = MermaidErrorImage.make(
-      failure, theme: request.theme, width: request.effectiveWidth, scale: request.effectiveScale)
-    {
-      return diagram
+  private func failQueuedJobs(_ reason: String) {
+    let queued = jobs
+    jobs = []
+    for job in queued {
+      if job.isWanted() {
+        job.finished(.failed(.unavailable(reason)))
+      } else {
+        job.abandoned()
+      }
     }
-    let blank = CGContext(
-      data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
-      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-    return MermaidDiagram(size: CGSize(width: 1, height: 1), image: blank!.makeImage()!, failure: failure)
   }
 
   private func loadedPage() async throws -> MermaidPage {
     if let page, page.isUsable { return page }
-    page?.close()
-    guard let pageURL else { throw MermaidPageError(reason: "mermaid resources not found") }
+    shutDown()
+    guard let pageURL else { throw MermaidLoadFailure(reason: "mermaid resources not found") }
+    if let startNotBefore, Date() < startNotBefore {
+      throw MermaidLoadFailure(reason: "waiting before restarting after a failed start")
+    }
     let fresh = MermaidPage(pageURL: pageURL)
     page = fresh
     startCount += 1
-    try await withDeadline(configuration.loadTimeout) { try await fresh.load() }
-    return fresh
+    do {
+      try await withDeadline(configuration.loadTimeout) { try await fresh.load() }
+      startNotBefore = nil
+      return fresh
+    } catch {
+      shutDown()
+      startNotBefore = Date().addingTimeInterval(configuration.failureBackoff)
+      if error is MermaidTimeout { throw MermaidLoadFailure(reason: "the mermaid page did not load in time") }
+      throw MermaidLoadFailure(reason: (error as? MermaidPageError)?.reason ?? error.localizedDescription)
+    }
   }
 
   private func withDeadline<T: Sendable>(
@@ -162,10 +213,19 @@ final class MermaidEngine {
       }
     }
   }
+}
 
-  static func fit(_ intrinsic: CGSize, within width: CGFloat) -> CGSize {
-    guard intrinsic.width > width, intrinsic.width > 0 else { return intrinsic }
-    return CGSize(width: width, height: intrinsic.height * width / intrinsic.width)
+enum MermaidRaster {
+  struct PixelSize: Equatable, Sendable {
+    var width: Int
+    var height: Int
+  }
+
+  static func fit(_ intrinsic: CGSize, within width: CGFloat, maximumAspectRatio: CGFloat) -> CGSize {
+    guard intrinsic.width > 0, intrinsic.height > 0 else { return intrinsic }
+    let maximumHeight = width * maximumAspectRatio
+    let factor = min(1, width / intrinsic.width, maximumHeight / intrinsic.height)
+    return CGSize(width: intrinsic.width * factor, height: intrinsic.height * factor)
   }
 
   static func rasterScale(for size: CGSize, scale: CGFloat, maximumPixels: Int) -> CGFloat {
@@ -174,21 +234,31 @@ final class MermaidEngine {
     return scale * (CGFloat(maximumPixels) / pixels).squareRoot()
   }
 
-  static func normalize(_ image: CGImage, size: CGSize, scale: CGFloat, background: RGB) -> CGImage? {
-    let width = max(Int((size.width * scale).rounded(.up)), 1)
-    let height = max(Int((size.height * scale).rounded(.up)), 1)
-    guard
-      let context = CGContext(
-        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-    else { return nil }
-    let rect = CGRect(x: 0, y: 0, width: width, height: height)
+  static func pixelSize(_ size: CGSize, scale: CGFloat) -> PixelSize {
+    PixelSize(
+      width: max(Int((size.width * scale).rounded(.down)), 1), height: max(Int((size.height * scale).rounded(.down)), 1)
+    )
+  }
+
+  static func normalize(_ image: CGImage, pixels: PixelSize, background: RGB) -> CGImage? {
+    guard let context = MermaidErrorImage.makeContext(width: pixels.width, height: pixels.height) else { return nil }
+    let rect = CGRect(x: 0, y: 0, width: pixels.width, height: pixels.height)
     context.setFillColor(MermaidErrorImage.cgColor(background))
     context.fill(rect)
     context.interpolationQuality = .high
     context.draw(image, in: rect)
     return context.makeImage()
   }
+
+  static func offMain<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+    await withCheckedContinuation { continuation in
+      DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: work()) }
+    }
+  }
+}
+
+struct OptionalImage: @unchecked Sendable {
+  var image: CGImage?
 }
 
 @MainActor

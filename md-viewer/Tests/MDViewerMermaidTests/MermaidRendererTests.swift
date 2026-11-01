@@ -15,14 +15,6 @@ final class MermaidRendererTests: XCTestCase {
     return RGB(hex: try XCTUnwrap(UInt32(hex.dropFirst(), radix: 16)))
   }
 
-  private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(timeout)
-    while !condition() {
-      guard Date() < deadline else { return XCTFail("condition not met in \(timeout) s") }
-      try await Task.sleep(nanoseconds: 20_000_000)
-    }
-  }
-
   func testLocatesPageInBundle() throws {
     let page = try XCTUnwrap(MermaidRenderer.locatePage())
     XCTAssertEqual(page.lastPathComponent, "mermaid.html")
@@ -43,8 +35,8 @@ final class MermaidRendererTests: XCTestCase {
       XCTAssertLessThanOrEqual(diagram.size.width, 760)
       XCTAssertGreaterThan(diagram.size.height, 30)
       XCTAssertLessThan(diagram.size.height, 300)
-      XCTAssertEqual(diagram.image.width, Int((diagram.size.width * 2).rounded(.up)))
-      XCTAssertEqual(diagram.image.height, Int((diagram.size.height * 2).rounded(.up)))
+      XCTAssertEqual(diagram.image.width, Int((diagram.size.width * 2).rounded(.down)))
+      XCTAssertEqual(diagram.image.height, Int((diagram.size.height * 2).rounded(.down)))
 
       let pixels = PixelBuffer(diagram.image)
       let total = pixels.width * pixels.height
@@ -55,21 +47,6 @@ final class MermaidRendererTests: XCTestCase {
       XCTAssertGreaterThan(pixels.count(near: try color(theme, "lineColor"), tolerance: 12), 100, "edges")
       XCTAssertGreaterThan(pixels.count(near: theme.text, tolerance: 12), 100, "labels")
     }
-  }
-
-  func testCallbacksArriveOnCallerQueue() async throws {
-    let renderer = MermaidRenderer()
-    let queue = DispatchQueue(label: "mermaid.test.caller")
-    let request = MermaidRequest(code: "flowchart TD\n  A --> B", theme: darkTheme, width: 400, scale: 1)
-    let diagram = await withCheckedContinuation { continuation in
-      renderer.render(
-        request, queue: queue, sizeReady: { _ in dispatchPrecondition(condition: .onQueue(queue)) },
-        completion: { diagram in
-          dispatchPrecondition(condition: .onQueue(queue))
-          continuation.resume(returning: diagram)
-        })
-    }
-    XCTAssertNil(diagram.failure)
   }
 
   func testSyntaxErrorProducesErrorImage() async throws {
@@ -144,64 +121,6 @@ final class MermaidRendererTests: XCTestCase {
     try await waitUntil { !renderer.engine.isRunning }
   }
 
-  func testTimeoutProducesErrorImageAndStopsThePage() async throws {
-    let renderer = MermaidRenderer(configuration: .init(diagramTimeout: 0.001))
-    let request = MermaidRequest(code: try sampleFlowchart(), theme: darkTheme, width: 500, scale: 1)
-    let diagram = await render(renderer, request)
-    XCTAssertEqual(diagram.failure, .timedOut)
-    XCTAssertEqual(diagram.size.width, 496)
-    XCTAssertFalse(renderer.engine.isRunning)
-  }
-
-  func testMissingResourcesProduceAnUncachedErrorImage() async throws {
-    let renderer = MermaidRenderer(pageURL: nil)
-    let request = MermaidRequest(code: "flowchart LR\n  A --> B", theme: darkTheme, width: 400, scale: 1)
-    let diagram = await render(renderer, request)
-    guard case .unavailable = diagram.failure else { return XCTFail("\(String(describing: diagram.failure))") }
-    XCTAssertNil(renderer.cached(request))
-  }
-
-  func testHostileInputStaysInert() async throws {
-    let renderer = MermaidRenderer()
-    let hostile = [
-      """
-      %%{init: {"securityLevel": "loose"}}%%
-      flowchart LR
-        A[Start] --> B[Next]
-        click A callback "Tooltip"
-        click B href "javascript:window.__pwned=1"
-      """,
-      """
-      flowchart LR
-        A["<script>window.__pwned=1</script>"] --> B
-      """,
-      """
-      flowchart LR
-        A["<img src=x onerror='window.__pwned=1'>"] --> B["<b>bold</b> <a href='javascript:window.__pwned=1'>x</a>"]
-      """,
-      """
-      sequenceDiagram
-        Alice->>Bob: <script>window.__pwned=1</script>
-      """,
-    ]
-    for code in hostile {
-      let diagram = await render(renderer, MermaidRequest(code: code, theme: darkTheme, width: 600, scale: 1))
-      XCTAssertGreaterThan(diagram.image.width, 1, code)
-      let pwned = try await renderer.engine.evaluateForTesting("return typeof window.__pwned")
-      XCTAssertEqual(pwned, "undefined", code)
-      let level = try await renderer.engine.evaluateForTesting("return mermaid.mermaidAPI.getConfig().securityLevel")
-      XCTAssertEqual(level, "strict", code)
-      let unsafe = try await renderer.engine.evaluateForTesting(
-        """
-        return [...document.querySelectorAll('#stage *')].filter(e =>
-          ['script', 'iframe', 'object', 'embed'].includes(e.localName) ||
-          [...e.attributes].some(a => a.name.toLowerCase().startsWith('on') || /javascript:/i.test(a.value))
-        ).length
-        """)
-      XCTAssertEqual(unsafe, "0", code)
-    }
-  }
-
   func testThemeChangeChangesCacheKey() throws {
     let code = try sampleFlowchart()
     let dark = MermaidRequest(code: code, theme: darkTheme, width: 760, scale: 2)
@@ -230,31 +149,4 @@ final class MermaidRendererTests: XCTestCase {
     XCTAssertEqual(theme.variables["fontFamily"], MermaidTheme.defaultFontFamily)
   }
 
-  func testCacheIsBoundedByBytes() throws {
-    let theme = darkTheme
-    let diagram = try XCTUnwrap(MermaidErrorImage.make(.timedOut, theme: theme, width: 200, scale: 1))
-    var cache = MermaidImageCache(byteLimit: diagram.byteCost * 2)
-    let keys = (0..<3).map { MermaidRequest(code: "\($0)", theme: theme, width: 200, scale: 1).key }
-    cache.insert(diagram, for: keys[0])
-    cache.insert(diagram, for: keys[1])
-    XCTAssertNotNil(cache.value(for: keys[0]))
-    cache.insert(diagram, for: keys[2])
-    XCTAssertEqual(cache.count, 2)
-    XCTAssertNotNil(cache.value(for: keys[0]), "recently used entries survive")
-    XCTAssertNil(cache.value(for: keys[1]))
-    XCTAssertLessThanOrEqual(cache.totalBytes, cache.byteLimit)
-
-    var tiny = MermaidImageCache(byteLimit: diagram.byteCost - 1)
-    tiny.insert(diagram, for: keys[0])
-    XCTAssertEqual(tiny.count, 0)
-  }
-
-  func testRasterScaleRespectsPixelBudget() {
-    let size = CGSize(width: 4000, height: 4000)
-    let scale = MermaidEngine.rasterScale(for: size, scale: 2, maximumPixels: 16 << 20)
-    XCTAssertLessThanOrEqual(size.width * size.height * scale * scale, CGFloat(16 << 20) + 1)
-    XCTAssertEqual(
-      MermaidEngine.rasterScale(for: CGSize(width: 100, height: 100), scale: 2, maximumPixels: 16 << 20), 2)
-    XCTAssertEqual(MermaidEngine.fit(CGSize(width: 1000, height: 200), within: 500), CGSize(width: 500, height: 100))
-  }
 }

@@ -10,11 +10,11 @@ enum MermaidErrorImage {
   static let titleSpacing: CGFloat = 8
   static let cornerRadius: CGFloat = 6
 
-  static let widthRange: ClosedRange<CGFloat> = 120...4096
+  static let maximumWidth: CGFloat = 4096
 
-  static func make(_ failure: MermaidFailure, theme: MermaidTheme, width: CGFloat, scale: CGFloat) -> MermaidDiagram? {
-    let width = min(max(width, widthRange.lowerBound), widthRange.upperBound)
-    let textWidth = width - padding * 2
+  static func make(_ failure: MermaidFailure, theme: MermaidTheme, width: CGFloat, scale: CGFloat) -> MermaidDiagram {
+    let width = min(max(width, 1), maximumWidth)
+    let textWidth = max(width - padding * 2, 8)
     let titleText = attributed(
       title, font: NSFont.systemFont(ofSize: 14, weight: .semibold), color: theme.text)
     let detailText = attributed(
@@ -23,13 +23,10 @@ enum MermaidErrorImage {
     let titleHeight = height(of: titleText, width: textWidth)
     let detailHeight = height(of: detailText, width: textWidth)
     let size = CGSize(width: width, height: (padding * 2 + titleHeight + titleSpacing + detailHeight).rounded(.up))
-    let pixelWidth = Int((size.width * scale).rounded(.up))
-    let pixelHeight = Int((size.height * scale).rounded(.up))
-    guard
-      let context = CGContext(
-        data: nil, width: pixelWidth, height: pixelHeight, bitsPerComponent: 8, bytesPerRow: 0,
-        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-    else { return nil }
+    let pixels = MermaidRaster.pixelSize(size, scale: scale)
+    guard let context = makeContext(width: pixels.width, height: pixels.height) else {
+      return blank(failure)
+    }
     context.scaleBy(x: scale, y: scale)
     context.setFillColor(cgColor(theme.background))
     context.fill(CGRect(origin: .zero, size: size))
@@ -49,8 +46,19 @@ enum MermaidErrorImage {
     let detailTop = titleTop - titleHeight - titleSpacing
     draw(
       detailText, in: CGRect(x: padding, y: detailTop - detailHeight, width: textWidth, height: detailHeight), context)
-    guard let image = context.makeImage() else { return nil }
+    guard let image = context.makeImage() else { return blank(failure) }
     return MermaidDiagram(size: size, image: image, failure: failure)
+  }
+
+  static func makeContext(width: Int, height: Int) -> CGContext? {
+    CGContext(
+      data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+  }
+
+  private static func blank(_ failure: MermaidFailure) -> MermaidDiagram {
+    let image = makeContext(width: 1, height: 1)!.makeImage()!
+    return MermaidDiagram(size: CGSize(width: 1, height: 1), image: image, failure: failure)
   }
 
   private static func attributed(_ string: String, font: NSFont, color: RGB) -> NSAttributedString {

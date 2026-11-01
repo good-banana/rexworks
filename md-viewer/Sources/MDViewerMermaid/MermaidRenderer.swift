@@ -5,19 +5,31 @@ public final class MermaidRenderer: @unchecked Sendable {
   public struct Configuration: Sendable {
     public var idleTimeout: TimeInterval
     public var diagramTimeout: TimeInterval
+    public var retryTimeout: TimeInterval
+    public var timeoutRetryDelay: TimeInterval
     public var loadTimeout: TimeInterval
+    public var failureBackoff: TimeInterval
     public var cacheByteLimit: Int
+    public var failureCacheByteLimit: Int
     public var maximumPixels: Int
+    public var maximumAspectRatio: CGFloat
 
     public init(
-      idleTimeout: TimeInterval = 30, diagramTimeout: TimeInterval = 5, loadTimeout: TimeInterval = 15,
-      cacheByteLimit: Int = 64 << 20, maximumPixels: Int = 16 << 20
+      idleTimeout: TimeInterval = 30, diagramTimeout: TimeInterval = 5, retryTimeout: TimeInterval = 15,
+      timeoutRetryDelay: TimeInterval = 10, loadTimeout: TimeInterval = 15, failureBackoff: TimeInterval = 30,
+      cacheByteLimit: Int = 256 << 20, failureCacheByteLimit: Int = 32 << 20, maximumPixels: Int = 8 << 20,
+      maximumAspectRatio: CGFloat = 4
     ) {
       self.idleTimeout = idleTimeout
       self.diagramTimeout = diagramTimeout
+      self.retryTimeout = retryTimeout
+      self.timeoutRetryDelay = timeoutRetryDelay
       self.loadTimeout = loadTimeout
+      self.failureBackoff = failureBackoff
       self.cacheByteLimit = cacheByteLimit
+      self.failureCacheByteLimit = failureCacheByteLimit
       self.maximumPixels = maximumPixels
+      self.maximumAspectRatio = maximumAspectRatio
     }
   }
 
@@ -27,6 +39,7 @@ public final class MermaidRenderer: @unchecked Sendable {
     var queue: DispatchQueue
     var sizeReady: (@Sendable (CGSize) -> Void)?
     var completion: @Sendable (MermaidDiagram) -> Void
+    var sentSize: CGSize?
   }
 
   private struct Pending {
@@ -34,15 +47,25 @@ public final class MermaidRenderer: @unchecked Sendable {
     var size: CGSize?
   }
 
+  private struct TimeoutRecord {
+    var isPermanent: Bool
+    var retryAfter: Date
+  }
+
   public let configuration: Configuration
   let engine: MermaidEngine
   private let lock = NSLock()
+  private let workQueue = DispatchQueue(label: "md-viewer.mermaid.work", qos: .userInitiated)
   private var cache: MermaidImageCache
+  private var failures: MermaidImageCache
   private var pending: [MermaidCacheKey: Pending] = [:]
+  private var timeouts: [MermaidSourceKey: TimeoutRecord] = [:]
+  private var wanted: Set<MermaidCacheKey>?
 
   public init(configuration: Configuration = Configuration(), pageURL: URL? = MermaidRenderer.locatePage()) {
     self.configuration = configuration
     cache = MermaidImageCache(byteLimit: configuration.cacheByteLimit)
+    failures = MermaidImageCache(byteLimit: configuration.failureCacheByteLimit)
     engine = MermaidEngine(configuration: configuration, pageURL: pageURL)
   }
 
@@ -72,9 +95,7 @@ public final class MermaidRenderer: @unchecked Sendable {
 
   public func cached(_ request: MermaidRequest) -> MermaidDiagram? {
     let key = request.key
-    lock.lock()
-    defer { lock.unlock() }
-    return cache.value(for: key)
+    return lock.withLock { lookup(key) }
   }
 
   public func sizeProvider(theme: MermaidTheme, width: CGFloat, scale: CGFloat) -> @Sendable (String) -> CGSize? {
@@ -89,33 +110,55 @@ public final class MermaidRenderer: @unchecked Sendable {
     }
   }
 
+  public func setCurrentDiagrams(_ requests: [MermaidRequest]) {
+    let keys = Set(requests.map(\.key))
+    lock.withLock {
+      wanted = keys
+      cache.pinned = keys
+      failures.pinned = keys
+    }
+  }
+
   public func render(
     _ request: MermaidRequest, queue: DispatchQueue = .main, sizeReady: (@Sendable (CGSize) -> Void)? = nil,
     completion: @escaping @Sendable (MermaidDiagram) -> Void
   ) {
     let key = request.key
-    let waiter = Waiter(queue: queue, sizeReady: sizeReady, completion: completion)
+    var waiter = Waiter(
+      queue: DispatchQueue(label: "md-viewer.mermaid.callback", target: queue), sizeReady: sizeReady,
+      completion: completion)
     lock.lock()
-    if let diagram = cache.value(for: key) {
+    wanted?.insert(key)
+    if let diagram = lookup(key) {
+      deliver(diagram, to: [waiter])
       lock.unlock()
-      deliver(diagram, to: [waiter], sizeAlreadySent: false)
       return
     }
     if var entry = pending[key] {
+      if let size = entry.size {
+        send(size, to: &waiter)
+      }
       entry.waiters.append(waiter)
       pending[key] = entry
-      let size = entry.size
       lock.unlock()
-      if let size, let sizeReady { queue.async { sizeReady(size) } }
       return
     }
-    pending[key] = Pending(waiters: [waiter], size: nil)
+    pending[key] = Pending(waiters: [waiter])
+    let record = timeouts[key.source]
+    if let record, record.isPermanent || Date() < record.retryAfter {
+      lock.unlock()
+      resolve(.timedOut, request: request, key: key, isRetry: false)
+      return
+    }
     lock.unlock()
 
+    let isRetry = record != nil
     let job = MermaidJob(
-      request: request,
+      request: request, deadline: isRetry ? configuration.retryTimeout : configuration.diagramTimeout,
+      isWanted: { [self] in isWanted(key) },
+      abandoned: { [self] in abandon(key) },
       sizeReady: { [self] size in reportSize(size, for: key) },
-      finished: { [self] diagram in finish(diagram, for: key) })
+      finished: { [self] outcome in finish(outcome, request: request, key: key, isRetry: isRetry) })
     let engine = engine
     DispatchQueue.main.async {
       MainActor.assumeIsolated { engine.enqueue(job) }
@@ -129,38 +172,90 @@ public final class MermaidRenderer: @unchecked Sendable {
     }
   }
 
+  func isCachedInMainStore(_ request: MermaidRequest) -> Bool {
+    let key = request.key
+    return lock.withLock { cache.value(for: key) != nil }
+  }
+
+  private func lookup(_ key: MermaidCacheKey) -> MermaidDiagram? {
+    cache.value(for: key) ?? failures.value(for: key)
+  }
+
+  private func isWanted(_ key: MermaidCacheKey) -> Bool {
+    lock.withLock { wanted?.contains(key) ?? true }
+  }
+
+  private func abandon(_ key: MermaidCacheKey) {
+    lock.withLock { _ = pending.removeValue(forKey: key) }
+  }
+
   private func reportSize(_ size: CGSize, for key: MermaidCacheKey) {
-    lock.lock()
-    guard var entry = pending[key] else {
-      lock.unlock()
-      return
-    }
-    entry.size = size
-    pending[key] = entry
-    let waiters = entry.waiters
-    lock.unlock()
-    for waiter in waiters {
-      if let sizeReady = waiter.sizeReady { waiter.queue.async { sizeReady(size) } }
-    }
-  }
-
-  private func finish(_ diagram: MermaidDiagram, for key: MermaidCacheKey) {
-    lock.lock()
-    let entry = pending.removeValue(forKey: key)
-    if diagram.failure?.isCacheable ?? true {
-      cache.insert(diagram, for: key)
-    }
-    lock.unlock()
-    guard let entry else { return }
-    deliver(diagram, to: entry.waiters, sizeAlreadySent: entry.size == diagram.size)
-  }
-
-  private func deliver(_ diagram: MermaidDiagram, to waiters: [Waiter], sizeAlreadySent: Bool) {
-    for waiter in waiters {
-      waiter.queue.async {
-        if !sizeAlreadySent { waiter.sizeReady?(diagram.size) }
-        waiter.completion(diagram)
+    lock.withLock {
+      guard var entry = pending[key] else { return }
+      entry.size = size
+      for index in entry.waiters.indices {
+        send(size, to: &entry.waiters[index])
       }
+      pending[key] = entry
+    }
+  }
+
+  private func finish(_ outcome: MermaidOutcome, request: MermaidRequest, key: MermaidCacheKey, isRetry: Bool) {
+    switch outcome {
+    case .rendered(let diagram):
+      lock.withLock {
+        timeouts[key.source] = nil
+        cache.insert(diagram, for: key)
+        complete(key, with: diagram)
+      }
+    case .failed(let failure):
+      resolve(failure, request: request, key: key, isRetry: isRetry)
+    }
+  }
+
+  private func resolve(_ failure: MermaidFailure, request: MermaidRequest, key: MermaidCacheKey, isRetry: Bool) {
+    let configuration = configuration
+    workQueue.async { [self] in
+      let diagram = MermaidErrorImage.make(
+        failure, theme: request.theme, width: request.effectiveWidth, scale: request.effectiveScale)
+      lock.withLock {
+        let now = Date()
+        switch failure {
+        case .syntax:
+          cache.insert(diagram, for: key)
+        case .unavailable:
+          failures.insert(diagram, for: key, expiry: now.addingTimeInterval(configuration.failureBackoff))
+        case .timedOut:
+          var record =
+            timeouts[key.source]
+            ?? TimeoutRecord(isPermanent: false, retryAfter: now.addingTimeInterval(configuration.timeoutRetryDelay))
+          if isRetry { record.isPermanent = true }
+          timeouts[key.source] = record
+          failures.insert(diagram, for: key, expiry: record.isPermanent ? nil : record.retryAfter)
+        }
+        complete(key, with: diagram)
+      }
+    }
+  }
+
+  private func complete(_ key: MermaidCacheKey, with diagram: MermaidDiagram) {
+    guard let entry = pending.removeValue(forKey: key) else { return }
+    deliver(diagram, to: entry.waiters)
+  }
+
+  private func send(_ size: CGSize, to waiter: inout Waiter) {
+    guard waiter.sentSize != size else { return }
+    waiter.sentSize = size
+    if let sizeReady = waiter.sizeReady {
+      waiter.queue.async { sizeReady(size) }
+    }
+  }
+
+  private func deliver(_ diagram: MermaidDiagram, to waiters: [Waiter]) {
+    for var waiter in waiters {
+      send(diagram.size, to: &waiter)
+      let completion = waiter.completion
+      waiter.queue.async { completion(diagram) }
     }
   }
 }

@@ -87,3 +87,18 @@ struct PixelBuffer {
     return total
   }
 }
+
+@MainActor
+func waitUntil(
+  timeout: TimeInterval = 5, file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool
+) async throws {
+  let deadline = Date().addingTimeInterval(timeout)
+  while !condition() {
+    guard Date() < deadline else { return XCTFail("condition not met in \(timeout) s", file: file, line: line) }
+    try await Task.sleep(nanoseconds: 20_000_000)
+  }
+}
+
+func pause(_ seconds: TimeInterval) async throws {
+  try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+}
