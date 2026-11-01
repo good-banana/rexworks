@@ -82,6 +82,92 @@ final class RenderTests: XCTestCase {
     XCTAssertEqual(diagrams, 1)
   }
 
+  func testFrontMatterRendersAsTable() async throws {
+    let (r, _) = try await render("frontmatter")
+    let keys = try await r.evaluate(
+      "Array.from(document.querySelectorAll('div.frontmatter th')).map((th) => th.textContent).join('|')")
+    XCTAssertEqual(keys as? String, "title|status|tags|author")
+    let tags = try await r.evaluate("document.querySelectorAll('div.frontmatter td')[2].textContent")
+    XCTAssertEqual(tags as? String, "- rex\n- md-viewer")
+    let author = try await r.evaluate("document.querySelectorAll('div.frontmatter td')[3].textContent")
+    XCTAssertEqual(author as? String, "\"<script>window.__pwned=1</script>\"")
+    let scripts = try await count("div.frontmatter script", in: r)
+    let rules = try await count("article hr", in: r)
+    let subheadings = try await count("article h2", in: r)
+    XCTAssertEqual(scripts, 0)
+    XCTAssertEqual(rules, 0)
+    XCTAssertEqual(subheadings, 0)
+    let heading = try await r.evaluate("document.querySelector('article h1').textContent")
+    XCTAssertEqual(heading as? String, "Body heading")
+  }
+
+  func testLeadingRuleWithoutClosingIsNotFrontMatter() async throws {
+    let (r, _) = try await render("leading-rule")
+    let tables = try await count("div.frontmatter", in: r)
+    let rules = try await count("article hr", in: r)
+    XCTAssertEqual(tables, 0)
+    XCTAssertEqual(rules, 1)
+  }
+
+  func renderText(_ markdown: String) async throws -> WebRenderer {
+    let renderer = try WebRenderer(resources: WebRenderer.resourcesURL())
+    _ = try await renderer.render(
+      markdown: markdown, fileURL: URL(fileURLWithPath: "/tmp/inline.md"), width: 800,
+      theme: Theme(dark: false, background: "#ffffff", foreground: "#000000"))
+    return renderer
+  }
+
+  func frontMatterKeys(_ renderer: WebRenderer) async throws -> String? {
+    try await renderer.evaluate(
+      "Array.from(document.querySelectorAll('div.frontmatter th')).map((th) => th.textContent).join('|')") as? String
+  }
+
+  func articleText(_ renderer: WebRenderer) async throws -> String {
+    try await renderer.evaluate("document.querySelector('article').textContent") as? String ?? ""
+  }
+
+  func testRulesAroundProseAreNotFrontMatter() async throws {
+    let r = try await renderText("---\n\nIntro paragraph.\n\n---\n\n# Heading\n")
+    let keys = try await frontMatterKeys(r)
+    let text = try await articleText(r)
+    XCTAssertEqual(keys, "")
+    XCTAssertTrue(text.contains("Intro paragraph."))
+  }
+
+  func testRuleBeforeSetextHeadingIsNotFrontMatter() async throws {
+    let r = try await renderText("---\n\nTitle\n---\nbody\n")
+    let heading = try await r.evaluate("document.querySelector('article h2')?.textContent") as? String
+    let keys = try await frontMatterKeys(r)
+    XCTAssertEqual(heading, "Title")
+    XCTAssertEqual(keys, "")
+  }
+
+  func testEmptyFrontMatterOnlyStripsDelimiters() async throws {
+    let r = try await renderText("---\n---\n# Heading\n\ntext\n\n---\n\nmore\n")
+    let text = try await articleText(r)
+    let tables = try await count("div.frontmatter", in: r)
+    let rules = try await count("article hr", in: r)
+    XCTAssertEqual(tables, 0)
+    XCTAssertEqual(rules, 1)
+    XCTAssertTrue(text.contains("Heading"))
+    XCTAssertTrue(text.contains("text"))
+    XCTAssertTrue(text.contains("more"))
+  }
+
+  func testFrontMatterVariants() async throws {
+    for markdown in [
+      "---\r\ntitle: CRLF\r\n---\r\n# Heading\r\n",
+      "\u{FEFF}---\ntitle: BOM\n---\n# Heading\n",
+      "---\ntitle: Dots\n...\n# Heading\n",
+    ] {
+      let r = try await renderText(markdown)
+      let keys = try await frontMatterKeys(r)
+      let heading = try await r.evaluate("document.querySelector('article h1')?.textContent") as? String
+      XCTAssertEqual(keys, "title", markdown)
+      XCTAssertEqual(heading, "Heading", markdown)
+    }
+  }
+
   func testInlineScriptsDoNotRun() async throws {
     let (r, _) = try await render("hostile")
     let untouched = try await r.evaluate("window.__pwned === undefined") as? Bool

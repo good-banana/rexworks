@@ -250,13 +250,60 @@
     };
   }
 
+  function splitFrontMatter(markdown) {
+    const unchanged = { entries: [], body: markdown };
+    const match = /^\uFEFF?---[ \t]*\r?\n((?:(?!(?:---|\.\.\.)[ \t]*(?:\r?\n|$))[^\n]*\n)*)(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/.exec(markdown);
+    if (!match) return unchanged;
+    const field = /^([^\s#:-][^:]*):(?:\s+(.*)|\s*)$/;
+    const entries = [];
+    for (const line of (match[1] || "").split(/\r?\n/)) {
+      if (!line.trim() || line.trimStart().startsWith("#")) continue;
+      const parts = field.exec(line);
+      if (parts) {
+        entries.push({ key: parts[1].trim(), lines: parts[2] ? [parts[2].trim()] : [] });
+      } else if (entries.length && /^\s/.test(line)) {
+        entries[entries.length - 1].lines.push(line);
+      } else {
+        return unchanged;
+      }
+    }
+    if (!entries.length && (match[1] || "").trim()) return unchanged;
+    for (const entry of entries) {
+      const nested = entry.lines.filter((line) => /^\s/.test(line));
+      const strip = nested.reduce((least, line) => Math.min(least, line.match(/^\s*/)[0].length), Infinity);
+      entry.value = entry.lines.map((line) => (/^\s/.test(line) ? line.slice(strip) : line)).join("\n");
+    }
+    return { entries: entries, body: markdown.slice(match[0].length) };
+  }
+
+  function frontMatterTable(entries) {
+    const container = document.createElement("div");
+    container.className = "frontmatter";
+    const table = document.createElement("table");
+    const body = document.createElement("tbody");
+    for (const entry of entries) {
+      const row = document.createElement("tr");
+      const key = document.createElement("th");
+      key.textContent = entry.key;
+      const value = document.createElement("td");
+      value.textContent = entry.value;
+      row.append(key, value);
+      body.append(row);
+    }
+    table.append(body);
+    container.append(table);
+    return container;
+  }
+
   window.render = async function (markdown, baseURL, theme) {
     setBase(baseURL);
     applyTheme(theme);
+    const parts = splitFrontMatter(markdown);
     const template = document.createElement("template");
-    template.innerHTML = md.render(markdown);
+    template.innerHTML = md.render(parts.body);
     sanitize(template.content);
     replaceVideos(template.content);
+    if (parts.entries.length) template.content.prepend(frontMatterTable(parts.entries));
     const article = document.querySelector("article");
     article.replaceChildren(template.content);
     await renderDiagrams(theme.dark);
