@@ -29,4 +29,20 @@ final class TerminalColorsTests: XCTestCase {
       XCTAssertTrue(TerminalSequences.enter.contains(mode))
     }
   }
+
+  func testThemeFromTerminalColors() {
+    let theme = Theme(foreground: (1, 1, 1), background: (0x1e / 255.0, 0x1e / 255.0, 0x2e / 255.0))
+    XCTAssertEqual(theme, Theme(dark: true, background: "#1e1e2e", foreground: "#ffffff"))
+  }
+
+  func testThemeFallsBackToDarkWhenColorsAreMissing() {
+    let theme = Theme(foreground: nil, background: nil)
+    XCTAssertTrue(theme.dark)
+    XCTAssertEqual(theme.background, "#1e1e1e")
+  }
+
+  func testThemeDerivesMissingForegroundFromBackground() {
+    let theme = Theme(foreground: nil, background: (1, 1, 1))
+    XCTAssertEqual(theme, Theme(dark: false, background: "#ffffff", foreground: "#1f2328"))
+  }
 }

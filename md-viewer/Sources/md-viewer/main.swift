@@ -32,7 +32,8 @@ case "uninstall":
 case "doctor":
   DoctorCommand.run()
 case "view":
-  fail("not implemented", status: 2)
+  guard arguments.count == 2 else { fail("usage: md-viewer view <file>", status: 64) }
+  await ViewCommand.run(file: arguments[1])
 case let command?:
   fail("unknown command: \(command)\n\n\(usage)", status: 64)
 }

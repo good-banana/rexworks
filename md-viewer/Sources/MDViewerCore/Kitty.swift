@@ -25,6 +25,10 @@ public enum Kitty {
     "\(start)a=d,d=i,i=\(id),q=2\(end)"
   }
 
+  public static func deleteImage(id: UInt32) -> String {
+    "\(start)a=d,d=I,i=\(id),q=2\(end)"
+  }
+
   public static func deleteAll() -> String {
     "\(start)a=d,d=A,q=2\(end)"
   }

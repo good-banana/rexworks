@@ -22,5 +22,6 @@ final class KittyTests: XCTestCase {
   func testDeleteSequences() {
     XCTAssertEqual(Kitty.deletePlacements(id: 7), "\u{1b}_Ga=d,d=i,i=7,q=2\u{1b}\\")
     XCTAssertEqual(Kitty.deleteAll(), "\u{1b}_Ga=d,d=A,q=2\u{1b}\\")
+    XCTAssertEqual(Kitty.deleteImage(id: 7), "\u{1b}_Ga=d,d=I,i=7,q=2\u{1b}\\")
   }
 }
