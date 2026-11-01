@@ -25,7 +25,13 @@ case nil, "--help", "-h":
 case "open":
   guard arguments.count == 2 else { fail("usage: md-viewer open <file>", status: 64) }
   OpenCommand.run(file: arguments[1])
-case "view", "setup", "uninstall", "doctor":
+case "setup":
+  SetupCommand.setup()
+case "uninstall":
+  SetupCommand.uninstall()
+case "doctor":
+  DoctorCommand.run()
+case "view":
   fail("not implemented", status: 2)
 case let command?:
   fail("unknown command: \(command)\n\n\(usage)", status: 64)

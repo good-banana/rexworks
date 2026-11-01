@@ -9,7 +9,7 @@ enum OpenCommand {
     let runner = ProcessRunner()
     let paths = SupportPaths(home: FileManager.default.homeDirectoryForCurrentUser)
     let config = try? ConfigStore.load(paths)
-    guard let rex = config?.rexPath ?? locate("rex") else { fail("rex not found", status: 1) }
+    guard let rex = config?.rexPath ?? locateExecutable("rex") else { fail("rex not found", status: 1) }
     let mdViewer = config?.mdViewerPath ?? CommandLine.arguments[0]
 
     do {
@@ -51,13 +51,6 @@ enum OpenCommand {
       !isDirectory.boolValue
     else { return nil }
     return url
-  }
-
-  private static func locate(_ name: String) -> String? {
-    let directories = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":")
-    return directories.map { "\($0)/\(name)" }.first {
-      FileManager.default.isExecutableFile(atPath: $0)
-    }
   }
 
   private struct RexFailure: Error, CustomStringConvertible {
