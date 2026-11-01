@@ -58,6 +58,22 @@ final class RenderPaletteTests: XCTestCase {
     assertSameHue(palette.syntax.function, ansi[4])
   }
 
+  func testBrightSlotsWithDifferentHueAreNotUsed() {
+    let solarizedDark = TerminalColorSet(
+      foreground: RGB(hex: 0x839496), background: RGB(hex: 0x002b36),
+      palette: [
+        0x073642, 0xdc322f, 0x859900, 0xb58900, 0x268bd2, 0xd33682, 0x2aa198, 0xeee8d5,
+        0x002b36, 0xcb4b16, 0x586e75, 0x657b83, 0x839496, 0x6c71c4, 0x93a1a1, 0xfdf6e3,
+      ].map { RGB(hex: $0) })
+    let palette = RenderPalette(colors: solarizedDark)
+    assertSameHue(palette.alerts.tip, RGB(hex: 0x859900))
+    assertSameHue(palette.alerts.warning, RGB(hex: 0xb58900))
+    assertSameHue(palette.link, RGB(hex: 0x268bd2))
+    assertSameHue(palette.alerts.important, RGB(hex: 0xd33682))
+    assertSameHue(palette.syntax.number, RGB(hex: 0x2aa198))
+    XCTAssertEqual(RenderPalette.hueDistance(350, 10), 20)
+  }
+
   func testTintsMixTowardForeground() {
     let palette = RenderPalette(colors: tomorrowNight)
     let bg = RGB(hex: 0x1d1f21)

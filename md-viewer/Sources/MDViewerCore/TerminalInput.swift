@@ -138,6 +138,9 @@ public struct InputParser {
 
   private func skipOSC() -> Parsed {
     var index = 2
+    while index < pending.count, (0x30...0x39).contains(pending[index]) { index += 1 }
+    guard index < pending.count else { return .incomplete }
+    guard index > 2, pending[index] == 0x3b else { return .event(.key(.escape), 1) }
     while index < pending.count {
       switch pending[index] {
       case 0x07:

@@ -76,7 +76,7 @@ final class RexTargetTests: XCTestCase {
     let file = URL(fileURLWithPath: "/tmp/$(touch pwned); a (b) \u{1F415}.md")
     let args = splitArguments(
       target: PaneTarget(session: "session:1", window: "window:2", block: "block:b"),
-      file: file, mdViewer: "/opt/homebrew/bin/md-viewer")
+      file: file, mdViewer: "/opt/homebrew/bin/md-viewer", themeSourceBlock: "block:b")
     XCTAssertEqual(
       args,
       [
@@ -99,6 +99,29 @@ final class RexTargetTests: XCTestCase {
       tabArguments(session: "session:1", file: file, mdViewer: "/bin/md-viewer", themeSourceBlock: "block:s")
         .suffix(4),
       ["view", "--theme-source-block", "block:s", "/tmp/a.md"])
+  }
+
+  func testSplitWithoutThemeSourceOmitsTheFlag() {
+    let args = splitArguments(
+      target: PaneTarget(session: "s", window: "w", block: "b"), file: URL(fileURLWithPath: "/tmp/a.md"),
+      mdViewer: "/old/md-viewer")
+    XCTAssertFalse(args.contains("--theme-source-block"))
+    XCTAssertEqual(args.suffix(2), ["view", "/tmp/a.md"])
+  }
+
+  func testSameExecutableComparesRealPaths() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let real = directory.appendingPathComponent("md-viewer")
+    let link = directory.appendingPathComponent("linked")
+    let other = directory.appendingPathComponent("other")
+    FileManager.default.createFile(atPath: real.path, contents: Data())
+    FileManager.default.createFile(atPath: other.path, contents: Data())
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+    XCTAssertTrue(isSameExecutable(link.path, real.path))
+    XCTAssertTrue(isSameExecutable(directory.path + "/./md-viewer", real.path))
+    XCTAssertFalse(isSameExecutable(other.path, real.path))
   }
 
   func testViewArgumentsAcceptOptionalThemeSourceBlock() {

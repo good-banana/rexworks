@@ -72,7 +72,10 @@ public struct RenderPalette: Equatable, Sendable {
     func hue(_ index: Int) -> RGB {
       let normal = ansi[index]
       let bright = ansi[index + 8]
-      return bright.contrast(with: bg) > normal.contrast(with: bg) ? bright : normal
+      let sameHue = Self.hueDistance(normal.hsl.hue, bright.hsl.hue) <= 30
+      let similarSaturation = bright.hsl.saturation >= normal.hsl.saturation * 0.7
+      let brighter = bright.contrast(with: bg) > normal.contrast(with: bg)
+      return sameHue && similarSaturation && brighter ? bright : normal
     }
     let red = hue(1)
     let green = hue(2)
@@ -117,6 +120,11 @@ public struct RenderPalette: Equatable, Sendable {
         self[keyPath: requirement.token], against: self[keyPath: requirement.backdrop],
         minimum: requirement.minimum)
     }
+  }
+
+  static func hueDistance(_ a: Double, _ b: Double) -> Double {
+    let distance = abs(a - b).truncatingRemainder(dividingBy: 360)
+    return min(distance, 360 - distance)
   }
 
   public static func fallback(dark: Bool) -> RenderPalette {

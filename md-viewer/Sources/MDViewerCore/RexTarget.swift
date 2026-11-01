@@ -142,11 +142,20 @@ private func viewerCommand(file: URL, mdViewer: String, themeSourceBlock: String
   ] + (themeSourceBlock.map { [themeSourceBlockOption, $0] } ?? []) + [file.path]
 }
 
-public func splitArguments(target: PaneTarget, file: URL, mdViewer: String) -> [String] {
+public func splitArguments(target: PaneTarget, file: URL, mdViewer: String, themeSourceBlock: String? = nil)
+  -> [String]
+{
   var arguments = ["run", "--session", target.session]
   if let block = target.block { arguments += ["--block", block] }
   arguments += ["--split", "right", "--ratio", "45"]
-  return arguments + viewerCommand(file: file, mdViewer: mdViewer, themeSourceBlock: target.block)
+  return arguments + viewerCommand(file: file, mdViewer: mdViewer, themeSourceBlock: themeSourceBlock)
+}
+
+public func isSameExecutable(_ first: String, _ second: String) -> Bool {
+  func canonical(_ path: String) -> String {
+    URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+  }
+  return canonical(first) == canonical(second)
 }
 
 public func tabArguments(session: String, file: URL, mdViewer: String, themeSourceBlock: String? = nil)

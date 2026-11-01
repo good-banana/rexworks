@@ -1,9 +1,17 @@
 import Foundation
 
 public protocol ProcessRunning {
-  func run(_ executable: String, _ arguments: [String]) throws -> (
+  func run(_ executable: String, _ arguments: [String], timeout: TimeInterval?) throws -> (
     status: Int32, stdout: Data, stderr: Data
   )
+}
+
+extension ProcessRunning {
+  public func run(_ executable: String, _ arguments: [String]) throws -> (
+    status: Int32, stdout: Data, stderr: Data
+  ) {
+    try run(executable, arguments, timeout: nil)
+  }
 }
 
 public struct ProcessRunnerError: Error, Equatable, CustomStringConvertible {
@@ -18,9 +26,10 @@ public struct ProcessRunner: ProcessRunning {
     self.timeout = timeout
   }
 
-  public func run(_ executable: String, _ arguments: [String]) throws -> (
+  public func run(_ executable: String, _ arguments: [String], timeout callTimeout: TimeInterval?) throws -> (
     status: Int32, stdout: Data, stderr: Data
   ) {
+    let limit = callTimeout ?? timeout
     let process = Process()
     process.executableURL = URL(fileURLWithPath: executable)
     process.arguments = arguments
@@ -49,10 +58,13 @@ public struct ProcessRunner: ProcessRunning {
       }
     }
 
-    if finished.wait(timeout: .now() + timeout) == .timedOut {
+    if finished.wait(timeout: .now() + max(limit, 0)) == .timedOut {
       process.terminate()
-      _ = finished.wait(timeout: .now() + 2)
-      throw ProcessRunnerError(message: "\(executable) timed out after \(Int(timeout)) seconds")
+      if finished.wait(timeout: .now() + 0.1) == .timedOut {
+        kill(process.processIdentifier, SIGKILL)
+        _ = finished.wait(timeout: .now() + 0.1)
+      }
+      throw ProcessRunnerError(message: "\(executable) timed out after \(limit) seconds")
     }
     group.wait()
     return (process.terminationStatus, stdoutBox.value, stderrBox.value)

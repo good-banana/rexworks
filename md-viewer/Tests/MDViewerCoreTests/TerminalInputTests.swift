@@ -107,7 +107,7 @@ final class TerminalInputTests: XCTestCase {
 
   func testUnterminatedOSCIsEventuallyDropped() {
     var p = InputParser()
-    XCTAssertEqual(p.feed([0x1b, 0x5d] + Array(repeating: 0x41, count: 5000)), [])
+    XCTAssertEqual(p.feed(Array("\u{1b}]52;".utf8) + Array(repeating: 0x41, count: 5000)), [])
     XCTAssertEqual(p.feed(Array("j".utf8)), [.key(.char("j"))])
   }
 
@@ -117,5 +117,17 @@ final class TerminalInputTests: XCTestCase {
     XCTAssertTrue(InputEvent.key(.char("r")).requestsThemeResolve)
     XCTAssertFalse(InputEvent.key(.char("R")).requestsThemeResolve)
     XCTAssertFalse(InputEvent.mouse(.init(kind: .press, x: 0, y: 0)).requestsThemeResolve)
+  }
+
+  func testAltBracketDoesNotFreezeInput() {
+    var p = InputParser()
+    XCTAssertEqual(p.feed([0x1b, 0x5d]), [])
+    XCTAssertEqual(p.feed(Array("q".utf8)), [.key(.escape), .key(.char("]")), .key(.char("q"))])
+    XCTAssertEqual(p.feed(Array("\u{1b}]1".utf8)), [])
+    XCTAssertEqual(
+      p.feed(Array("0j".utf8)), [.key(.escape), .key(.char("]")), .key(.char("1")), .key(.char("0")), .key(.char("j"))])
+    XCTAssertEqual(p.feed(Array("\u{1b};k".utf8)), [.key(.escape), .key(.char(";")), .key(.char("k"))])
+    XCTAssertEqual(
+      p.feed(Array("\u{1b}];k".utf8)), [.key(.escape), .key(.char("]")), .key(.char(";")), .key(.char("k"))])
   }
 }

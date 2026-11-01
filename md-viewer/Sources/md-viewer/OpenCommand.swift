@@ -11,6 +11,7 @@ enum OpenCommand {
     let config = try? ConfigStore.load(paths)
     guard let rex = config?.rexPath ?? locateExecutable("rex") else { fail("rex not found", status: 1) }
     let mdViewer = config?.mdViewerPath ?? ownExecutable().path
+    let viewerTakesThemeSource = isSameExecutable(mdViewer, ownExecutable().path)
 
     do {
       let clients = try rexJSON(runner, rex, ["client", "ls", "--json"])
@@ -36,12 +37,17 @@ enum OpenCommand {
       case .reused:
         exit(0)
       case .split(let target):
-        _ = try rexJSON(runner, rex, splitArguments(target: target, file: file, mdViewer: mdViewer))
+        _ = try rexJSON(
+          runner, rex,
+          splitArguments(
+            target: target, file: file, mdViewer: mdViewer,
+            themeSourceBlock: viewerTakesThemeSource ? target.block : nil))
       case .newTab(let session):
         _ = try rexJSON(
           runner, rex,
           tabArguments(
-            session: session, file: file, mdViewer: mdViewer, themeSourceBlock: target.block))
+            session: session, file: file, mdViewer: mdViewer,
+            themeSourceBlock: viewerTakesThemeSource ? target.block : nil))
       }
       exit(0)
     } catch {

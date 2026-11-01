@@ -172,13 +172,20 @@ public struct TerminalColorReplyReader {
         break
       }
       if pending[index + 1] == 0x5b {
-        guard let final = (index + 2..<pending.count).first(where: { (0x40...0x7e).contains(pending[$0]) })
+        guard
+          let end = (index + 2..<pending.count).first(where: {
+            pending[$0] == 0x1b || (0x40...0x7e).contains(pending[$0])
+          })
         else {
           keepFrom = index
           break
         }
-        acceptCSI(params: pending[(index + 2)..<final], final: pending[final])
-        index = final + 1
+        if pending[end] == 0x1b {
+          index = end
+          continue
+        }
+        acceptCSI(params: pending[(index + 2)..<end], final: pending[end])
+        index = end + 1
         continue
       }
       guard pending[index + 1] == 0x5d else {

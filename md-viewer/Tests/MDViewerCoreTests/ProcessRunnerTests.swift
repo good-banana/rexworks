@@ -19,6 +19,19 @@ final class ProcessRunnerTests: XCTestCase {
     XCTAssertThrowsError(try ProcessRunner(timeout: 0.3).run("/bin/sleep", ["5"]))
   }
 
+  func testPerCallTimeoutOverridesDefault() {
+    let started = Date()
+    XCTAssertThrowsError(try ProcessRunner(timeout: 30).run("/bin/sleep", ["5"], timeout: 0.2))
+    XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+  }
+
+  func testKillsChildThatIgnoresTerminate() {
+    let started = Date()
+    XCTAssertThrowsError(
+      try ProcessRunner().run("/bin/sh", ["-c", "trap '' TERM; while :; do :; done"], timeout: 0.2))
+    XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+  }
+
   func testMissingExecutableThrows() {
     XCTAssertThrowsError(try ProcessRunner().run("/no/such/binary", []))
   }

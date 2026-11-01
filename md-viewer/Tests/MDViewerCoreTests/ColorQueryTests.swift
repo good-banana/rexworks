@@ -98,6 +98,14 @@ final class ColorQueryTests: XCTestCase {
     XCTAssertFalse(reader.isComplete)
   }
 
+  func testTruncatedCSIDoesNotSwallowColorReply() {
+    var reader = TerminalColorReplyReader(expectsPalette: false)
+    reader.feed(Array("\u{1b}[?99\u{1b}]11;rgb:12/34/56\(st)\u{1b}[?997;1".utf8))
+    XCTAssertEqual(reader.colors.background, RGB(hex: 0x123456))
+    reader.feed(Array("n".utf8))
+    XCTAssertEqual(reader.colors.colorScheme, .dark)
+  }
+
   func testReaderRecoversFromTruncatedReply() {
     var reader = TerminalColorReplyReader(expectsPalette: false)
     reader.feed(Array("\u{1b}]10;rgb:12\u{1b}[B\u{1b}]10;rgb:ff/ff/ff\(st)".utf8))

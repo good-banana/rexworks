@@ -97,18 +97,20 @@ enum Terminal {
   static func queryColors(timeoutMilliseconds: Int = 200) -> (
     foreground: (r: Double, g: Double, b: Double)?, background: (r: Double, g: Double, b: Double)?
   ) {
-    let colors = queryColorSet(includePalette: false, timeoutMilliseconds: timeoutMilliseconds)
+    let colors = queryColorSet(includePalette: false, timeoutMilliseconds: timeoutMilliseconds).colors
     return (colors.foreground?.tuple, colors.background?.tuple)
   }
 
-  static func queryColorSet(includePalette: Bool = true, timeoutMilliseconds: Int = 200) -> TerminalColorSet {
+  static func queryColorSet(includePalette: Bool = true, timeoutMilliseconds: Int = 200) -> (
+    colors: TerminalColorSet, timedOut: Bool
+  ) {
     let wasRaw = rawModeActive
     var original = termios()
     if !wasRaw {
-      guard tcgetattr(STDIN_FILENO, &original) == 0 else { return TerminalColorSet() }
+      guard tcgetattr(STDIN_FILENO, &original) == 0 else { return (TerminalColorSet(), false) }
       var raw = original
       cfmakeraw(&raw)
-      guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0 else { return TerminalColorSet() }
+      guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0 else { return (TerminalColorSet(), false) }
     }
     defer {
       if !wasRaw { tcsetattr(STDIN_FILENO, TCSAFLUSH, &original) }
@@ -123,15 +125,29 @@ enum Terminal {
       let remaining = Int32((deadline - now) / 1_000_000) + 1
       reader.feed(readAvailable(timeoutMilliseconds: remaining))
     }
-    return reader.colors
+    return (reader.colors, !reader.isComplete)
   }
 
-  static func resolveTheme(themeSourceBlock: String?, timeoutMilliseconds: Int = 200) -> ResolvedTheme {
+  static func themeResolver() -> ThemeResolver {
     let config = try? ConfigStore.load(currentPaths())
-    let resolver = ThemeResolver(
-      runner: ProcessRunner(timeout: 2), preferences: SystemPreferenceReader(), files: SystemThemeFileAccess(),
+    return ThemeResolver(
+      runner: ProcessRunner(), preferences: SystemPreferenceReader(), files: SystemThemeFileAccess(),
       rexPath: config?.rexPath ?? locateExecutable("rex"), environment: ProcessInfo.processInfo.environment)
-    return resolver.resolve(
-      inBand: queryColorSet(timeoutMilliseconds: timeoutMilliseconds), sourceBlock: themeSourceBlock)
+  }
+
+  static func resolveTheme(themeSourceBlock: String?, timeoutMilliseconds: Int = 200) -> (
+    theme: ResolvedTheme, queryTimedOut: Bool
+  ) {
+    let query = queryColorSet(timeoutMilliseconds: timeoutMilliseconds)
+    return (themeResolver().resolve(inBand: query.colors, sourceBlock: themeSourceBlock), query.timedOut)
+  }
+
+  static func crossCheckTheme(
+    _ theme: ResolvedTheme, themeSourceBlock: String?, log: @escaping @Sendable (String) -> Void
+  ) {
+    DispatchQueue.global(qos: .utility).async {
+      let resolver = themeResolver()
+      if let note = theme.note(for: resolver.crossCheck(theme, sourceBlock: themeSourceBlock)) { log(note) }
+    }
   }
 }

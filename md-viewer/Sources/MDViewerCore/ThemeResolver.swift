@@ -5,8 +5,19 @@ public protocol PreferenceReading {
   func value(forKey key: String, domain: String) -> Any?
 }
 
+public struct RunningApplication: Equatable, Sendable {
+  public var pid: Int32
+  public var bundleURL: URL
+
+  public init(pid: Int32, bundleURL: URL) {
+    self.pid = pid
+    self.bundleURL = bundleURL
+  }
+}
+
 public protocol ThemeFileAccessing {
-  func applicationURL(bundleID: String) -> URL?
+  func runningApplications(bundleID: String) -> [RunningApplication]
+  func installedApplicationURL(bundleID: String) -> URL?
   func contents(of url: URL) -> Data?
 }
 
@@ -22,7 +33,13 @@ public struct SystemPreferenceReader: PreferenceReading {
 public struct SystemThemeFileAccess: ThemeFileAccessing {
   public init() {}
 
-  public func applicationURL(bundleID: String) -> URL? {
+  public func runningApplications(bundleID: String) -> [RunningApplication] {
+    NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).compactMap { app in
+      app.bundleURL.map { RunningApplication(pid: app.processIdentifier, bundleURL: $0) }
+    }
+  }
+
+  public func installedApplicationURL(bundleID: String) -> URL? {
     NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
   }
 
@@ -105,18 +122,25 @@ public struct ResolvedTheme: Equatable, Sendable {
 
   public var colors: TerminalColorSet
   public var source: Source
-  public var crossCheck: CrossCheck = .skipped
+  public var themePalette: [RGB]?
+
+  public init(colors: TerminalColorSet, source: Source, themePalette: [RGB]? = nil) {
+    self.colors = colors
+    self.source = source
+    self.themePalette = themePalette
+  }
 
   public var palette: RenderPalette { RenderPalette(colors: colors) }
 
-  public var note: String? {
-    guard case .rexTheme(let id) = source, case .mismatch(let block) = crossCheck else { return nil }
+  public func note(for check: CrossCheck) -> String? {
+    guard case .rexTheme(let id) = source, case .mismatch(let block) = check else { return nil }
     return "theme \(id) does not match the palette of \(block); using the theme colors"
   }
 }
 
 public struct ThemeResolver {
-  public static let rexBundleID = "com.superlogical.rex"
+  public static let rexBundleIDs = ["com.superlogical.rex"]
+  static let preferencesDomain = "com.superlogical.rex"
   static let themesPath = "Contents/Resources/SuperUI_SuperDesignTokens.bundle/Contents/Resources/themes.json"
   static let shellNames: Set<String> = ["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "xonsh"]
   static let maximumShellProbes = 8
@@ -126,6 +150,8 @@ public struct ThemeResolver {
   public var files: ThemeFileAccessing
   public var rexPath: String?
   public var environment: [String: String]
+  public var budget: TimeInterval = 0.3
+  public var crossCheckBudget: TimeInterval = 2
 
   public init(
     runner: ProcessRunning, preferences: PreferenceReading, files: ThemeFileAccessing, rexPath: String?,
@@ -142,34 +168,53 @@ public struct ThemeResolver {
     guard let session = environment["REX_SESSION"] else {
       return ResolvedTheme(colors: inBand, source: .terminalQuery)
     }
+    let deadline = Date().addingTimeInterval(budget)
     let scheme = colorScheme(inBand: inBand)
-    let themes = availableThemes()
-    let themeID = preferences.value(
-      forKey: scheme == .dark ? "Workspace.darkThemeID" : "Workspace.lightThemeID", domain: Self.rexBundleID)
-    let checkBlock = sourceBlock ?? shellBlock(session: session)
-    let checkPalette = checkBlock.flatMap { apiPalette(session: session, block: $0) }
+    let themes = availableThemes(deadline: deadline)
+    let themeID = preference(scheme == .dark ? "Workspace.darkThemeID" : "Workspace.lightThemeID") as? String
 
-    if let themeID = themeID as? String, let theme = themes.first(where: { $0.id == themeID }) {
-      var resolved = ResolvedTheme(colors: colors(theme, scheme), source: .rexTheme(theme.id))
-      if let checkBlock, let checkPalette {
-        resolved.crossCheck =
-          matches(theme, checkPalette) ? .confirmed(block: checkBlock) : .mismatch(block: checkBlock)
+    if let theme = themes.first(where: { $0.id == themeID }) {
+      var resolved = ResolvedTheme(
+        colors: colors(theme, scheme), source: .rexTheme(theme.id), themePalette: theme.ansi)
+      if (preference("Workspace.terminalUseThemePalette") as? Bool) == false {
+        let pane = sourceBlock.flatMap { apiPalette(session: session, block: $0, deadline: deadline) }
+        let terminal = pane ?? inBand.palette
+        resolved.colors.palette = zip(terminal, theme.ansi).map { $0 ?? $1 }
+        resolved.themePalette = nil
+      }
+      if let selection = colorPreference(preference("Workspace.terminalSelectionBackground")) {
+        resolved.colors.selectionBackground = selection
       }
       return resolved
     }
-    guard let checkPalette else { return ResolvedTheme(colors: inBand, source: .terminalQuery) }
-    let candidates = themes.filter { matches($0, checkPalette) }
+
+    let paneBlock = sourceBlock ?? shellBlock(session: session, deadline: deadline)
+    guard let pane = paneBlock.flatMap({ apiPalette(session: session, block: $0, deadline: deadline) }) else {
+      return ResolvedTheme(colors: inBand, source: .terminalQuery)
+    }
+    let candidates = themes.filter { matches($0.ansi, pane) }
     if let theme = candidates.first(where: { $0.appearance == scheme }) ?? candidates.first {
       return ResolvedTheme(colors: colors(theme, scheme), source: .rexPaletteMatch(theme.id))
     }
     var colors = inBand
-    colors.palette = checkPalette
+    colors.palette = pane
     return ResolvedTheme(colors: colors, source: .rexPalette)
+  }
+
+  public func crossCheck(_ resolved: ResolvedTheme, sourceBlock: String?) -> ResolvedTheme.CrossCheck {
+    guard case .rexTheme = resolved.source, let expected = resolved.themePalette,
+      let session = environment["REX_SESSION"]
+    else { return .skipped }
+    let deadline = Date().addingTimeInterval(crossCheckBudget)
+    guard let block = sourceBlock ?? shellBlock(session: session, deadline: deadline),
+      let pane = apiPalette(session: session, block: block, deadline: deadline)
+    else { return .skipped }
+    return matches(expected, pane) ? .confirmed(block: block) : .mismatch(block: block)
   }
 
   func colorScheme(inBand: TerminalColorSet) -> ColorScheme {
     if let scheme = inBand.colorScheme { return scheme }
-    switch preferences.value(forKey: "Workspace.appearance", domain: Self.rexBundleID) as? String {
+    switch preference("Workspace.appearance") as? String {
     case "dark": return .dark
     case "light": return .light
     default:
@@ -178,18 +223,35 @@ public struct ThemeResolver {
     }
   }
 
-  func availableThemes() -> [RexTheme] {
-    let custom = parseRexThemes(preferences.value(forKey: "Workspace.customThemes", domain: Self.rexBundleID))
-    guard let app = files.applicationURL(bundleID: Self.rexBundleID),
+  func availableThemes(deadline: Date) -> [RexTheme] {
+    let custom = parseRexThemes(preference("Workspace.customThemes"))
+    guard let app = rexApplicationURL(deadline: deadline),
       let data = files.contents(of: app.appendingPathComponent(Self.themesPath))
     else { return custom }
     return custom + parseRexThemes(data)
   }
 
-  func shellBlock(session: String) -> String? {
-    guard let list = rexJSON(["block", "ls", "-s", session, "--json"])?["blocks"] as? [[String: Any]] else {
-      return nil
+  func rexApplicationURL(deadline: Date) -> URL? {
+    let running = Self.rexBundleIDs.flatMap { files.runningApplications(bundleID: $0) }
+    if running.count > 1, let pid = appClientPID(deadline: deadline),
+      let match = running.first(where: { $0.pid == pid })
+    {
+      return match.bundleURL
     }
+    if let first = running.first { return first.bundleURL }
+    return Self.rexBundleIDs.lazy.compactMap { files.installedApplicationURL(bundleID: $0) }.first
+  }
+
+  func appClientPID(deadline: Date) -> Int32? {
+    let clients = rexJSON(["client", "ls", "--json"], deadline: deadline)?["clients"] as? [[String: Any]]
+    let app = clients?.first { ($0["info"] as? [String: Any])?["kind"] as? String == "app" }
+    return ((app?["principal"] as? [String: Any])?["pid"] as? NSNumber)?.int32Value
+  }
+
+  func shellBlock(session: String, deadline: Date) -> String? {
+    guard
+      let list = rexJSON(["block", "ls", "-s", session, "--json"], deadline: deadline)?["blocks"] as? [[String: Any]]
+    else { return nil }
     let candidates = list.compactMap { block -> String? in
       guard block["creator_name"] as? String == "com.superlogical.terminal",
         let id = block["block_id"] as? String, id != environment["REX_BLOCK"]
@@ -197,35 +259,85 @@ public struct ThemeResolver {
       return id
     }
     return candidates.prefix(Self.maximumShellProbes).first { id in
-      let process = rexJSON(["do", "com.superlogical.terminal.process", "-s", session, "-b", id, "--json"])
+      let process = rexJSON(
+        ["do", "com.superlogical.terminal.process", "-s", session, "-b", id, "--json"], deadline: deadline)
       let name = (process?["foreground"] as? [String: Any])?["name"] as? String
       return name.map { Self.shellNames.contains($0) } ?? false
     }
   }
 
-  func apiPalette(session: String, block: String) -> [RGB?]? {
+  func apiPalette(session: String, block: String, deadline: Date) -> [RGB?]? {
     let arguments = [
       "do", "com.superlogical.terminal.format", "-s", session, "-b", block, "format=vt", "extra_palette=true",
       "max_bytes=8192", "--json",
     ]
-    guard let content = rexJSON(arguments)?["content"] as? String else { return nil }
+    guard let content = rexJSON(arguments, deadline: deadline)?["content"] as? String else { return nil }
     var reader = TerminalColorReplyReader(expectsPalette: true)
     reader.feed(Array(content.utf8))
     return reader.colors.palette.contains(nil) ? nil : reader.colors.palette
   }
 
-  private func rexJSON(_ arguments: [String]) -> [String: Any]? {
-    guard let rexPath, let result = try? runner.run(rexPath, arguments), result.status == 0 else { return nil }
+  private func preference(_ key: String) -> Any? {
+    preferences.value(forKey: key, domain: Self.preferencesDomain)
+  }
+
+  private func colorPreference(_ value: Any?) -> RGB? {
+    if let string = value as? String { return parseHexColor(string) }
+    if let data = value as? Data {
+      let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: CharacterSet(charactersIn: "\" \n"))
+      return parseHexColor(text)
+    }
+    return nil
+  }
+
+  private func rexJSON(_ arguments: [String], deadline: Date) -> [String: Any]? {
+    let remaining = deadline.timeIntervalSinceNow
+    guard let rexPath, remaining > 0, let result = try? runner.run(rexPath, arguments, timeout: remaining),
+      result.status == 0
+    else { return nil }
     return try? JSONSerialization.jsonObject(with: result.stdout) as? [String: Any]
   }
 
-  private func matches(_ theme: RexTheme, _ palette: [RGB?]) -> Bool {
-    zip(theme.ansi, palette).allSatisfy { $0.description == $1?.description }
+  private func matches(_ expected: [RGB], _ palette: [RGB?]) -> Bool {
+    expected.count == palette.count && zip(expected, palette).allSatisfy { $0.description == $1?.description }
   }
 
   private func colors(_ theme: RexTheme, _ scheme: ColorScheme) -> TerminalColorSet {
     TerminalColorSet(
       foreground: theme.foreground, background: theme.background, palette: theme.ansi,
       colorScheme: theme.appearance ?? scheme, cursor: theme.cursor, selectionBackground: theme.selectionBackground)
+  }
+}
+
+public struct ThemeRefreshScheduler: Equatable, Sendable {
+  public enum Trigger: Equatable, Sendable {
+    case colorScheme
+    case reload
+  }
+
+  public static let debounce: TimeInterval = 0.1
+  public static let quietAfterTimeout: TimeInterval = 0.3
+
+  public private(set) var inFlight = false
+  public private(set) var dueAt: TimeInterval?
+  private var ignoreColorSchemeUntil: TimeInterval = -.infinity
+
+  public init() {}
+
+  public mutating func request(_ trigger: Trigger, now: TimeInterval) {
+    if trigger == .colorScheme, inFlight || now < ignoreColorSchemeUntil { return }
+    dueAt = now + Self.debounce
+  }
+
+  public mutating func start(now: TimeInterval) -> Bool {
+    guard !inFlight, let dueAt, now >= dueAt else { return false }
+    self.dueAt = nil
+    inFlight = true
+    return true
+  }
+
+  public mutating func finish(now: TimeInterval, queryTimedOut: Bool) {
+    inFlight = false
+    if queryTimedOut { ignoreColorSchemeUntil = now + Self.quietAfterTimeout }
   }
 }
