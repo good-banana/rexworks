@@ -18,6 +18,10 @@ let package = Package(
       ]),
     .target(name: "MDViewerLayout", dependencies: ["MDViewerDocument"]),
     .target(
+      name: "MDViewerRender",
+      dependencies: ["MDViewerCore", "MDViewerDocument", "MDViewerLayout"],
+      resources: [.copy("Resources/highlight.min.js"), .copy("Resources/THIRD_PARTY_NOTICES")]),
+    .target(
       name: "MDViewerWeb",
       dependencies: ["MDViewerCore"],
       resources: [.copy("Resources/web")]),
@@ -34,6 +38,10 @@ let package = Package(
     .testTarget(
       name: "MDViewerLayoutTests",
       dependencies: ["MDViewerLayout", "MDViewerDocument"],
+      resources: [.copy("Fixtures")]),
+    .testTarget(
+      name: "MDViewerRasterTests",
+      dependencies: ["MDViewerRender", "MDViewerLayout", "MDViewerCore", "MDViewerDocument"],
       resources: [.copy("Fixtures")]),
     .testTarget(
       name: "MDViewerRenderTests",

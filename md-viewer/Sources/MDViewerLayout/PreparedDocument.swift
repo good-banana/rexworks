@@ -180,7 +180,7 @@ private final class Preparer {
     currentBlock = id
     let lastLine = max(FrontMatter.split(source).bodyLineOffset, 1)
     let range = SourceRange(start: SourcePosition(line: 1, column: 1), end: SourcePosition(line: lastLine, column: 1))
-    var keyStyle = SpanStyle(size: typography.frontMatterScale, weight: typography.strongWeight)
+    var keyStyle = SpanStyle(size: typography.frontMatterScale, weight: .medium, monospaced: true)
     keyStyle.color = .muted
     let valueStyle = SpanStyle(size: typography.frontMatterScale)
     var inner = context
@@ -379,6 +379,7 @@ private final class Preparer {
         var inner = context
         inner.isTight = true
         inner.unitKind = .tableCell
+        inner.style.size = context.style.size * typography.tableScale
         if cell.isHeader { inner.style.weight = typography.strongWeight }
         let children: [Node]
         if cell.content.isEmpty {

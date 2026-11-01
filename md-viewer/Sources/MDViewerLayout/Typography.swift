@@ -17,6 +17,7 @@ public struct Typography: Hashable, Sendable {
   public var scriptScale: CGFloat = 0.75
   public var footnoteScale: CGFloat = 0.75
   public var frontMatterScale: CGFloat = 0.75
+  public var tableScale: CGFloat = 14.0 / 15.0
   public var headingScales: [CGFloat] = [2, 1.5, 1.25, 1, 0.875, 0.85]
   public var headingWeights: [FontWeight] = Array(repeating: .semibold, count: 6)
   public var strongWeight: FontWeight = .semibold
