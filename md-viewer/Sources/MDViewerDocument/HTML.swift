@@ -11,14 +11,9 @@ enum HTMLTokenizer {
   static let rawTextElements: Set<String> = [
     "script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext",
   ]
-  private static let maximumTagLength = 2048
-
   static func tokenize(_ html: String) -> [HTMLToken] {
     let s = Array(html.unicodeScalars)
-    var nextGreaterThan = [Int](repeating: s.count, count: s.count + 1)
-    for index in stride(from: s.count - 1, through: 0, by: -1) {
-      nextGreaterThan[index] = s[index] == ">" ? index : nextGreaterThan[index + 1]
-    }
+    let tables = Tables(s)
     var tokens: [HTMLToken] = []
     var text: Scalars = []
     var rawTextSearches: [String: (from: Int, end: Int?)] = [:]
@@ -28,9 +23,19 @@ enum HTMLTokenizer {
       text = []
     }
     while i < s.count {
-      guard s[i] == "<", let (token, end) = tag(s, at: i, nextGreaterThan: nextGreaterThan) else {
+      guard s[i] == "<" else {
         text.append(s[i])
         i += 1
+        continue
+      }
+      guard let (token, end) = tag(s, at: i, tables: tables) else {
+        if looksLikeTag(s, at: i) {
+          flushText()
+          i = min(tables.nextGreaterThan[i] + 1, s.count)
+        } else {
+          text.append(s[i])
+          i += 1
+        }
         continue
       }
       flushText()
@@ -67,7 +72,34 @@ enum HTMLTokenizer {
     return nil
   }
 
-  private static func tag(_ s: Scalars, at start: Int, nextGreaterThan: [Int]) -> (HTMLToken, Int)? {
+  private struct Tables {
+    let nextGreaterThan: [Int]
+    let nextDoubleQuote: [Int]
+    let nextSingleQuote: [Int]
+
+    init(_ s: [Unicode.Scalar]) {
+      func table(_ target: Unicode.Scalar) -> [Int] {
+        var result = [Int](repeating: s.count, count: s.count + 1)
+        for index in stride(from: s.count - 1, through: 0, by: -1) {
+          result[index] = s[index] == target ? index : result[index + 1]
+        }
+        return result
+      }
+      nextGreaterThan = table(">")
+      nextDoubleQuote = table("\"")
+      nextSingleQuote = table("'")
+    }
+  }
+
+  private static func looksLikeTag(_ s: Scalars, at start: Int) -> Bool {
+    let next = start + 1
+    guard next < s.count else { return false }
+    if isASCIILetter(s[next]) { return true }
+    return s[next] == "/" && next + 1 < s.count && isASCIILetter(s[next + 1])
+  }
+
+  private static func tag(_ s: Scalars, at start: Int, tables: Tables) -> (HTMLToken, Int)? {
+    let nextGreaterThan = tables.nextGreaterThan
     var i = start + 1
     guard i < s.count else { return nil }
     if matches(s, "!--", at: i) {
@@ -78,50 +110,50 @@ enum HTMLTokenizer {
       return (.comment, min(nextGreaterThan[i] + 1, s.count))
     }
     guard nextGreaterThan[i] < s.count else { return nil }
-    let limit = min(s.count, start + maximumTagLength)
     let closing = s[i] == "/"
     if closing { i += 1 }
-    guard i < limit, isASCIILetter(s[i]) else { return nil }
+    guard i < s.count, isASCIILetter(s[i]) else { return nil }
     let nameStart = i
-    while i < limit, isASCIILetter(s[i]) || ("0"..."9").contains(s[i]) || s[i] == "-" { i += 1 }
+    while i < s.count, isASCIILetter(s[i]) || ("0"..."9").contains(s[i]) || s[i] == "-" { i += 1 }
     let name = string(Array(s[nameStart..<i])).lowercased()
     if closing {
-      while i < limit, isSpace(s[i]) { i += 1 }
-      guard i < limit, s[i] == ">" else { return nil }
+      while i < s.count, isSpace(s[i]) { i += 1 }
+      guard i < s.count, s[i] == ">" else { return nil }
       return (.endTag(name: name), i + 1)
     }
     var attributes: [String: String] = [:]
     while true {
       let beforeSpace = i
-      while i < limit, isSpace(s[i]) { i += 1 }
-      guard i < limit else { return nil }
+      while i < s.count, isSpace(s[i]) { i += 1 }
+      guard i < s.count else { return nil }
       if s[i] == ">" { return (.startTag(name: name, attributes: attributes), i + 1) }
-      if s[i] == "/", i + 1 < limit, s[i + 1] == ">" { return (.startTag(name: name, attributes: attributes), i + 2) }
+      if s[i] == "/", i + 1 < s.count, s[i + 1] == ">" { return (.startTag(name: name, attributes: attributes), i + 2) }
       guard i > beforeSpace else { return nil }
       let attributeStart = i
-      while i < limit, !isSpace(s[i]), !"\"'>/=<".unicodeScalars.contains(s[i]) { i += 1 }
+      while i < s.count, !isSpace(s[i]), !"\"'>/=<".unicodeScalars.contains(s[i]) { i += 1 }
       guard i > attributeStart else { return nil }
       let attribute = string(Array(s[attributeStart..<i])).lowercased()
       var value = ""
       var j = i
-      while j < limit, isSpace(s[j]) { j += 1 }
-      if j < limit, s[j] == "=" {
+      while j < s.count, isSpace(s[j]) { j += 1 }
+      if j < s.count, s[j] == "=" {
         j += 1
-        while j < limit, isSpace(s[j]) { j += 1 }
-        guard j < limit else { return nil }
+        while j < s.count, isSpace(s[j]) { j += 1 }
+        guard j < s.count else { return nil }
         if s[j] == "\"" || s[j] == "'" {
-          guard let close = s[(j + 1)..<limit].firstIndex(of: s[j]) else { return nil }
+          let close = s[j] == "\"" ? tables.nextDoubleQuote[j + 1] : tables.nextSingleQuote[j + 1]
+          guard close < s.count else { return nil }
           value = string(Array(s[(j + 1)..<close]))
           i = close + 1
         } else {
           let valueStart = j
-          while j < limit, !isSpace(s[j]), !"\"'=<>`".unicodeScalars.contains(s[j]) { j += 1 }
+          while j < s.count, !isSpace(s[j]), !"\"'=<>`".unicodeScalars.contains(s[j]) { j += 1 }
           guard j > valueStart else { return nil }
           value = string(Array(s[valueStart..<j]))
           i = j
         }
       }
-      if attributes[attribute] == nil { attributes[attribute] = HTMLEntities.decode(value) }
+      if attributes[attribute] == nil { attributes[attribute] = HTMLEntities.decode(value, inAttribute: true) }
     }
   }
 
@@ -169,14 +201,25 @@ enum HTMLTokenizer {
 
 enum HTMLEntities {
   private static let maximumNameLength = 32
+  private static let legacy: Set<String> = [
+    "AElig", "AMP", "Aacute", "Acirc", "Agrave", "Aring", "Atilde", "Auml", "COPY", "Ccedil", "ETH", "Eacute",
+    "Ecirc", "Egrave", "Euml", "GT", "Iacute", "Icirc", "Igrave", "Iuml", "LT", "Ntilde", "Oacute", "Ocirc",
+    "Ograve", "Oslash", "Otilde", "Ouml", "QUOT", "REG", "THORN", "Uacute", "Ucirc", "Ugrave", "Uuml", "Yacute",
+    "aacute", "acirc", "acute", "aelig", "agrave", "amp", "aring", "atilde", "auml", "brvbar", "ccedil", "cedil",
+    "cent", "copy", "curren", "deg", "divide", "eacute", "ecirc", "egrave", "eth", "euml", "frac12", "frac14",
+    "frac34", "gt", "iacute", "icirc", "iexcl", "igrave", "iquest", "iuml", "laquo", "lt", "macr", "micro",
+    "middot", "nbsp", "not", "ntilde", "oacute", "ocirc", "ograve", "ordf", "ordm", "oslash", "otilde", "ouml",
+    "para", "plusmn", "pound", "quot", "raquo", "reg", "sect", "shy", "sup1", "sup2", "sup3", "szlig", "thorn",
+    "times", "uacute", "ucirc", "ugrave", "uml", "uuml", "yacute", "yen", "yuml",
+  ]
 
-  static func decode(_ text: String) -> String {
+  static func decode(_ text: String, inAttribute: Bool = false) -> String {
     guard text.contains("&") else { return text }
     let s = Array(text.unicodeScalars)
     var result = ""
     var i = 0
     while i < s.count {
-      guard s[i] == "&", let (decoded, end) = reference(s, at: i) else {
+      guard s[i] == "&", let (decoded, end) = reference(s, at: i, inAttribute: inAttribute) else {
         result.unicodeScalars.append(s[i])
         i += 1
         continue
@@ -187,7 +230,7 @@ enum HTMLEntities {
     return result
   }
 
-  private static func reference(_ s: [Unicode.Scalar], at start: Int) -> (String, Int)? {
+  private static func reference(_ s: [Unicode.Scalar], at start: Int, inAttribute: Bool) -> (String, Int)? {
     var i = start + 1
     guard i < s.count else { return nil }
     if s[i] == "#" {
@@ -209,13 +252,20 @@ enum HTMLEntities {
       return (String(scalar ?? "\u{FFFD}"), i)
     }
     let nameStart = i
-    while i < s.count, i - nameStart < maximumNameLength, isASCIILetterOrDigit(s[i]) {
-      i += 1
-    }
-    guard i > nameStart, i < s.count, s[i] == ";",
+    while i < s.count, i - nameStart < maximumNameLength, isASCIILetterOrDigit(s[i]) { i += 1 }
+    guard i > nameStart else { return nil }
+    if i < s.count, s[i] == ";",
       let value = HTMLEntityTable.entities[HTMLTokenizer.string(Array(s[nameStart..<i]))]
-    else { return nil }
-    return (value, i + 1)
+    {
+      return (value, i + 1)
+    }
+    for end in stride(from: i, to: nameStart, by: -1) {
+      let name = HTMLTokenizer.string(Array(s[nameStart..<end]))
+      guard legacy.contains(name), let value = HTMLEntityTable.entities[name] else { continue }
+      if inAttribute, end < s.count, isASCIILetterOrDigit(s[end]) || s[end] == "=" { return nil }
+      return (value, end)
+    }
+    return nil
   }
 
   private static func digitValue(_ scalar: Unicode.Scalar) -> UInt32? {

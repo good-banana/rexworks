@@ -186,9 +186,10 @@ private struct Converter {
     case CMARK_NODE_TEXT:
       return locate(literal(node), after: cursor, bracketed: false) ?? (raw.start.line == 0 ? point : raw)
     case CMARK_NODE_SOFTBREAK, CMARK_NODE_LINEBREAK:
-      let column = min(cursor.index + 1, max(lineLength(cursor.line), 1))
-      let position = SourcePosition(line: cursor.line, column: column)
-      return SourceRange(start: position, end: position)
+      let length = lineLength(cursor.line)
+      return SourceRange(
+        start: SourcePosition(line: cursor.line, column: length + 1),
+        end: SourcePosition(line: cursor.line, column: length))
     case CMARK_NODE_LINK:
       let content = children(node)
       if content.count == 1, cmark_node_get_type(content[0]) == CMARK_NODE_TEXT,

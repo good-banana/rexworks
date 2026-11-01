@@ -177,9 +177,10 @@ final class DocumentTests: XCTestCase {
     XCTAssertEqual(
       breaks.map(\.range.start),
       [
-        .init(line: 8, column: 67), .init(line: 9, column: 83), .init(line: 10, column: 15),
-        .init(line: 11, column: 21),
+        .init(line: 8, column: 68), .init(line: 9, column: 84), .init(line: 10, column: 16),
+        .init(line: 11, column: 22),
       ])
+    XCTAssertEqual(breaks.map(\.range.end.column), [67, 83, 15, 21])
   }
 
   func testEmptyDocument() {

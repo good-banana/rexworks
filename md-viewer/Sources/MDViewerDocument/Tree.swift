@@ -119,6 +119,7 @@ final class TreeBuilder {
   private var stack: [TreeElement]
   private var markdownOpens: [Bool] = []
   private var openCounts: [String: Int] = [:]
+  private var hidden: [(name: String, level: Int)] = []
 
   init(range: SourceRange) {
     root = TreeElement(.root, range: range)
@@ -129,8 +130,11 @@ final class TreeBuilder {
   private var isFull: Bool { stack.count > Self.maximumDepth }
 
   func openMarkdown(_ tag: MarkdownTag, range: SourceRange) {
-    if tag.isBlock { closeHTML(["p"], boundary: []) }
-    guard !isFull else {
+    if tag.isBlock {
+      closeHTML(["p"], boundary: [])
+      hidden.removeAll()
+    }
+    guard !isFull, hidden.isEmpty else {
       markdownOpens.append(false)
       return
     }
@@ -141,7 +145,9 @@ final class TreeBuilder {
   }
 
   func closeMarkdown(end: SourcePosition) {
-    guard markdownOpens.popLast() == true else { return }
+    let opened = markdownOpens.popLast()
+    hidden.removeAll { $0.level > markdownOpens.count }
+    guard opened == true else { return }
     while stack.count > 1 {
       let element = pop()
       if element.isMarkdown {
@@ -153,15 +159,21 @@ final class TreeBuilder {
   }
 
   func leafMarkdown(_ tag: MarkdownTag, range: SourceRange) {
-    if tag.isBlock { closeHTML(["p"], boundary: []) }
+    if tag.isBlock {
+      closeHTML(["p"], boundary: [])
+      hidden.removeAll()
+    }
+    guard hidden.isEmpty else { return }
     current.children.append(.element(TreeElement(.markdown(tag), range: range)))
   }
 
   func text(_ text: String, range: SourceRange, fromHTML: Bool) {
+    guard hidden.isEmpty else { return }
     current.children.append(.text(text, range, fromHTML: fromHTML))
   }
 
   func html(_ token: HTMLToken, range: SourceRange, fromBlock: Bool) {
+    if !hidden.isEmpty || isFull, trackHidden(token) { return }
     switch token {
     case .comment:
       break
@@ -208,6 +220,21 @@ final class TreeBuilder {
     let element = TreeElement(.html(name), attributes: kept, range: range)
     current.children.append(.element(element))
     if !isVoid { push(element) }
+  }
+
+  private func trackHidden(_ token: HTMLToken) -> Bool {
+    switch token {
+    case .startTag(let name, _)
+    where HTMLVocabulary.dropped.contains(name) && !HTMLVocabulary.droppedVoid.contains(name):
+      hidden.append((name, markdownOpens.count))
+      return true
+    case .endTag(let name):
+      guard let index = hidden.lastIndex(where: { $0.name == name }) else { return !hidden.isEmpty }
+      hidden.removeSubrange(index...)
+      return true
+    default:
+      return !hidden.isEmpty
+    }
   }
 
   private func push(_ element: TreeElement) {
