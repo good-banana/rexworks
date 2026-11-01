@@ -60,6 +60,26 @@ brew install good-banana/rexworks/md-viewer && md-viewer setup
 - Web and mailto links open in your browser or mail app.
 - Links to local files open only when the target is an image, audio or video, a PDF, or plain text. Scripts, apps, HTML, and SVG are blocked.
 
+## Agents
+
+Coding agents can open Markdown deliverables in a Rex preview pane. Run:
+
+```
+md-viewer agents install
+```
+
+This writes a small skill into each supported agent's skills directory, only where that agent is already installed:
+
+| Directory | Agents |
+| --- | --- |
+| `~/.claude/skills/md-viewer/` | Claude Code |
+| `~/.agents/skills/md-viewer/` | Codex, Pi, OpenCode, Devin CLI |
+| `~/.cursor/skills/md-viewer/` | cursor-agent |
+
+The skill tells the agent to run `md-viewer open FILE` after it writes or substantially updates a Markdown file for you. The preview opens beside the pane focused in Rex and reuses that tab's preview. The guidance ships in the binary (`md-viewer agent-guide`), so upgrading md-viewer updates it without rewriting the skill.
+
+`md-viewer agents status` shows each directory as current, outdated, missing, skipped or foreign. `md-viewer agents remove` deletes only skills that md-viewer installed. `md-viewer setup` offers to install them, and `md-viewer uninstall` removes them.
+
 ## Commands
 
 ### Setup
