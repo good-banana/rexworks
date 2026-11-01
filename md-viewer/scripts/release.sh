@@ -48,10 +48,13 @@ class MdViewer < Formula
   url "$url"
   sha256 "$sha"
 
-  depends_on xcode: ["15.0", :build]
   depends_on macos: :sonoma
 
   def install
+    swift_major = Utils.safe_popen_read("swift", "--version")[/Swift version (\d+)/, 1].to_i
+    if swift_major < 6
+      odie "md-viewer needs Swift 6 or later. Install Xcode 16 or later Command Line Tools: xcode-select --install"
+    end
     cd "md-viewer" do
       system "swift", "build", "--disable-sandbox", "-c", "release"
       bin.install ".build/release/md-viewer"
@@ -65,6 +68,7 @@ class MdViewer < Formula
       Make md-viewer the handler for Markdown files clicked in Rex:
         md-viewer setup
       Opens from other apps go to your previous Markdown app.
+      After brew upgrade md-viewer, rerun md-viewer setup to update the installed app.
       To undo: md-viewer uninstall
     EOS
   end

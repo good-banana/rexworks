@@ -16,6 +16,12 @@ func currentPaths() -> SupportPaths {
   SupportPaths(home: FileManager.default.homeDirectoryForCurrentUser)
 }
 
+func systemInstaller() -> Installer {
+  Installer(
+    paths: currentPaths(), registry: SystemHandlerRegistry(), types: markdownContentTypes(),
+    notify: { FileHandle.standardError.write(Data(($0 + "\n").utf8)) })
+}
+
 enum SetupCommand {
   static func setup() async -> Never {
     guard let rex = locateExecutable("rex") else { fail("rex not found in PATH", status: 1) }
@@ -24,11 +30,11 @@ enum SetupCommand {
         FileManager.default.fileExists(atPath: $0.path)
       })
     else { fail("MD Viewer.app not found next to md-viewer", status: 1) }
-    let installer = Installer(
-      paths: currentPaths(), registry: SystemHandlerRegistry(), types: markdownContentTypes())
     do {
-      try await installer.install(
+      try await systemInstaller().install(
         bundledApp: bundled, rexPath: rex, mdViewerPath: ownExecutable().path)
+    } catch let error as HandlerTimeoutError {
+      fail("setup failed: \(error). Approve the macOS prompt, then rerun md-viewer setup.", status: 1)
     } catch {
       fail("setup failed: \(error)", status: 1)
     }
@@ -37,10 +43,8 @@ enum SetupCommand {
   }
 
   static func uninstall() async -> Never {
-    let installer = Installer(
-      paths: currentPaths(), registry: SystemHandlerRegistry(), types: markdownContentTypes())
     do {
-      let failures = try await installer.uninstall()
+      let failures = try await systemInstaller().uninstall()
       for failure in failures { FileHandle.standardError.write(Data((failure + "\n").utf8)) }
       if failures.isEmpty {
         print("md-viewer removed and previous handlers restored.")

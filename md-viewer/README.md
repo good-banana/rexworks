@@ -6,7 +6,7 @@
 
 - macOS 14 or later
 - Rex
-- Xcode Command Line Tools (the formula builds from source)
+- Xcode Command Line Tools with Swift 6 (Xcode 16 or later CLT). The formula builds from source.
 
 ## Install
 
@@ -15,6 +15,8 @@ brew install good-banana/rexworks/md-viewer && md-viewer setup
 ```
 
 `md-viewer setup` installs the background handler app and makes it the default handler for Markdown files when you click them in Rex. Clicking a Markdown file in any other app will open it in your normal default Markdown app.
+
+`md-viewer setup` installs a copy of the handler app, so rerun `md-viewer setup` after `brew upgrade md-viewer`.
 
 ## How routing works
 
@@ -59,6 +61,7 @@ brew install good-banana/rexworks/md-viewer && md-viewer setup
 ```
 md-viewer setup
 ```
+macOS may ask you to confirm the change of default app for Markdown files.
 
 ### Doctor
 ```
@@ -82,7 +85,7 @@ md-viewer open <file>
 ```
 md-viewer uninstall && brew uninstall md-viewer
 ```
-`md-viewer uninstall` removes the handler app and restores the previous Markdown handler.
+`md-viewer uninstall` removes the handler app and restores the previous Markdown handler. macOS may ask you to confirm the change of default app for Markdown files.
 
 
 ## Credits

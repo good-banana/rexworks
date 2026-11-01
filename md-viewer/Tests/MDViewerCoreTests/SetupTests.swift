@@ -2,14 +2,18 @@ import XCTest
 
 @testable import MDViewerCore
 
-final class FakeRegistry: HandlerRegistry {
+final class FakeRegistry: HandlerRegistry, @unchecked Sendable {
   var defaults: [String: String] = [:]
   var registered: [URL] = []
   var unregistered: [URL] = []
   var failingSets: Set<String> = []
+  var hangingSets: Set<String> = []
+  var missingApps: Set<String> = []
 
   func defaultHandler(for contentType: String) -> String? { defaults[contentType] }
+  func isInstalled(_ bundleID: String) -> Bool { !missingApps.contains(bundleID) }
   func setDefaultHandler(_ bundleID: String, for contentType: String) async throws {
+    if hangingSets.contains(bundleID) { await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in } }
     if failingSets.contains(bundleID) { throw HandlerRegistryError(description: "denied") }
     defaults[contentType] = bundleID
   }
@@ -22,6 +26,23 @@ func assertThrowsAsync(_ body: () async throws -> Void, file: StaticString = #fi
     try await body()
     XCTFail("expected throw", file: file, line: line)
   } catch {}
+}
+
+final class MessageLog: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: [String] = []
+
+  var messages: [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return stored
+  }
+
+  func append(_ message: String) {
+    lock.lock()
+    stored.append(message)
+    lock.unlock()
+  }
 }
 
 final class SetupTests: XCTestCase {
@@ -50,8 +71,15 @@ final class SetupTests: XCTestCase {
   }
 
   func testRestorePlanFallsBackToTextEdit() {
-    let plan = restorePlan(previous: [markdown: "com.a"], types: [markdown, "dyn.x"])
+    let plan = restorePlan(previous: [markdown: "com.a"], types: [markdown, "dyn.x"], isInstalled: { _ in true })
     XCTAssertEqual(plan.map(\.bundleID), ["com.a", "com.apple.TextEdit"])
+    XCTAssertEqual(plan.map(\.missingPrevious), [nil, nil])
+  }
+
+  func testRestorePlanReplacesDeletedPreviousAppWithTextEdit() {
+    let plan = restorePlan(previous: [markdown: "com.gone"], types: [markdown], isInstalled: { $0 != "com.gone" })
+    XCTAssertEqual(
+      plan, [RestoreStep(type: markdown, bundleID: "com.apple.TextEdit", missingPrevious: "com.gone")])
   }
 
   func testMarkdownContentTypesAreUniqueAndIncludeMarkdown() {
@@ -60,8 +88,8 @@ final class SetupTests: XCTestCase {
     XCTAssertEqual(Set(types).count, types.count)
   }
 
-  private func makeEnvironment() throws -> (
-    home: URL, bundle: URL, installer: Installer, registry: FakeRegistry
+  private func makeEnvironment(setTimeout: Duration = .seconds(60)) throws -> (
+    home: URL, bundle: URL, installer: Installer, registry: FakeRegistry, log: MessageLog
   ) {
     let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let bundle = home.appendingPathComponent("src/MD Viewer.app")
@@ -70,9 +98,11 @@ final class SetupTests: XCTestCase {
     try Data("x".utf8).write(to: bundle.appendingPathComponent("Contents/marker"))
     let registry = FakeRegistry()
     registry.defaults = [markdown: "com.microsoft.VSCode"]
+    let log = MessageLog()
     let installer = Installer(
-      paths: SupportPaths(home: home), registry: registry, types: [markdown, "dyn.x"])
-    return (home, bundle, installer, registry)
+      paths: SupportPaths(home: home), registry: registry, types: [markdown, "dyn.x"],
+      setTimeout: setTimeout, notify: log.append)
+    return (home, bundle, installer, registry, log)
   }
 
   func testInstallRecordsPreviousSetsDefaultsAndWritesConfig() async throws {
@@ -164,6 +194,60 @@ final class SetupTests: XCTestCase {
     }
     let saved = try ConfigStore.load(SupportPaths(home: env.home))
     XCTAssertEqual(saved?.previousHandlers, [markdown: "com.microsoft.VSCode"])
+  }
+
+  func testInstallAndUninstallWarnAboutMacOSPromptBeforeChangingDefaults() async throws {
+    let env = try makeEnvironment()
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    try await env.installer.install(bundledApp: env.bundle, rexPath: "/r", mdViewerPath: "/m")
+    XCTAssertEqual(env.log.messages, [changingDefaultsNotice])
+    _ = try await env.installer.uninstall()
+    XCTAssertEqual(env.log.messages, [changingDefaultsNotice, changingDefaultsNotice])
+  }
+
+  func testInstallTimesOutWhenMacOSNeverAnswers() async throws {
+    let env = try makeEnvironment(setTimeout: .milliseconds(100))
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    env.registry.hangingSets = [selfID]
+    do {
+      try await env.installer.install(bundledApp: env.bundle, rexPath: "/r", mdViewerPath: "/m")
+      XCTFail("expected timeout")
+    } catch let error as HandlerTimeoutError {
+      XCTAssertEqual(error.bundleID, selfID)
+      XCTAssertEqual(error.contentType, markdown)
+    }
+    let saved = try ConfigStore.load(SupportPaths(home: env.home))
+    XCTAssertEqual(saved?.previousHandlers, [markdown: "com.microsoft.VSCode"])
+  }
+
+  func testUninstallTimeoutReportsFailureAndKeepsAppAndConfig() async throws {
+    let env = try makeEnvironment(setTimeout: .milliseconds(100))
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    try await env.installer.install(bundledApp: env.bundle, rexPath: "/r", mdViewerPath: "/m")
+    env.registry.hangingSets = ["com.microsoft.VSCode"]
+    let failures = try await env.installer.uninstall()
+
+    XCTAssertEqual(failures, ["timed out setting com.microsoft.VSCode as handler for \(markdown)"])
+    let paths = SupportPaths(home: env.home)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: paths.installedApp.path))
+    XCTAssertEqual(
+      try ConfigStore.load(paths)?.previousHandlers, [markdown: "com.microsoft.VSCode"])
+    XCTAssertEqual(env.registry.unregistered, [])
+  }
+
+  func testUninstallRestoresTextEditWhenPreviousAppWasDeleted() async throws {
+    let env = try makeEnvironment()
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    try await env.installer.install(bundledApp: env.bundle, rexPath: "/r", mdViewerPath: "/m")
+    env.registry.missingApps = ["com.microsoft.VSCode"]
+    let failures = try await env.installer.uninstall()
+
+    XCTAssertEqual(failures, [])
+    XCTAssertEqual(env.registry.defaults[markdown], "com.apple.TextEdit")
+    XCTAssertTrue(
+      env.log.messages.contains(
+        "com.microsoft.VSCode is no longer installed; restoring \(markdown) to com.apple.TextEdit."))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: SupportPaths(home: env.home).root.path))
   }
 
   func testBundledAppCandidatesCoverHomebrewAndDevLayouts() {

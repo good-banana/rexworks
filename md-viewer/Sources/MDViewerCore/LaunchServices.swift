@@ -3,8 +3,9 @@ import CoreServices
 import Foundation
 import UniformTypeIdentifiers
 
-public protocol HandlerRegistry {
+public protocol HandlerRegistry: Sendable {
   func defaultHandler(for contentType: String) -> String?
+  func isInstalled(_ bundleID: String) -> Bool
   func setDefaultHandler(_ bundleID: String, for contentType: String) async throws
   func register(app: URL) throws
   func unregister(app: URL) throws
@@ -26,6 +27,10 @@ public struct SystemHandlerRegistry: HandlerRegistry {
       let url = NSWorkspace.shared.urlForApplication(toOpen: type)
     else { return nil }
     return Bundle(url: url)?.bundleIdentifier
+  }
+
+  public func isInstalled(_ bundleID: String) -> Bool {
+    NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
   }
 
   public func setDefaultHandler(_ bundleID: String, for contentType: String) async throws {
@@ -85,8 +90,22 @@ public func recordPreviousHandlers(
   return result
 }
 
-public func restorePlan(previous: [String: String], types: [String]) -> [(
-  type: String, bundleID: String
-)] {
-  types.map { (type: $0, bundleID: previous[$0] ?? textEditBundleID) }
+public struct RestoreStep: Equatable, Sendable {
+  public let type: String
+  public let bundleID: String
+  public let missingPrevious: String?
+}
+
+public func restorePlan(
+  previous: [String: String], types: [String], isInstalled: (String) -> Bool
+) -> [RestoreStep] {
+  types.map { type in
+    guard let recorded = previous[type] else {
+      return RestoreStep(type: type, bundleID: textEditBundleID, missingPrevious: nil)
+    }
+    if isInstalled(recorded) {
+      return RestoreStep(type: type, bundleID: recorded, missingPrevious: nil)
+    }
+    return RestoreStep(type: type, bundleID: textEditBundleID, missingPrevious: recorded)
+  }
 }
