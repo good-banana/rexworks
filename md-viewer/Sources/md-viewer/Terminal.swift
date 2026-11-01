@@ -3,7 +3,7 @@ import Dispatch
 import Foundation
 import MDViewerCore
 
-struct TerminalSize {
+struct TerminalSize: Equatable {
   var columns: Int
   var rows: Int
   var pixelWidth: Int

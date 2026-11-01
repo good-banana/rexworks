@@ -10,6 +10,7 @@ final class TerminalInputTests: XCTestCase {
     XCTAssertEqual(p.feed([0x42]), [.key(.down)])
     XCTAssertEqual(p.feed(Array("\u{1b}[5~".utf8)), [.key(.pageUp)])
     XCTAssertEqual(p.feed([0x11]), [.key(.ctrl("q"))])
+    XCTAssertEqual(p.feed([0x03]), [.key(.ctrl("c"))])
   }
 
   func testSGRPixelMouse() {

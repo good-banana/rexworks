@@ -74,6 +74,7 @@ final class ViewerSession {
   private var redrawScheduled = false
   private var lastDraw: UInt64 = 0
   private var placed: Set<UInt32> = []
+  private var layoutSize: TerminalSize?
   private(set) var file: URL?
   private(set) var viewport: Viewport?
   private(set) var message: String?
@@ -129,9 +130,10 @@ final class ViewerSession {
   func open(file: URL, pushHistory: Bool, fragment: String?) {
     watcher?.stop()
     self.file = file
-    watcher = FileWatcher(url: file) { [unowned self] in
-      requestReload(.offset(viewport?.offset ?? 0))
-    }
+    watcher = FileWatcher(
+      url: file,
+      onChange: { [unowned self] in requestReload(.offset(viewport?.offset ?? 0)) },
+      onMissing: { [unowned self] in show("file missing; r to reload") })
     requestReload(fragment.map(Anchor.fragment) ?? .top)
   }
 
@@ -148,6 +150,7 @@ final class ViewerSession {
   }
 
   func reload() {
+    watcher?.rearmIfNeeded()
     requestReload(.offset(viewport?.offset ?? 0))
   }
 
@@ -203,7 +206,7 @@ final class ViewerSession {
       scroll(to: .greatestFiniteMagnitude)
     case .key(.char("r")):
       reload()
-    case .key(.char("q")), .key(.ctrl("q")):
+    case .key(.char("q")), .key(.ctrl("q")), .key(.ctrl("c")):
       quit()
     default:
       break
@@ -237,6 +240,7 @@ final class ViewerSession {
   private func performReload(_ anchor: Anchor) async {
     guard let file else { return }
     if let measured = Terminal.size() { size = measured }
+    if size != layoutSize { hideTiles() }
     guard size.pixelWidth > 0, size.pixelHeight > 0 else {
       deferredAnchor = anchor
       show("waiting for the terminal to report its size in pixels")
@@ -266,6 +270,7 @@ final class ViewerSession {
           pixelWidth: layoutWidth, tileHeight: viewHeight, scale: scale, pageHeight: height,
           background: theme.background))
       self.viewport = viewport
+      layoutSize = size
       message = nil
       placed = []
       Terminal.write("\u{1b}[2J")
@@ -279,7 +284,7 @@ final class ViewerSession {
     lastDraw = DispatchTime.now().uptimeNanoseconds
     var output = ""
     var shown: Set<UInt32> = []
-    if let viewport, let layout = tiles.layout {
+    if let viewport, let layout = tiles.layout, size == layoutSize {
       let slices = viewport.visibleTiles()
       for slice in slices {
         guard let id = tiles.image(for: slice.index) else { continue }
@@ -299,6 +304,13 @@ final class ViewerSession {
     placed = shown
     output += statusLine()
     Terminal.write(output)
+  }
+
+  private func hideTiles() {
+    layoutSize = nil
+    Terminal.write(placed.map(Kitty.deletePlacements).joined() + "\u{1b}[2J")
+    placed = []
+    draw()
   }
 
   private func statusLine() -> String {

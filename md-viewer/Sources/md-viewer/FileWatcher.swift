@@ -9,13 +9,21 @@ final class FileWatcher {
 
   private let url: URL
   private let onChange: () -> Void
+  private let onMissing: () -> Void
   private var source: DispatchSourceFileSystemObject?
   private var changeScheduled = false
   private var stopped = false
+  private var arming = false
 
-  init(url: URL, onChange: @escaping () -> Void) {
+  init(url: URL, onChange: @escaping () -> Void, onMissing: @escaping () -> Void) {
     self.url = url
     self.onChange = onChange
+    self.onMissing = onMissing
+    arm(remainingAttempts: Self.rearmAttempts, notify: false)
+  }
+
+  func rearmIfNeeded() {
+    guard source == nil, !stopped, !arming else { return }
     arm(remainingAttempts: Self.rearmAttempts, notify: false)
   }
 
@@ -29,13 +37,17 @@ final class FileWatcher {
     guard !stopped else { return }
     let descriptor = open(url.path, O_EVTONLY)
     guard descriptor >= 0 else {
-      if remainingAttempts > 0 {
+      arming = remainingAttempts > 0
+      if arming {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.debounce) {
           MainActor.assumeIsolated { self.arm(remainingAttempts: remainingAttempts - 1, notify: notify) }
         }
+      } else {
+        onMissing()
       }
       return
     }
+    arming = false
     let source = DispatchSource.makeFileSystemObjectSource(
       fileDescriptor: descriptor, eventMask: [.write, .extend, .rename, .delete], queue: .main)
     source.setEventHandler {
@@ -51,6 +63,7 @@ final class FileWatcher {
     guard events.isDisjoint(with: [.rename, .delete]) else {
       source?.cancel()
       source = nil
+      arming = true
       DispatchQueue.main.asyncAfter(deadline: .now() + Self.debounce) {
         MainActor.assumeIsolated { self.arm(remainingAttempts: Self.rearmAttempts, notify: true) }
       }
