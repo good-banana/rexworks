@@ -212,4 +212,25 @@ final class ReviewFixTests: XCTestCase {
     XCTAssertNil(highlighter.cached(code: first, language: "swift"))
     XCTAssertNotNil(highlighter.cached(code: second, language: "swift"))
   }
+
+  func testAtMostOneAbandonedEngineRunsAtATime() {
+    var configuration = SyntaxHighlighter.Configuration()
+    configuration.timeout = 0.001
+    let highlighter = SyntaxHighlighter(configuration: configuration)
+    let body = String(repeating: "value = compute(item, other) + 1 # note\n", count: 3_000)
+    for (index, language) in [nil, "python", "swift", "javascript", "ruby", nil, "go", "rust", "c"].enumerated() {
+      let code = String(repeating: "x", count: index) + body
+      XCTAssertEqual(highlight(code, language: language, using: highlighter).outcome, .timedOut, language ?? "auto")
+    }
+    XCTAssertEqual(highlighter.mostAbandonedRunning, 1)
+    XCTAssertLessThanOrEqual(highlighter.enginesCreated, 9)
+    XCTAssertNil(highlighter.cached(code: body, language: "swift"), "busy refusals are not cached")
+  }
+
+  func testColdLoadIsOutsideTheWatchdogBudget() {
+    var configuration = SyntaxHighlighter.Configuration()
+    configuration.timeout = 0.02
+    let highlighter = SyntaxHighlighter(configuration: configuration)
+    XCTAssertTrue(highlight("let a = 1", language: "swift", using: highlighter).isHighlighted)
+  }
 }

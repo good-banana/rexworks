@@ -60,6 +60,10 @@ public final class SyntaxHighlighter: @unchecked Sendable {
   private var cacheCost = 0
   private var waiting: [CacheKey: [(DispatchQueue, @Sendable (HighlightResult) -> Void)]] = [:]
   private var engine: ScriptEngine?
+  private var abandoned: ScriptEngine?
+  private(set) var enginesCreated = 0
+  private(set) var mostAbandonedRunning = 0
+  private var retired: [WeakEngine] = []
   private var slowInputs: [String: Int] = [:]
 
   private struct CacheKey: Hashable {
@@ -124,9 +128,9 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     waiting[key] = [(callbackQueue, completion)]
     lock.unlock()
     queue.async { [self] in
-      let result = compute(code: code, language: language, digest: key.digest)
+      let (result, cacheable) = compute(code: code, language: language, digest: key.digest)
       lock.lock()
-      store(result, for: key)
+      if cacheable { store(result, for: key) }
       let callbacks = waiting.removeValue(forKey: key) ?? []
       lock.unlock()
       for (callbackQueue, callback) in callbacks { callbackQueue.async { callback(result) } }
@@ -169,7 +173,15 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     }
   }
 
-  private func compute(code: String, language: String?, digest: SHA256.Digest) -> HighlightResult {
+  private func compute(code: String, language: String?, digest: SHA256.Digest) -> (HighlightResult, Bool) {
+    if let abandoned {
+      if abandoned.isBusy { return (HighlightResult(outcome: .timedOut, codeDigest: digest), false) }
+      self.abandoned = nil
+    }
+    return (evaluate(code: code, language: language, digest: digest), true)
+  }
+
+  private func evaluate(code: String, language: String?, digest: SHA256.Digest) -> HighlightResult {
     func result(_ outcome: HighlightResult.Outcome, _ lines: [[TokenSpan]] = []) -> HighlightResult {
       HighlightResult(outcome: outcome, lines: lines, codeDigest: digest)
     }
@@ -180,18 +192,30 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     let slowKey = language ?? ""
     if let slow = slowInputs[slowKey], length >= slow { return result(.timedOut) }
     guard let scriptURL else { return result(.failed) }
-    let engine = self.engine ?? ScriptEngine(scriptURL: scriptURL)
-    self.engine = engine
+    let engine: ScriptEngine
+    if let current = self.engine {
+      engine = current
+    } else {
+      engine = ScriptEngine(scriptURL: scriptURL)
+      enginesCreated += 1
+      self.engine = engine
+    }
+    guard engine.queue.sync(execute: { engine.prepare() }) else { return result(.failed) }
     let output = ScriptOutput()
     let finished = DispatchSemaphore(value: 0)
     let relevance = configuration.autoDetectMinimumRelevance
     let sample = configuration.autoDetectSampleLength
+    engine.isBusy = true
     engine.queue.async {
       output.set(engine.evaluate(code: code, language: language, relevance: relevance, sample: sample))
+      engine.isBusy = false
       finished.signal()
     }
     if finished.wait(timeout: .now() + configuration.timeout) == .timedOut {
       self.engine = nil
+      abandoned = engine
+      retired = retired.filter { $0.engine?.isBusy == true } + [WeakEngine(engine: engine)]
+      mostAbandonedRunning = max(mostAbandonedRunning, retired.count)
       slowInputs[slowKey] = min(slowInputs[slowKey] ?? length, length)
       return result(.timedOut)
     }
@@ -292,16 +316,37 @@ private final class ScriptOutput: @unchecked Sendable {
   }
 }
 
+private struct WeakEngine {
+  weak var engine: ScriptEngine?
+}
+
 private final class ScriptEngine: @unchecked Sendable {
   let queue = DispatchQueue(label: "md-viewer.highlight.js", qos: .userInitiated, autoreleaseFrequency: .workItem)
   private let scriptURL: URL
   private var context: JSContext?
   private var function: JSValue?
   private var failed = false
+  private let busyLock = NSLock()
+  private var busy = false
 
   init(scriptURL: URL) {
     self.scriptURL = scriptURL
   }
+
+  var isBusy: Bool {
+    get {
+      busyLock.lock()
+      defer { busyLock.unlock() }
+      return busy
+    }
+    set {
+      busyLock.lock()
+      busy = newValue
+      busyLock.unlock()
+    }
+  }
+
+  func prepare() -> Bool { loadedFunction() != nil }
 
   func evaluate(code: String, language: String?, relevance: Int, sample: Int) -> [String: Any]? {
     guard let function = loadedFunction() else { return nil }
