@@ -39,10 +39,12 @@ enum SetupCommand {
       fail("setup failed: \(error)", status: 1)
     }
     print("md-viewer is now the default Markdown handler. Run md-viewer doctor to verify.")
+    AgentsCommand.offerInstall()
     exit(0)
   }
 
   static func uninstall() async -> Never {
+    AgentsCommand.removeQuietly()
     do {
       let failures = try await systemInstaller().uninstall()
       for failure in failures { FileHandle.standardError.write(Data((failure + "\n").utf8)) }

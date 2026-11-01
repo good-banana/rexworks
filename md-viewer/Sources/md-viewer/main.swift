@@ -1,4 +1,5 @@
 import Foundation
+import MDViewerCore
 
 let usage = """
   Usage: md-viewer <command> [arguments]
@@ -9,6 +10,9 @@ let usage = """
     setup         Install the handler app and register it
     uninstall     Remove the handler app and restore previous handlers
     doctor        Diagnose the installation
+    agents <install|status|remove>
+                  Manage the coding-agent skill that opens previews
+    agent-guide   Print guidance for coding agents
     --help        Show this help
   """
 
@@ -29,6 +33,10 @@ case "setup":
   await SetupCommand.setup()
 case "uninstall":
   await SetupCommand.uninstall()
+case "agents":
+  AgentsCommand.run(arguments.count == 2 ? arguments[1] : nil)
+case "agent-guide":
+  print(agentGuide, terminator: "")
 case "doctor":
   DoctorCommand.run()
 case "view":

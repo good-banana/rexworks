@@ -42,6 +42,10 @@ enum DoctorCommand {
     let resources = webResourcesLocation()
     report(resources != nil, "web resources \(resources?.path ?? "not found")")
 
+    for line in agentStatusLines(AgentSkills(home: paths.home).status()) {
+      print("info \(line)")
+    }
+
     exit(allPassed ? 0 : 1)
   }
 
