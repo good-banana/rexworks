@@ -12,7 +12,10 @@ let package = Package(
       resources: [.copy("Resources/web")]),
     .executableTarget(name: "md-viewer", dependencies: ["MDViewerCore", "MDViewerWeb"]),
     .executableTarget(name: "MDViewerHandler", dependencies: ["MDViewerCore"]),
-    .testTarget(name: "MDViewerCoreTests", dependencies: ["MDViewerCore"]),
+    .testTarget(
+      name: "MDViewerCoreTests",
+      dependencies: ["MDViewerCore"],
+      resources: [.copy("Fixtures")]),
     .testTarget(
       name: "MDViewerRenderTests",
       dependencies: ["MDViewerWeb"],

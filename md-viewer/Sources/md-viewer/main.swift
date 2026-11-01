@@ -22,7 +22,10 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 switch arguments.first {
 case nil, "--help", "-h":
   print(usage)
-case "view", "open", "setup", "uninstall", "doctor":
+case "open":
+  guard arguments.count == 2 else { fail("usage: md-viewer open <file>", status: 64) }
+  OpenCommand.run(file: arguments[1])
+case "view", "setup", "uninstall", "doctor":
   fail("not implemented", status: 2)
 case let command?:
   fail("unknown command: \(command)\n\n\(usage)", status: 64)

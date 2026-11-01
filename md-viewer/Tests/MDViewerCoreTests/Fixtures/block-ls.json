@@ -1,0 +1,28 @@
+{
+  "blocks": [
+    {
+      "block_id": "block:01a18e8c-860b-7134-90c4-3b3fc97daca3",
+      "label": "shell",
+      "placement": "placed",
+      "window_id": "window:01a18e8c-86a4-7320-99d8-5c0e0a7dcf04"
+    },
+    {
+      "block_id": "block:01a193b6-fe81-72ee-bab7-569aa3a4f5ca",
+      "label": "shell",
+      "placement": "placed",
+      "window_id": "window:01a193ad-f8f8-7ee0-ad1e-277b4d213ab6"
+    },
+    {
+      "block_id": "block:01a193b9-0508-79fa-bbba-bae305053d7a",
+      "label": "md-viewer",
+      "placement": "placed",
+      "window_id": "window:01a193ad-f8f8-7ee0-ad1e-277b4d213ab6"
+    },
+    {
+      "block_id": "block:01a18e8c-ffff-7134-90c4-3b3fc97dac00",
+      "label": "md-viewer",
+      "placement": "placed",
+      "window_id": "window:01a18e8c-86a4-7320-99d8-5c0e0a7dcf04"
+    }
+  ]
+}
