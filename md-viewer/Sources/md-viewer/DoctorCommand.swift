@@ -47,8 +47,11 @@ enum DoctorCommand {
 
   private static func webResourcesLocation() -> URL? {
     let name = "md-viewer_MDViewerWeb.bundle"
-    let directory = ownExecutable().deletingLastPathComponent()
-    return [directory, directory.appendingPathComponent("../libexec")]
+    let executable = ownExecutable()
+    let directories = [executable, executable.resolvingSymlinksInPath()].map {
+      $0.deletingLastPathComponent()
+    }
+    return directories.flatMap { [$0, $0.appendingPathComponent("../libexec")] }
       .map { $0.appendingPathComponent(name).standardizedFileURL }
       .first { FileManager.default.fileExists(atPath: $0.path) }
   }

@@ -26,9 +26,9 @@ case "open":
   guard arguments.count == 2 else { fail("usage: md-viewer open <file>", status: 64) }
   OpenCommand.run(file: arguments[1])
 case "setup":
-  SetupCommand.setup()
+  await SetupCommand.setup()
 case "uninstall":
-  SetupCommand.uninstall()
+  await SetupCommand.uninstall()
 case "doctor":
   DoctorCommand.run()
 case "view":

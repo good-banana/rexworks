@@ -17,7 +17,7 @@ public struct Installer {
   }
 
   @discardableResult
-  public func install(bundledApp: URL, rexPath: String, mdViewerPath: String) throws -> Config {
+  public func install(bundledApp: URL, rexPath: String, mdViewerPath: String) async throws -> Config {
     let fileManager = FileManager.default
     let destination = paths.installedApp
     let directory = destination.deletingLastPathComponent()
@@ -44,18 +44,18 @@ public struct Installer {
       previousHandlers: recordPreviousHandlers(existing: existing, current: current, selfID: selfID))
     try ConfigStore.save(config, paths)
 
-    for type in types { try registry.setDefaultHandler(selfID, for: type) }
+    for type in types { try await registry.setDefaultHandler(selfID, for: type) }
     return config
   }
 
-  public func uninstall() throws -> [String] {
+  public func uninstall() async throws -> [String] {
     let fileManager = FileManager.default
     let previous = try ConfigStore.load(paths)?.previousHandlers ?? [:]
     let owned = types.filter { registry.defaultHandler(for: $0) == selfID }
     var failures: [String] = []
     for step in restorePlan(previous: previous, types: owned) {
       do {
-        try registry.setDefaultHandler(step.bundleID, for: step.type)
+        try await registry.setDefaultHandler(step.bundleID, for: step.type)
       } catch {
         failures.append("\(error)")
       }

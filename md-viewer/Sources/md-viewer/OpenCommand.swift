@@ -10,7 +10,7 @@ enum OpenCommand {
     let paths = SupportPaths(home: FileManager.default.homeDirectoryForCurrentUser)
     let config = try? ConfigStore.load(paths)
     guard let rex = config?.rexPath ?? locateExecutable("rex") else { fail("rex not found", status: 1) }
-    let mdViewer = config?.mdViewerPath ?? CommandLine.arguments[0]
+    let mdViewer = config?.mdViewerPath ?? ownExecutable().path
 
     do {
       let clients = try rexJSON(runner, rex, ["client", "ls", "--json"])

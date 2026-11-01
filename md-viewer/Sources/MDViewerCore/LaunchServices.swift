@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 public protocol HandlerRegistry {
   func defaultHandler(for contentType: String) -> String?
-  func setDefaultHandler(_ bundleID: String, for contentType: String) throws
+  func setDefaultHandler(_ bundleID: String, for contentType: String) async throws
   func register(app: URL) throws
   func unregister(app: URL) throws
 }
@@ -28,18 +28,16 @@ public struct SystemHandlerRegistry: HandlerRegistry {
     return Bundle(url: url)?.bundleIdentifier
   }
 
-  public func setDefaultHandler(_ bundleID: String, for contentType: String) throws {
+  public func setDefaultHandler(_ bundleID: String, for contentType: String) async throws {
     guard let type = UTType(contentType) else {
       throw HandlerRegistryError(description: "unknown content type \(contentType)")
     }
     guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
       throw HandlerRegistryError(description: "no installed application with id \(bundleID)")
     }
-    let completion = CompletionBox()
-    NSWorkspace.shared.setDefaultApplication(at: url, toOpen: type) { error in
-      completion.finish(error)
-    }
-    if let error = completion.wait() {
+    do {
+      try await NSWorkspace.shared.setDefaultApplication(at: url, toOpen: type)
+    } catch {
       throw HandlerRegistryError(
         description:
           "cannot set \(bundleID) as handler for \(contentType): \(error.localizedDescription)")
@@ -91,20 +89,4 @@ public func restorePlan(previous: [String: String], types: [String]) -> [(
   type: String, bundleID: String
 )] {
   types.map { (type: $0, bundleID: previous[$0] ?? textEditBundleID) }
-}
-
-private final class CompletionBox: @unchecked Sendable {
-  private let semaphore = DispatchSemaphore(value: 0)
-  private let lock = NSLock()
-  private var error: Error?
-
-  func finish(_ error: Error?) {
-    lock.withLock { self.error = error }
-    semaphore.signal()
-  }
-
-  func wait() -> Error? {
-    semaphore.wait()
-    return lock.withLock { error }
-  }
 }

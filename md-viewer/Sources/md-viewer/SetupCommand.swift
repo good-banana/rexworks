@@ -9,7 +9,7 @@ func locateExecutable(_ name: String) -> String? {
 }
 
 func ownExecutable() -> URL {
-  URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+  Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
 }
 
 func currentPaths() -> SupportPaths {
@@ -17,17 +17,17 @@ func currentPaths() -> SupportPaths {
 }
 
 enum SetupCommand {
-  static func setup() -> Never {
+  static func setup() async -> Never {
     guard let rex = locateExecutable("rex") else { fail("rex not found in PATH", status: 1) }
     guard
-      let bundled = bundledAppCandidates(executable: URL(fileURLWithPath: CommandLine.arguments[0])).first(where: {
+      let bundled = bundledAppCandidates(executable: ownExecutable()).first(where: {
         FileManager.default.fileExists(atPath: $0.path)
       })
     else { fail("MD Viewer.app not found next to md-viewer", status: 1) }
     let installer = Installer(
       paths: currentPaths(), registry: SystemHandlerRegistry(), types: markdownContentTypes())
     do {
-      try installer.install(
+      try await installer.install(
         bundledApp: bundled, rexPath: rex, mdViewerPath: ownExecutable().path)
     } catch {
       fail("setup failed: \(error)", status: 1)
@@ -36,14 +36,19 @@ enum SetupCommand {
     exit(0)
   }
 
-  static func uninstall() -> Never {
+  static func uninstall() async -> Never {
     let installer = Installer(
       paths: currentPaths(), registry: SystemHandlerRegistry(), types: markdownContentTypes())
     do {
-      let failures = try installer.uninstall()
+      let failures = try await installer.uninstall()
       for failure in failures { FileHandle.standardError.write(Data((failure + "\n").utf8)) }
-      print("md-viewer removed and previous handlers restored.")
-      exit(failures.isEmpty ? 0 : 1)
+      if failures.isEmpty {
+        print("md-viewer removed and previous handlers restored.")
+        exit(0)
+      }
+      FileHandle.standardError.write(
+        Data("uninstall incomplete; the app and config were kept so you can retry.\n".utf8))
+      exit(1)
     } catch {
       fail("uninstall failed: \(error)", status: 1)
     }
