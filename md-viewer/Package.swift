@@ -26,7 +26,7 @@ let package = Package(
       name: "MDViewerDisplay", dependencies: ["MDViewerCore", "MDViewerLayout", "MDViewerRender", "MDViewerSystem"]),
     .target(
       name: "MDViewerInteraction",
-      dependencies: ["MDViewerCore", "MDViewerDocument", "MDViewerLayout", "MDViewerRender"]),
+      dependencies: ["MDViewerCore", "MDViewerDocument", "MDViewerLayout", "MDViewerRender", "MDViewerSystem"]),
     .target(
       name: "MDViewerMermaid",
       dependencies: ["MDViewerCore"],
@@ -59,11 +59,10 @@ let package = Package(
       name: "MDViewerRasterTests",
       dependencies: ["MDViewerRender", "MDViewerLayout", "MDViewerCore", "MDViewerDocument", "MDViewerMermaid"],
       resources: [.copy("Fixtures")]),
-    .executableTarget(name: "mdv-crash-probe", dependencies: ["MDViewerSystem"], path: "Tests/CrashProbe"),
     .testTarget(
       name: "MDViewerDisplayTests",
       dependencies: [
-        "MDViewerDisplay", "MDViewerRender", "MDViewerLayout", "MDViewerCore", "MDViewerSystem", "mdv-crash-probe",
+        "MDViewerDisplay", "MDViewerRender", "MDViewerLayout", "MDViewerCore", "MDViewerSystem",
       ],
       resources: [.copy("Fixtures")]),
     .testTarget(

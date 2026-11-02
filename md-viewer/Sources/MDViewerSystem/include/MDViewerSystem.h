@@ -12,5 +12,8 @@ int mdv_crash_restore_prepare(const char *bytes, size_t length, int output, int 
                               const struct termios *saved);
 int mdv_crash_restore_arm(void);
 void mdv_crash_restore_disarm(void);
+int mdv_crash_track_shm(const char *name);
+void mdv_crash_untrack_shm(const char *name);
+int mdv_install_alternate_signal_stack(void);
 
 #endif

@@ -60,18 +60,20 @@ public final class ImageStore: @unchecked Sendable {
 
   public struct Limits: Sendable {
     public var maximumBytes: Int
+    public var maximumSourcePixels: Int
     public var maximumPixels: Int
     public var maximumDimension: Int
     public var cacheBytes: Int
     public var timeout: TimeInterval
 
     public init(
-      maximumBytes: Int = 16 << 20,
+      maximumBytes: Int = 16 << 20, maximumSourcePixels: Int = 100_000_000,
       maximumPixels: Int = ImageStore.maximumDisplayDimension * ImageStore.maximumDisplayDimension,
       maximumDimension: Int = ImageStore.maximumDisplayDimension, cacheBytes: Int = 128 << 20,
       timeout: TimeInterval = 5
     ) {
       self.maximumBytes = maximumBytes
+      self.maximumSourcePixels = maximumSourcePixels
       self.maximumPixels = maximumPixels
       self.maximumDimension = maximumDimension
       self.cacheBytes = cacheBytes
@@ -148,7 +150,7 @@ public final class ImageStore: @unchecked Sendable {
   }
 
   public func setDisplayWidth(_ pixels: Int) {
-    let dimension = min(max(pixels * 2, 1), limits.maximumDimension)
+    let dimension = min(max(pixels, 1), limits.maximumDimension)
     lock.withLock { displayDimension = dimension }
   }
 
@@ -286,16 +288,20 @@ public final class ImageStore: @unchecked Sendable {
       let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
       let width = properties[kCGImagePropertyPixelWidth] as? Int,
       let height = properties[kCGImagePropertyPixelHeight] as? Int,
-      width > 0, height > 0, width.multipliedReportingOverflow(by: height).partialValue <= limits.maximumPixels
+      width > 0, height > 0, width.multipliedReportingOverflow(by: height).partialValue <= limits.maximumSourcePixels
     else { return nil }
     let orientation = properties[kCGImagePropertyOrientation] as? Int ?? 1
     let size = orientation >= 5 ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
-    let cap = min(dimension ?? limits.maximumDimension, limits.maximumDimension)
+    let targetWidth = CGFloat(max(min(dimension ?? limits.maximumDimension, limits.maximumDimension), 1))
+    var scale = min(1, targetWidth / size.width)
+    let kept = size.width * scale * size.height * scale
+    if kept > CGFloat(limits.maximumPixels) { scale *= (CGFloat(limits.maximumPixels) / kept).squareRoot() }
+    let longEdge = max(Int((max(size.width, size.height) * scale).rounded(.down)), 1)
     let options: [CFString: Any] = [
       kCGImageSourceCreateThumbnailFromImageAlways: true,
       kCGImageSourceCreateThumbnailWithTransform: true,
       kCGImageSourceShouldCacheImmediately: true,
-      kCGImageSourceThumbnailMaxPixelSize: min(max(width, height), max(cap, 1)),
+      kCGImageSourceThumbnailMaxPixelSize: longEdge,
     ]
     guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
     return LoadedImage(image: image, size: size)

@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/mman.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -16,6 +17,47 @@ static struct termios restore_attributes;
 static int has_attributes;
 static void *alternate_stack;
 static volatile sig_atomic_t armed;
+
+#define MDV_SHM_SLOTS 16
+#define MDV_SHM_NAME_LENGTH 32
+static char shm_names[MDV_SHM_SLOTS][MDV_SHM_NAME_LENGTH];
+static volatile sig_atomic_t shm_used[MDV_SHM_SLOTS];
+static pthread_mutex_t shm_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int mdv_crash_track_shm(const char *name) {
+  size_t length = strlen(name);
+  if (length >= MDV_SHM_NAME_LENGTH) return -1;
+  pthread_mutex_lock(&shm_lock);
+  for (int slot = 0; slot < MDV_SHM_SLOTS; slot++) {
+    if (shm_used[slot]) continue;
+    memcpy(shm_names[slot], name, length + 1);
+    shm_used[slot] = 1;
+    pthread_mutex_unlock(&shm_lock);
+    return 0;
+  }
+  pthread_mutex_unlock(&shm_lock);
+  return -1;
+}
+
+void mdv_crash_untrack_shm(const char *name) {
+  pthread_mutex_lock(&shm_lock);
+  for (int slot = 0; slot < MDV_SHM_SLOTS; slot++) {
+    if (shm_used[slot] && strcmp(shm_names[slot], name) == 0) shm_used[slot] = 0;
+  }
+  pthread_mutex_unlock(&shm_lock);
+}
+
+int mdv_install_alternate_signal_stack(void) {
+  size_t size = SIGSTKSZ * 4;
+  void *memory = malloc(size);
+  if (memory == NULL) return -1;
+  stack_t stack = {.ss_sp = memory, .ss_size = size, .ss_flags = 0};
+  if (sigaltstack(&stack, NULL) != 0) {
+    free(memory);
+    return -1;
+  }
+  return 0;
+}
 
 static void restore_on_crash(int signal_number) {
   if (armed) {
@@ -32,6 +74,9 @@ static void restore_on_crash(int signal_number) {
       }
     }
     if (has_attributes) tcsetattr(restore_input, TCSAFLUSH, &restore_attributes);
+    for (int slot = 0; slot < MDV_SHM_SLOTS; slot++) {
+      if (shm_used[slot]) shm_unlink(shm_names[slot]);
+    }
   }
   struct sigaction fallback;
   memset(&fallback, 0, sizeof(fallback));

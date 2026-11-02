@@ -208,11 +208,13 @@ public final class ExitCleanup: @unchecked Sendable {
 
   func add(sharedMemory name: String) {
     lock.withLock { _ = sharedMemory.insert(name) }
+    mdv_crash_track_shm(name)
     registerOnce()
   }
 
   func remove(sharedMemory name: String) {
     lock.withLock { _ = sharedMemory.remove(name) }
+    mdv_crash_untrack_shm(name)
   }
 
   public func run() {

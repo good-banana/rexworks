@@ -105,11 +105,11 @@ final class ImageStoreTests: XCTestCase {
       try pngData(width: 4000, height: 2000).write(to: directory.url.appendingPathComponent("\(name).png"))
     }
     let store = ImageStore(limits: ImageStore.Limits(cacheBytes: 6 << 20))
-    store.setDisplayWidth(600)
+    store.setDisplayWidth(1200)
     store.pin(["a.png"], relativeTo: document)
     XCTAssertTrue(load(store, "a.png", document))
     let a = try XCTUnwrap(store.image(for: "a.png", relativeTo: document))
-    XCTAssertEqual(a.image.width, 1200, "twice the pane width")
+    XCTAssertEqual(a.image.width, 1200, "the pane width in device pixels")
     XCTAssertEqual(a.size, CGSize(width: 4000, height: 2000), "layout keeps the intrinsic size")
     XCTAssertTrue(load(store, "b.png", document))
     XCTAssertTrue(load(store, "c.png", document))
@@ -160,10 +160,28 @@ final class ImageStoreTests: XCTestCase {
     XCTAssertEqual(store.sizeProvider(relativeTo: document)("pic.png"), CGSize(width: 30, height: 20))
   }
 
+  func testLargePhotosDecodeAndAreDownscaledToThePane() throws {
+    let photo = ImageStore.decode(
+      pngData(width: 6000, height: 4000), limits: ImageStore.Limits(maximumBytes: 64 << 20), dimension: 1600)
+    let decoded = try XCTUnwrap(photo, "a 24 MP photo still displays")
+    XCTAssertEqual(decoded.image.width, 1600)
+    XCTAssertEqual(Double(decoded.image.height), 1066.7, accuracy: 1)
+    XCTAssertEqual(decoded.size, CGSize(width: 6000, height: 4000))
+  }
+
+  func testTallImagesKeepTheirWidthAtThePaneSize() throws {
+    let tall = try XCTUnwrap(
+      ImageStore.decode(pngData(width: 1200, height: 6000), limits: ImageStore.Limits(), dimension: 1600))
+    XCTAssertEqual(tall.image.width, 1200, "narrower than the pane, so not downscaled")
+    XCTAssertEqual(tall.image.height, 6000)
+  }
+
   func testDecodeRejectsOversizedInputAndPixelBombs() {
     let data = pngData(width: 64, height: 64)
     XCTAssertNil(ImageStore.decode(data, limits: ImageStore.Limits(maximumBytes: data.count - 1)))
-    XCTAssertNil(ImageStore.decode(data, limits: ImageStore.Limits(maximumPixels: 64 * 64 - 1)))
+    XCTAssertNil(ImageStore.decode(data, limits: ImageStore.Limits(maximumSourcePixels: 64 * 64 - 1)))
+    let bounded = ImageStore.decode(data, limits: ImageStore.Limits(maximumPixels: 32 * 32))
+    XCTAssertLessThanOrEqual((bounded?.image.width ?? 0) * (bounded?.image.height ?? 0), 32 * 32)
     XCTAssertNil(ImageStore.decode(Data("not an image".utf8), limits: ImageStore.Limits()))
     let scaled = ImageStore.decode(data, limits: ImageStore.Limits(maximumDimension: 16))
     XCTAssertEqual(scaled?.size, CGSize(width: 64, height: 64), "layout keeps the intrinsic size")

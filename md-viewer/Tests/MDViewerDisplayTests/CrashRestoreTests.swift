@@ -1,14 +1,41 @@
 import Darwin
 import Foundation
 import MDViewerCore
+import MDViewerSystem
 import XCTest
 
 final class CrashRestoreTests: XCTestCase {
-  private var probe: URL {
-    Bundle(for: CrashRestoreTests.self).bundleURL.deletingLastPathComponent().appendingPathComponent("mdv-crash-probe")
+  private static let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    .appendingPathComponent("../..").standardizedFileURL
+
+  private static let builtProbe: Result<URL, Error> = Result {
+    let output = FileManager.default.temporaryDirectory.appendingPathComponent("mdv-crash-probe-\(getpid())")
+    let compiler = Process()
+    compiler.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+    compiler.arguments = [
+      "clang", "-O0", "-I", root.appendingPathComponent("Sources/MDViewerSystem/include").path,
+      root.appendingPathComponent("Tests/CrashProbe/main.c").path,
+      root.appendingPathComponent("Sources/MDViewerSystem/crash.c").path,
+      root.appendingPathComponent("Sources/MDViewerSystem/shm.c").path, "-o", output.path,
+    ]
+    try compiler.run()
+    compiler.waitUntilExit()
+    guard compiler.terminationStatus == 0 else { throw POSIXError(.ENOEXEC) }
+    return output
   }
 
-  private func crash(_ signal: Int32, disarm: Bool = false) throws -> (output: Data, signal: Int32?) {
+  override class func tearDown() {
+    if case .success(let url) = builtProbe { try? FileManager.default.removeItem(at: url) }
+  }
+
+  private var probe: URL {
+    get throws { try Self.builtProbe.get() }
+  }
+
+  private func crash(_ signal: Int32, mode: String = "armed", sharedMemory: String? = nil) throws -> (
+    output: Data, signal: Int32?
+  ) {
+    let probe = try probe
     var ends: [Int32] = [0, 0]
     XCTAssertEqual(pipe(&ends), 0)
     var actions: posix_spawn_file_actions_t?
@@ -24,7 +51,8 @@ final class CrashRestoreTests: XCTestCase {
       exception_mask_t(
         EXC_MASK_BAD_ACCESS | EXC_MASK_BAD_INSTRUCTION | EXC_MASK_ARITHMETIC | EXC_MASK_SOFTWARE | EXC_MASK_BREAKPOINT
           | EXC_MASK_CRASH), mach_port_t(MACH_PORT_NULL), EXCEPTION_DEFAULT, THREAD_STATE_NONE)
-    let arguments = [probe.path, String(signal), disarm ? "disarm" : "armed", TerminalSequences.restore]
+    let arguments =
+      [probe.path, String(signal), mode, TerminalSequences.restore] + (sharedMemory.map { [$0] } ?? [])
     var argv = arguments.map { strdup($0) } + [nil]
     defer {
       for argument in argv { free(argument) }
@@ -65,8 +93,23 @@ final class CrashRestoreTests: XCTestCase {
   }
 
   func testDisarmedProcessWritesNothing() throws {
-    let result = try crash(SIGABRT, disarm: true)
+    let result = try crash(SIGABRT, mode: "disarm")
     XCTAssertEqual(result.signal, SIGABRT)
     XCTAssertTrue(result.output.isEmpty)
+  }
+
+  func testAStackOverflowOnAWorkerThreadRestores() throws {
+    let result = try crash(SIGSEGV, mode: "overflow")
+    XCTAssertNotNil(result.signal)
+    XCTAssertEqual(result.output, Data(TerminalSequences.restore.utf8))
+  }
+
+  func testTrackedSharedMemoryIsUnlinkedOnACrash() throws {
+    let name = "/mdvt\(getpid())-\(Int.random(in: 0..<100_000))"
+    let result = try crash(SIGABRT, sharedMemory: name)
+    XCTAssertEqual(result.signal, SIGABRT)
+    let descriptor = mdv_shm_open_readonly(name)
+    if descriptor >= 0 { close(descriptor) }
+    XCTAssertLessThan(descriptor, 0, "the shared memory object is gone")
   }
 }

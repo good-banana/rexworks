@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import MDViewerLayout
+import MDViewerSystem
 
 public struct LayoutRequest: Equatable, @unchecked Sendable {
   public var generation: Int
@@ -126,7 +127,10 @@ public final class LayoutWorker: @unchecked Sendable {
 
   public init(stackSize: Int = LayoutWorker.defaultStackSize, name: String = "md-viewer.layout") {
     self.stackSize = max(stackSize, 1024 * 1024)
-    let thread = Thread { [queue] in queue.run() }
+    let thread = Thread { [queue] in
+      mdv_install_alternate_signal_stack()
+      queue.run()
+    }
     thread.stackSize = self.stackSize
     thread.name = name
     thread.start()
