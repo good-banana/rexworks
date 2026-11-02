@@ -61,6 +61,7 @@ public struct Typography: Hashable, Sendable {
   public var copyButtonInset: CGFloat = 0.5
   public var footnoteIndent: CGFloat = 1
   public var imagePlaceholderSize = CGSize(width: 1.25, height: 1.25)
+  public var videoPlaceholderSize = CGSize(width: 640, height: 360)
   public var diagramPlaceholderHeight: CGFloat = 10
   public var hairline: CGFloat = 1
   public var tabWidth: Int = 8

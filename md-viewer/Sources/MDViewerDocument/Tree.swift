@@ -92,7 +92,7 @@ enum HTMLVocabulary {
   static let inline: Set<String> = [
     "a", "img", "picture", "br", "wbr", "source", "b", "strong", "i", "em", "cite", "dfn", "var", "code", "tt", "samp",
     "kbd",
-    "sub", "sup", "s", "del", "strike", "ins", "mark", "small", "abbr", "span", "q", "time", "bdo",
+    "sub", "sup", "s", "del", "strike", "ins", "mark", "small", "abbr", "span", "q", "time", "bdo", "video",
   ]
   static let void: Set<String> = ["br", "wbr", "hr", "img", "source"]
   static let dropped: Set<String> = [
@@ -104,7 +104,7 @@ enum HTMLVocabulary {
   static let closesParagraph: Set<String> = blockLevel.subtracting(["li", "td", "th", "tr", "summary"])
   static let allowedAttributes: Set<String> = [
     "align", "href", "title", "src", "srcset", "alt", "width", "height", "media", "open", "start", "colspan",
-    "rowspan", "id", "name",
+    "rowspan", "id", "name", "poster",
   ]
 
   static func isKnown(_ name: String) -> Bool {
@@ -189,6 +189,9 @@ final class TreeBuilder {
   }
 
   private func start(_ name: String, attributes: [String: String], range: SourceRange) {
+    if name == "iframe", !isFull, let source = attributes["src"], VideoEmbed(source: source) != nil {
+      current.children.append(.element(TreeElement(.html("iframe"), attributes: ["src": source], range: range)))
+    }
     if HTMLVocabulary.dropped.contains(name) {
       guard !HTMLVocabulary.droppedVoid.contains(name), !isFull else { return }
       let element = TreeElement(.dropped(name), range: range)

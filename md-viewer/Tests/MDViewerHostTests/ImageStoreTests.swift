@@ -65,6 +65,38 @@ final class ImageStoreTests: XCTestCase {
     XCTAssertEqual(store.sizeProvider(relativeTo: nil)(source), CGSize(width: 8, height: 6))
   }
 
+  func testPosterFramesComeOnlyFromLocalAudiovisualFiles() throws {
+    let directory = try TestDirectory()
+    try Data("x".utf8).write(to: directory.url.appendingPathComponent("notes.txt"))
+    try Data("x".utf8).write(to: directory.url.appendingPathComponent("broken.mp4"))
+    let document = directory.url.appendingPathComponent("doc.md")
+    let store = ImageStore(fetchRemote: { _, completion in
+      XCTFail("remote media is never fetched")
+      completion(nil)
+    })
+    XCTAssertFalse(store.loadPoster("https://example.com/clip.mp4", relativeTo: document) { _ in })
+    XCTAssertFalse(poster(store, "notes.txt", document), "not audiovisual")
+    XCTAssertFalse(poster(store, "broken.mp4", document), "an unreadable movie gives no frame")
+    let generated = ImageStore(posterFrame: { _ in solidImage(width: 32, height: 18) })
+    XCTAssertTrue(poster(generated, "any.mov", document))
+    XCTAssertEqual(generated.sizeProvider(relativeTo: document)("any.mov"), CGSize(width: 32, height: 18))
+  }
+
+  private func poster(_ store: ImageStore, _ source: String, _ document: URL) -> Bool {
+    let done = expectation(description: "poster \(source)")
+    let result = Flag()
+    guard
+      store.loadPoster(
+        source, relativeTo: document, queue: .global(),
+        completion: { available in
+          result.set(available)
+          done.fulfill()
+        })
+    else { return false }
+    wait(for: [done], timeout: 10)
+    return result.value
+  }
+
   func testDecodeRejectsOversizedInputAndPixelBombs() {
     let data = pngData(width: 64, height: 64)
     XCTAssertNil(ImageStore.decode(data, limits: ImageStore.Limits(maximumBytes: data.count - 1)))

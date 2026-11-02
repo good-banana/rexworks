@@ -175,8 +175,11 @@ struct Painter {
       } else {
         fill(image.rect, colors(\.inlineCodeBackground), radius: radius)
         stroke(image.rect, colors(\.border), width: hairline, radius: radius)
-        Glyphs(context: context, hairline: hairline).picture(in: image.rect, color: colors(\.mutedText))
+        if image.video == nil {
+          Glyphs(context: context, hairline: hairline).picture(in: image.rect, color: colors(\.mutedText))
+        }
       }
+      if image.video != nil { drawPlayBadge(in: image.rect) }
     case .diagram(let code):
       if let picture = assets.diagram(code) {
         drawImage(picture, in: image.rect)
@@ -190,6 +193,24 @@ struct Painter {
           at: CGPoint(x: image.rect.midX - line.width / 2, y: image.rect.midY + (line.ascent - line.descent) / 2))
       }
     }
+  }
+
+  private func drawPlayBadge(in rect: CGRect) {
+    let diameter = min(max(min(rect.width, rect.height) * 0.3, em(1.5)), em(4), rect.width, rect.height)
+    guard diameter > 0 else { return }
+    let circle = CGRect(x: rect.midX - diameter / 2, y: rect.midY - diameter / 2, width: diameter, height: diameter)
+    context.saveGState()
+    context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.6))
+    context.fillEllipse(in: circle)
+    let side = diameter * 0.42
+    let left = circle.midX - side * 0.35
+    context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+    context.move(to: CGPoint(x: left, y: circle.midY - side / 2))
+    context.addLine(to: CGPoint(x: left + side * 0.87, y: circle.midY))
+    context.addLine(to: CGPoint(x: left, y: circle.midY + side / 2))
+    context.closePath()
+    context.fillPath()
+    context.restoreGState()
   }
 
   private func drawImage(_ image: CGImage, in rect: CGRect) {

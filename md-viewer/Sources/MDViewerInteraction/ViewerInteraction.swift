@@ -350,6 +350,7 @@ public struct ViewerInteraction {
       BlockIdentity.numbered(
         page.prepared.codeBlocks.filter { !$0.value.isDiagram }.map { ($0.key, .code, $0.value.code) })[id]
     case .table(let id): BlockIdentity.regions(in: page)[id]
+    case .video: nil
     case .link(let range, _): BlockIdentity.links(in: page)[range]
     }
   }

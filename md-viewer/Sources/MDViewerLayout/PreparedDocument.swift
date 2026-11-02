@@ -493,7 +493,7 @@ private final class Preparer {
         inner.color = .link
         collect(link.content, style: inner, into: &items)
       case .image(let image):
-        items.append(.image(image, link: style.link))
+        items.append(.image(image, link: image.video ?? style.link))
       case .footnoteReference(let label, let number):
         let name = "fnref-\(label)"
         registerAnchor(name)

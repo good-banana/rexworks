@@ -89,6 +89,12 @@ extension ViewerInteraction {
       {
         return .link(link.range, href: href)
       }
+      let videos = Self.videoTargets(in: layout)
+      if let index = videos.firstIndex(where: {
+        $0.target == .link(href) && layout.displayRect($0.rect, region: $0.region).contains(page)
+      }) {
+        return .video(index, href: href)
+      }
     case .detailsToggle(let id): return .details(id)
     case .copyCode(let id, _): return .codeBlock(id)
     default: break
@@ -330,7 +336,7 @@ extension ViewerInteraction {
     guard let layout, let selection = overlay.selection, !selection.isEmpty else {
       return show("Nothing selected", kind: .info, at: now)
     }
-    return copy(markdown ? layout.markdown(selection) : layout.plainText(selection), at: now)
+    return copy(markdown ? layout.markdown(selection) : layout.plainText(selection), markdown: markdown, at: now)
   }
 
   mutating func copyCode(_ id: BlockID, at now: UInt64) -> [InteractionEffect] {
@@ -346,12 +352,10 @@ extension ViewerInteraction {
     return effects
   }
 
-  mutating func copy(_ text: String, at now: UInt64) -> [InteractionEffect] {
+  mutating func copy(_ text: String, markdown: Bool = false, at now: UInt64) -> [InteractionEffect] {
     guard !text.isEmpty else { return show("Nothing to copy", kind: .info, at: now) }
-    guard let sequence = Clipboard.sequence(for: text) else {
-      return show("Too large to copy (\(text.count) characters)", kind: .error, at: now)
-    }
-    return [.writeClipboard(sequence)] + show("Copied \(text.count) characters", kind: .success, at: now)
+    return [.writeClipboard(text, markdown: markdown)]
+      + show("Copied \(text.count) characters", kind: .success, at: now)
   }
 
   // MARK: Regions

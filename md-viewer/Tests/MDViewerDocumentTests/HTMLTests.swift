@@ -46,7 +46,7 @@ final class HTMLTests: XCTestCase {
     XCTAssertEqual(paragraphShape("a <foo class=\"x\">b</foo> c"), "\"a b c\"")
     XCTAssertEqual(
       paragraphShape("a <u>under</u> <font color=\"red\">red</font> <video src=\"v.mp4\">fallback</video>"),
-      "\"a under red fallback\"")
+      "\"a under red \" img( video=v.mp4: \"Video\")")
     XCTAssertEqual(paragraphShape("x <unknown-element/> y </stray> z"), "\"x  y  z\"")
     let document = Document.parse("<custom-tag>\nhello <b>bold</b>\n</custom-tag>\n\nAfter.\n")
     XCTAssertEqual(shape(document.blocks), "plain(\"hello \" strong(\"bold\")), p(\"After.\")")

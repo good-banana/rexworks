@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -81,15 +82,21 @@ public final class ImageStore: @unchecked Sendable {
   public let limits: Limits
   private let readLocal: @Sendable (URL) -> Data?
   private let fetchRemote: @Sendable (URL, @escaping @Sendable (Data?) -> Void) -> Void
+  private let posterFrame: @Sendable (URL) -> CGImage?
   private let lock = NSLock()
   private var entries: [ImageLocation: Entry] = [:]
   private let work = DispatchQueue(label: "md-viewer.images", qos: .userInitiated, attributes: .concurrent)
 
   public init(
     limits: Limits = Limits(), readLocal: (@Sendable (URL) -> Data?)? = nil,
-    fetchRemote: (@Sendable (URL, @escaping @Sendable (Data?) -> Void) -> Void)? = nil
+    fetchRemote: (@Sendable (URL, @escaping @Sendable (Data?) -> Void) -> Void)? = nil,
+    posterFrame: (@Sendable (URL) -> CGImage?)? = nil
   ) {
     self.limits = limits
+    self.posterFrame =
+      posterFrame ?? { url in
+        isPosterCandidate(url) ? VideoPosterFrame.generate(for: url) : nil
+      }
     let maximumBytes = limits.maximumBytes
     self.readLocal = readLocal ?? { ImageStore.readSafeLocal($0, maximumBytes: maximumBytes) }
     if let fetchRemote {
@@ -147,6 +154,28 @@ public final class ImageStore: @unchecked Sendable {
       work.async { finish(readLocal(url)) }
     case .remote(let url):
       fetchRemote(url) { [work] data in work.async { finish(data) } }
+    }
+    return true
+  }
+
+  @discardableResult
+  public func loadPoster(
+    _ source: String, relativeTo document: URL?, queue: DispatchQueue = .main,
+    completion: @escaping @Sendable (Bool) -> Void
+  ) -> Bool {
+    guard case .local(let url)? = ImageLocation(source: source, relativeTo: document) else { return false }
+    let location = ImageLocation.local(url)
+    let started: Bool = lock.withLock {
+      guard entries[location] == nil else { return false }
+      entries[location] = .loading
+      return true
+    }
+    guard started else { return false }
+    let posterFrame = posterFrame
+    work.async { [weak self] in
+      let image = posterFrame(url).map { LoadedImage(image: $0, size: CGSize(width: $0.width, height: $0.height)) }
+      self?.lock.withLock { self?.entries[location] = image.map(Entry.loaded) ?? .failed }
+      queue.async { completion(image != nil) }
     }
     return true
   }
@@ -249,4 +278,35 @@ public final class RemoteImageFetcher: NSObject, URLSessionDataDelegate, @unchec
   private func reject(_ task: URLSessionTask) {
     lock.withLock { transfers[task.taskIdentifier]?.rejected = true }
   }
+}
+
+public enum VideoPosterFrame {
+  public static let timeout: TimeInterval = 3
+  public static let maximumSize = CGSize(width: 1280, height: 720)
+
+  public static func generate(for url: URL, timeout: TimeInterval = timeout) -> CGImage? {
+    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+    generator.appliesPreferredTrackTransform = true
+    generator.maximumSize = maximumSize
+    generator.requestedTimeToleranceBefore = .positiveInfinity
+    generator.requestedTimeToleranceAfter = .positiveInfinity
+    let done = DispatchSemaphore(value: 0)
+    let box = PosterBox()
+    generator.generateCGImageAsynchronously(for: CMTime(seconds: 0.5, preferredTimescale: 600)) { image, _, _ in
+      box.set(image)
+      done.signal()
+    }
+    guard done.wait(timeout: .now() + timeout) == .success else {
+      generator.cancelAllCGImageGeneration()
+      return nil
+    }
+    return box.value
+  }
+}
+
+private final class PosterBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var image: CGImage?
+  var value: CGImage? { lock.withLock { image } }
+  func set(_ image: CGImage?) { lock.withLock { self.image = image } }
 }

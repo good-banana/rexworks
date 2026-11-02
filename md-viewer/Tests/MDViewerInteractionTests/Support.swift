@@ -20,6 +20,7 @@ struct Harness {
   var model: ViewerInteraction
   let system: FakeSystem
   var clipboard: [String] = []
+  var clipboardMarkdown: [Bool] = []
   var loads: [URL] = []
   var layoutRequests: [LayoutRequest] = []
   var effects: [InteractionEffect] = []
@@ -59,8 +60,9 @@ struct Harness {
       case .requestLayout(let request):
         layoutRequests.append(request)
         run(model.apply(request.perform(), for: request, at: now))
-      case .writeClipboard(let sequence):
-        clipboard.append(sequence)
+      case .writeClipboard(let text, let markdown):
+        clipboard.append(text)
+        clipboardMarkdown.append(markdown)
       case .loadDocument(let url):
         loads.append(url)
         if let source = system.files[url.standardizedFileURL.path] {
@@ -162,9 +164,7 @@ struct Harness {
 
   func decodedClipboard(_ index: Int = -1) -> String? {
     guard !clipboard.isEmpty else { return nil }
-    let sequence = clipboard[index < 0 ? clipboard.count + index : index]
-    let payload = sequence.dropFirst("\u{1b}]52;c;".count).dropLast(2)
-    return Data(base64Encoded: String(payload)).flatMap { String(data: $0, encoding: .utf8) }
+    return clipboard[index < 0 ? clipboard.count + index : index]
   }
 }
 

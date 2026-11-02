@@ -11,7 +11,7 @@ public enum InteractionEffect: Equatable {
   case layoutChanged
   case regionScrolled(BlockID, offset: CGFloat)
   case requestLayout(LayoutRequest)
-  case writeClipboard(String)
+  case writeClipboard(String, markdown: Bool)
   case loadDocument(URL)
   case reload
   case quit
@@ -53,6 +53,7 @@ public enum Focusable: Hashable, Sendable {
   case details(BlockID)
   case codeBlock(BlockID)
   case table(BlockID)
+  case video(Int, href: String)
 }
 
 public struct InteractionTiming: Sendable {

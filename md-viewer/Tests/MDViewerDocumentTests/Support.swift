@@ -43,6 +43,7 @@ func shape(_ inline: Inline) -> String {
       }
       attributes += " sources=[\(sources.joined(separator: " "))]"
     }
+    if let video = image.video { attributes += " video=\(video)" }
     return "img(\(image.source)\(attributes): \"\(image.alt)\")"
   case .footnoteReference(let label, let number): return "fn(\(label) \(number))"
   case .anchor(let name): return "anchor(\(name))"

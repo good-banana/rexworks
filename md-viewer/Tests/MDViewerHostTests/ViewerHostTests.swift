@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import MDViewerCore
@@ -36,7 +37,7 @@ final class ViewerHostTests: XCTestCase {
     let directory = try TestDirectory()
     let output = RecordingOutput()
     let services = HostServices(
-      output: output, stagers: (MemoryStager(), nil),
+      output: output, pasteboard: FakePasteboard(), stagers: (MemoryStager(), nil),
       environment: InteractionEnvironment(openURL: { _ in true }, copyOnSelect: { false }), watchesFiles: false)
     let host = ViewerHost(
       size: testPaneSize, theme: ResolvedTheme(colors: TerminalColorSet(), source: .terminalQuery),
@@ -55,28 +56,51 @@ final class ViewerHostTests: XCTestCase {
     XCTAssertTrue(text.contains("``` /tmp/a``b.md ```"))
   }
 
-  func testClipboardChunksAreWrittenBackToBackAheadOfTheNextFrame() throws {
-    let fixture = try HostFixture(document + String(repeating: "\n\nMore text.", count: 80))
-    fixture.acknowledgeFrames()
-    spin(0.05)
+  func testCopiesGoToThePasteboardAndNeverToTheTerminal() throws {
+    let fixture = try HostFixture(document)
     _ = fixture.output.take()
     fixture.host.receive(Array("\u{1b}[97;9u".utf8))
-    fixture.host.receive(Array("\u{1b}[106;1u".utf8))
-    XCTAssertFalse(fixture.host.transport.damage.isEmpty, "a scroll frame is queued behind the frame in flight")
-    let inFlight = fences(in: fixture.output.take().joined())
     fixture.host.receive(Array("y".utf8))
-    let writes = fixture.output.take()
-    let first = try XCTUnwrap(writes.firstIndex { $0.hasPrefix("\u{1b}]52;c;") })
-    let last = try XCTUnwrap(writes.firstIndex { $0.hasSuffix("\u{1b}\\") && !$0.contains("_G") })
-    XCTAssertTrue(writes[first...last].allSatisfy { !$0.contains("\u{1b}_G") }, "no graphics inside the sequence")
-    let payload = writes[first...last].joined()
-    let base64 = payload.dropFirst("\u{1b}]52;c;".count).dropLast(2)
-    let text = String(decoding: Data(base64Encoded: String(base64))!, as: UTF8.self)
-    XCTAssertTrue(text.contains("A paragraph with another page"))
-    XCTAssertEqual(first, 0, "the copy goes out ahead of the queued frame")
-    for fence in inFlight { fixture.host.receive(Array("\u{1b}_Gi=\(fence);OK\u{1b}\\".utf8)) }
-    spin(until: { fixture.output.joined.contains("a=f") }, timeout: 1)
-    XCTAssertTrue(fixture.output.joined.contains("a=f"), "the queued frame follows")
+    fixture.host.receive(Array("Y".utf8))
+    XCTAssertEqual(fixture.pasteboard.writes.map(\.markdown), [false, true])
+    XCTAssertTrue(fixture.pasteboard.writes[0].text.contains("A paragraph with another page"))
+    XCTAssertTrue(fixture.pasteboard.writes[1].text.contains("[another page](other.md)"))
+    XCTAssertFalse(fixture.output.joined.contains("\u{1b}]52;"))
+    XCTAssertEqual(fixture.host.interaction.status.message?.kind, .success)
+    fixture.pasteboard.succeeds = false
+    fixture.host.receive(Array("y".utf8))
+    XCTAssertEqual(fixture.host.interaction.status.message?.text, "Could not copy to the clipboard")
+  }
+
+  func testSystemPasteboardWritesPlainTextAndMarkdown() {
+    let pasteboard = NSPasteboard(name: NSPasteboard.Name("md-viewer-test-\(UUID().uuidString)"))
+    defer { pasteboard.releaseGlobally() }
+    let writer = SystemPasteboard(pasteboard: pasteboard)
+    XCTAssertTrue(writer.write("plain", markdown: false))
+    XCTAssertEqual(pasteboard.string(forType: .string), "plain")
+    XCTAssertNil(pasteboard.string(forType: SystemPasteboard.markdownType))
+    XCTAssertTrue(writer.write("**md**", markdown: true))
+    XCTAssertEqual(pasteboard.string(forType: .string), "**md**")
+    XCTAssertEqual(pasteboard.string(forType: SystemPasteboard.markdownType), "**md**")
+  }
+
+  func testVideoWithoutAPosterGetsALocalFrameAndRemoteVideosAreNeverFetched() throws {
+    let fixture = try HostFixture(
+      "<video src=\"clip.mp4\"></video>\n\n<video src=\"https://example.com/remote.mp4\"></video>\n",
+      posterFrame: { url in url.lastPathComponent == "clip.mp4" ? solidImage(width: 64, height: 48) : nil },
+      fetchRemote: { url, completion in
+        XCTFail("fetched \(url)")
+        completion(nil)
+      })
+    try Data("not really a movie".utf8).write(to: fixture.directory.url.appendingPathComponent("clip.mp4"))
+    fixture.host.fileChanged()
+    spin(until: {
+      fixture.host.interaction.layout?.images.first?.hasIntrinsicSize == true
+    })
+    let boxes = try XCTUnwrap(fixture.host.interaction.layout?.images)
+    XCTAssertEqual(boxes.map(\.video), ["clip.mp4", "https://example.com/remote.mp4"])
+    XCTAssertTrue(boxes[0].hasIntrinsicSize, "the poster frame's size was laid out")
+    XCTAssertFalse(boxes[1].hasIntrinsicSize)
   }
 
   func testControlSocketOpenKeepsHistory() throws {
@@ -178,7 +202,7 @@ final class ViewerHostTests: XCTestCase {
     let file = try directory.write("main.md", "# Hi")
     let output = RecordingOutput()
     let services = HostServices(
-      output: output, stagers: (MemoryStager(), nil),
+      output: output, pasteboard: FakePasteboard(), stagers: (MemoryStager(), nil),
       environment: InteractionEnvironment(openURL: { _ in true }, copyOnSelect: { false }), watchesFiles: false)
     let host = ViewerHost(
       size: testPaneSize, theme: ResolvedTheme(colors: TerminalColorSet(), source: .terminalQuery),
@@ -212,7 +236,7 @@ final class ViewerHostTests: XCTestCase {
     let directory = try TestDirectory()
     let file = try directory.write("main.md", document)
     let services = HostServices(
-      output: RecordingOutput(), stagers: (MemoryStager(), nil),
+      output: RecordingOutput(), pasteboard: FakePasteboard(), stagers: (MemoryStager(), nil),
       environment: InteractionEnvironment(openURL: { _ in true }, copyOnSelect: { false }),
       highlighter: SyntaxHighlighter(configuration: configuration), watchesFiles: false)
     let host = ViewerHost(

@@ -44,6 +44,10 @@ public func isSafeToOpenLocally(_ url: URL) -> Bool {
   localFileType(url, allowed: [.image, .audiovisualContent, .pdf, .plainText]) != nil
 }
 
+public func isPosterCandidate(_ url: URL) -> Bool {
+  localFileType(url, allowed: [.audiovisualContent]) != nil
+}
+
 public func isSafeLocalImage(_ url: URL) -> Bool {
   localFileType(url, allowed: [.image]) != nil
 }

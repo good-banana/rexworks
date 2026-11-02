@@ -265,11 +265,16 @@ extension LayoutEngine {
         }
       case .image(let index, let size, let intrinsic):
         let atom = prepared.images[index]
+        let rect = CGRect(x: left, y: baseline - size.height, width: size.width, height: size.height)
+        let chosen = chosenSource(atom.image)
         out.images.append(
           ImageBox(
-            rect: CGRect(x: left, y: baseline - size.height, width: size.width, height: size.height),
-            content: .image(source: chosenSource(atom.image)), alt: atom.image.alt, link: atom.link,
-            hasIntrinsicSize: intrinsic, region: nil, block: atom.block))
+            rect: rect, content: .image(source: chosen.isEmpty ? atom.image.video ?? "" : chosen),
+            alt: atom.image.alt, link: atom.link, hasIntrinsicSize: intrinsic, region: nil, block: atom.block,
+            video: atom.image.video))
+        if let video = atom.image.video {
+          out.targets.append(TargetArea(rect: rect, target: .link(video), region: nil))
+        }
       case .anchor(let name):
         out.anchors.append((name, top))
       }
@@ -296,7 +301,9 @@ extension LayoutEngine {
 
   func imageSize(_ index: Int, maxWidth: CGFloat) -> (size: CGSize, intrinsic: Bool) {
     let image = prepared.images[index].image
-    let provided = input.imageSize(chosenSource(image))
+    let chosen = chosenSource(image)
+    let loaded = input.imageSize(chosen.isEmpty ? image.video ?? "" : chosen)
+    let provided = loaded ?? (image.video == nil ? nil : typography.videoPlaceholderSize)
     var width = image.width.map { CGFloat($0) }
     var height = image.height.map { CGFloat($0) }
     if width == nil, height == nil, let provided {
@@ -307,7 +314,8 @@ extension LayoutEngine {
     } else if height == nil, let known = width, let provided, provided.width > 0 {
       height = known * provided.height / provided.width
     }
-    let intrinsic = width != nil && height != nil
+    let intrinsic =
+      (image.width != nil && image.height != nil) || (loaded != nil && (width != nil || height != nil))
     var size: CGSize
     if let width, let height {
       size = CGSize(width: typography.pixels(cssPoints: width), height: typography.pixels(cssPoints: height))

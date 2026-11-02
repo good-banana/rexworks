@@ -21,6 +21,17 @@ final class RecordingOutput: TerminalOutput {
   }
 }
 
+final class FakePasteboard: PasteboardWriting {
+  var writes: [(text: String, markdown: Bool)] = []
+  var succeeds = true
+
+  func write(_ text: String, markdown: Bool) -> Bool {
+    guard succeeds else { return false }
+    writes.append((text, markdown))
+    return true
+  }
+}
+
 final class MemoryStager: FrameStager {
   let name = "memory"
   private var sequence: UInt64 = 0
@@ -71,13 +82,16 @@ final class ThemeCalls: @unchecked Sendable {
 struct HostFixture {
   let host: ViewerHost
   let output: RecordingOutput
+  let pasteboard = FakePasteboard()
   let directory: TestDirectory
   let file: URL
   let themeCalls: ThemeCalls
 
   init(
     _ markdown: String, files: [String: String] = [:], start: Bool = true,
-    resolve: (@Sendable (TerminalColorSet) -> ResolvedTheme)? = nil
+    resolve: (@Sendable (TerminalColorSet) -> ResolvedTheme)? = nil,
+    posterFrame: (@Sendable (URL) -> CGImage?)? = nil,
+    fetchRemote: (@Sendable (URL, @escaping @Sendable (Data?) -> Void) -> Void)? = nil
   ) throws {
     directory = try TestDirectory()
     file = try directory.write("main.md", markdown)
@@ -87,8 +101,9 @@ struct HostFixture {
     themeCalls = calls
     let fallback = ResolvedTheme(colors: RenderPalette.fallbackColors(dark: true), source: .terminalQuery)
     let services = HostServices(
-      output: output, stagers: (MemoryStager(), nil),
+      output: output, pasteboard: pasteboard, stagers: (MemoryStager(), nil),
       environment: InteractionEnvironment(openURL: { _ in true }, copyOnSelect: { false }),
+      images: ImageStore(fetchRemote: fetchRemote, posterFrame: posterFrame),
       resolveTheme: { colors in
         calls.record(colors)
         return resolve?(colors) ?? fallback
@@ -125,6 +140,15 @@ func spin(_ seconds: TimeInterval) {
 func spin(until condition: () -> Bool, timeout: TimeInterval = 5) {
   let deadline = Date().addingTimeInterval(timeout)
   while !condition(), Date() < deadline { spin(0.01) }
+}
+
+func solidImage(width: Int, height: Int) -> CGImage {
+  let context = CGContext(
+    data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+    space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+  context.setFillColor(CGColor(srgbRed: 0.8, green: 0.2, blue: 0.2, alpha: 1))
+  context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+  return context.makeImage()!
 }
 
 func pngData(width: Int, height: Int) -> Data {

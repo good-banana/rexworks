@@ -210,6 +210,7 @@ public struct ImageBox: Hashable, Sendable {
   public var hasIntrinsicSize: Bool
   public var region: BlockID?
   public var block: BlockID
+  public var video: String? = nil
 }
 
 public enum HitTarget: Hashable, Sendable {

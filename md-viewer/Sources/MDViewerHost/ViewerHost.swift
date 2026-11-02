@@ -9,6 +9,7 @@ import MDViewerRender
 
 public struct HostServices {
   public var output: TerminalOutput
+  public var pasteboard: PasteboardWriting
   public var stagers: (primary: FrameStager, fallback: FrameStager?)
   public var environment: InteractionEnvironment
   public var readFile: (URL) throws -> String
@@ -23,7 +24,8 @@ public struct HostServices {
   public var watchesFiles: Bool
 
   public init(
-    output: TerminalOutput, stagers: (primary: FrameStager, fallback: FrameStager?),
+    output: TerminalOutput, pasteboard: PasteboardWriting = SystemPasteboard(),
+    stagers: (primary: FrameStager, fallback: FrameStager?),
     environment: InteractionEnvironment, readFile: @escaping (URL) throws -> String = readMarkdown(at:),
     images: ImageStore = ImageStore(), highlighter: SyntaxHighlighter? = nil, mermaid: MermaidRenderer? = nil,
     resolveTheme: @escaping @Sendable (TerminalColorSet) -> ResolvedTheme = {
@@ -34,6 +36,7 @@ public struct HostServices {
     screenScale: CGFloat? = nil, watchesFiles: Bool = true
   ) {
     self.output = output
+    self.pasteboard = pasteboard
     self.stagers = stagers
     self.environment = environment
     self.readFile = readFile
@@ -244,9 +247,11 @@ public final class ViewerHost {
       source.rasterizer.setScrollOffset(offset, for: id)
     case .requestLayout(let request):
       runLayout(request)
-    case .writeClipboard(let sequence):
-      trace("clipboard \(sequence.utf8.count) bytes")
-      for chunk in Clipboard.writeChunks(sequence) { services.output.write(chunk) }
+    case .writeClipboard(let text, let markdown):
+      trace("clipboard \(text.count) characters\(markdown ? " as Markdown" : "")")
+      if !services.pasteboard.write(text, markdown: markdown) {
+        perform(interaction.show("Could not copy to the clipboard", kind: .error, at: Self.now()))
+      }
     case .loadDocument(let url):
       trace("load \(url.lastPathComponent)")
       load(url)
@@ -452,8 +457,13 @@ public final class ViewerHost {
     let document = interaction.file
     for box in layout.images {
       guard case .image(let image) = box.content else { continue }
-      services.images.load(image, relativeTo: document, queue: .main) { [weak self] available in
+      let arrived: @Sendable (Bool) -> Void = { [weak self] available in
         MainActor.assumeIsolated { self?.imageArrived(image, available: available) }
+      }
+      if let video = box.video, video == image {
+        services.images.loadPoster(image, relativeTo: document, queue: .main, completion: arrived)
+      } else {
+        services.images.load(image, relativeTo: document, queue: .main, completion: arrived)
       }
     }
   }

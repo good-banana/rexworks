@@ -113,13 +113,22 @@ extension ViewerInteraction {
     for region in page.regions where region.kind == .table && region.maxOffset > 0 {
       items.append((region.rect, .table(region.id)))
     }
+    for (index, area) in Self.videoTargets(in: page).enumerated() {
+      guard case .link(let href) = area.target else { continue }
+      items.append((page.displayRect(area.rect, region: area.region), .video(index, href: href)))
+    }
     return items.sorted { lhs, rhs in
       abs(lhs.0.minY - rhs.0.minY) > 0.5 ? lhs.0.minY < rhs.0.minY : lhs.0.minX < rhs.0.minX
     }.map(\.1)
   }
 
+  static func videoTargets(in page: PageLayout) -> [TargetArea] {
+    page.targets.filter { if case .link = $0.target { true } else { false } }
+  }
+
   func ring(for item: Focusable) -> FocusRing {
     switch item {
+    case .video(_, let href): .target(.link(href))
     case .link(let range, _): .text(range)
     case .details(let id): .target(.detailsToggle(id))
     case .codeBlock(let id): .codeBlock(id)
@@ -129,6 +138,10 @@ extension ViewerInteraction {
 
   func rect(for item: Focusable, in page: PageLayout) -> CGRect? {
     switch item {
+    case .video(let index, _):
+      let targets = Self.videoTargets(in: page)
+      guard targets.indices.contains(index) else { return nil }
+      return page.displayRect(targets[index].rect, region: targets[index].region)
     case .link(let range, _):
       return page.rects(for: range, scrolled: false).map { page.displayRect($0.rect, region: $0.region) }
         .reduce(nil) { $0?.union($1) ?? $1 }
@@ -190,7 +203,7 @@ extension ViewerInteraction {
 
   mutating func activateFocus(at now: UInt64) -> [InteractionEffect] {
     switch focus {
-    case .link(_, let href): return follow(href, at: now)
+    case .link(_, let href), .video(_, let href): return follow(href, at: now)
     case .details(let id): return toggleDetails(id)
     case .codeBlock(let id): return copyCode(id, at: now)
     case .table, nil: return []

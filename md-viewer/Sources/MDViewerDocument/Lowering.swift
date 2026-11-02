@@ -333,6 +333,14 @@ struct Lowering {
     case "picture":
       guard let image = picture(element) else { return [] }
       kind = .image(image)
+    case "video":
+      guard let video = video(element) else { return [] }
+      kind = .image(video)
+    case "iframe":
+      guard let embed = attributes["src"].flatMap(VideoEmbed.init(source:)) else { return [] }
+      kind = .image(
+        Image(
+          source: embed.poster ?? "", title: "", alt: "Video", width: nil, height: nil, sources: [], video: embed.href))
     case "br": kind = .hardBreak
     case "wbr", "source", "hr": return []
     case "b", "strong": kind = .strong(children())
@@ -357,6 +365,18 @@ struct Lowering {
     return Image(
       source: source, title: attributes["title"] ?? "", alt: attributes["alt"] ?? "",
       width: pixels(attributes["width"]), height: pixels(attributes["height"]), sources: [])
+  }
+
+  private func video(_ element: TreeElement) -> Image? {
+    let attributes = element.attributes
+    let child = childElements(element).first { $0.htmlName == "source" && !($0.attributes["src"] ?? "").isEmpty }
+    guard let source = (attributes["src"].flatMap { $0.isEmpty ? nil : $0 }) ?? child?.attributes["src"],
+      URLSafety.isSafe(source)
+    else { return nil }
+    let poster = attributes["poster"].flatMap { URLSafety.isSafe($0) ? $0 : nil } ?? ""
+    return Image(
+      source: poster, title: attributes["title"] ?? "", alt: "Video", width: pixels(attributes["width"]),
+      height: pixels(attributes["height"]), sources: [], video: source)
   }
 
   private func picture(_ element: TreeElement) -> Image? {

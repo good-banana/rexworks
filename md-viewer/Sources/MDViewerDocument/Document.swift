@@ -208,6 +208,7 @@ public struct Image: Hashable, Sendable {
   public var width: Int?
   public var height: Int?
   public var sources: [ImageSource]
+  public var video: String? = nil
 }
 
 public enum ColorScheme: Hashable, Sendable {

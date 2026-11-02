@@ -254,24 +254,14 @@ final class CopyTests: XCTestCase {
     XCTAssertEqual(h.clipboard.count, 2)
   }
 
-  func testClipboardSequenceAndCap() {
-    XCTAssertEqual(Clipboard.sequence(for: "hi"), "\u{1b}]52;c;aGk=\u{1b}\\")
-    XCTAssertLessThanOrEqual(
-      Clipboard.sequence(for: String(repeating: "a", count: Clipboard.maximumTextBytes))!.utf8.count,
-      Clipboard.maximumSequenceBytes)
-    XCTAssertNil(Clipboard.sequence(for: String(repeating: "a", count: Clipboard.maximumTextBytes + 1)))
-    let sequence = Clipboard.sequence(for: String(repeating: "xyz", count: 50_000))!
-    let chunks = Clipboard.writeChunks(sequence)
-    XCTAssertGreaterThan(chunks.count, 1)
-    XCTAssertTrue(chunks.allSatisfy { $0.utf8.count <= Clipboard.writeChunkBytes })
-    XCTAssertEqual(chunks.joined(), sequence)
-  }
-
-  func testTooLargeSelectionReportsAnError() {
-    var h = Harness("x")
-    let effects = h.model.copy(String(repeating: "a", count: Clipboard.maximumTextBytes + 1), at: h.now)
-    XCTAssertFalse(effects.contains { if case .writeClipboard = $0 { true } else { false } })
-    XCTAssertEqual(h.model.status.message?.kind, .error)
+  func testCopiesCarryTheMarkdownFlag() {
+    var h = Harness(text)
+    h.key(.command("a"))
+    h.key(.char("y"))
+    h.key(.char("Y"))
+    XCTAssertEqual(h.clipboardMarkdown, [false, true])
+    XCTAssertEqual(h.model.copy("", at: h.now), [.redrawStatusBar])
+    XCTAssertEqual(h.model.status.message?.text, "Nothing to copy")
   }
 
   func testMessagesExpire() {

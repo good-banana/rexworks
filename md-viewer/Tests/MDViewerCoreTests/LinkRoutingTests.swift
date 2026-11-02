@@ -129,6 +129,27 @@ final class LinkRoutingTests: XCTestCase {
     XCTAssertFalse(isSafeLocalImage(executable))
   }
 
+  func testPosterCandidates() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    func make(_ name: String) throws -> URL {
+      let url = directory.appendingPathComponent(name)
+      try Data("x".utf8).write(to: url)
+      return url
+    }
+    XCTAssertTrue(isPosterCandidate(try make("clip.mp4")))
+    XCTAssertTrue(isPosterCandidate(try make("clip.mov")))
+    XCTAssertFalse(isPosterCandidate(try make("live.m3u8")))
+    XCTAssertFalse(isPosterCandidate(try make("notes.txt")))
+    XCTAssertFalse(isPosterCandidate(try make("img.png")))
+    XCTAssertFalse(isPosterCandidate(URL(fileURLWithPath: "/dev/zero")))
+    XCTAssertFalse(isPosterCandidate(directory.appendingPathComponent("absent.mp4")))
+    let fifo = directory.appendingPathComponent("pipe.mp4")
+    XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+    XCTAssertFalse(isPosterCandidate(fifo))
+  }
+
   func testCycleWraps() {
     XCTAssertNil(cycle(from: nil, count: 0, forward: true))
     XCTAssertEqual(cycle(from: nil, count: 3, forward: true), 0)
