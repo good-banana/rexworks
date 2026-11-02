@@ -37,6 +37,14 @@ The batch job rebuilds the full index every night at 02:00 UTC. A document saved
 3. Switch reads to the streaming index behind the `search.streaming` flag.
 4. Remove the cron job once the flag is at 100%.
 
+### Schedule by region
+
+| Region | Shadow start | Comparison ends | Internal users | 10% | 50% | 100% | Batch index removed | Owner |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| us-east-1 | 2026-11-03 | 2026-11-10 | 2026-11-11 | 2026-11-12 | 2026-11-14 | 2026-11-17 | 2026-11-24 | platform-team |
+| eu-west-1 | 2026-11-10 | 2026-11-17 | 2026-11-18 | 2026-11-19 | 2026-11-21 | 2026-11-24 | 2026-12-01 | platform-team |
+| ap-south-1 | 2026-11-17 | 2026-11-24 | 2026-11-25 | 2026-11-26 | 2026-11-28 | 2026-12-01 | 2026-12-08 | search-oncall |
+
 - [x] Shadow index deployed in staging
 - [ ] Comparison dashboard reviewed
 - [ ] Flag enabled for internal users
@@ -51,6 +59,12 @@ index-worker:
   topic: documents.changes
   batch_size: 200
   write_mode: shadow
+```
+
+Restart the worker after changing its configuration:
+
+```sh
+kubectl --namespace search rollout restart deployment/index-worker && kubectl --namespace search rollout status deployment/index-worker --timeout=10m
 ```
 
 ```mermaid
