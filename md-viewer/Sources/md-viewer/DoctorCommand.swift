@@ -48,7 +48,8 @@ enum DoctorCommand {
     let mermaid = MermaidRenderer.locatePage()
     report(
       mermaid != nil,
-      "\(MermaidRenderer.bundleName) \(mermaid.map { "at \($0.deletingLastPathComponent().path)" } ?? "not found")")
+      "\(MermaidRenderer.bundleName) \(mermaid.map { "at \($0.deletingLastPathComponent().deletingLastPathComponent().path)" } ?? "not found")"
+    )
 
     for line in agentStatusLines(AgentSkills(home: paths.home).status()) {
       print("info \(line)")
