@@ -44,10 +44,10 @@ extension ViewerInteraction {
       return [.reload]
     case .tab: return moveFocus(forward: true)
     case .backTab: return moveFocus(forward: false)
-    case .enter: return activateFocus(at: now)
+    case .enter: return focusFromPointer ? [] : activateFocus(at: now)
     case .escape: return escape()
     case .backspace:
-      return focusedRegion == nil ? goBack(at: now) : []
+      return focusedRegion == nil || focusFromPointer ? goBack(at: now) : []
     case .char("h"):
       if let region = focusedRegion { return scrollRegion(region, by: -regionStep) }
       return goBack(at: now)
@@ -65,7 +65,7 @@ extension ViewerInteraction {
     case .command("a"): return selectAll()
     case .char("Y"): return copySelection(markdown: true, at: now)
     case .char("c"):
-      guard case .codeBlock(let id) = focus else { return [] }
+      guard !focusFromPointer, case .codeBlock(let id) = focus else { return [] }
       return copyCode(id, at: now)
     case .char("+"), .char("="): return setZoom(ZoomSteps.next(after: zoom), at: now)
     case .char("-"): return setZoom(ZoomSteps.previous(before: zoom), at: now)
@@ -155,6 +155,7 @@ extension ViewerInteraction {
     if overlay.focus != nil, let rect = focusRedrawRect(focus, in: layout) { effects.append(.redraw(rect)) }
     if ring != nil, let rect = focusRedrawRect(item, in: layout) { effects.append(.redraw(rect)) }
     focus = item
+    focusFromPointer = item != nil && fromPointer
     overlay.focus = ring
     if !fromPointer, let item {
       if case .link(let range, _) = item, let region = regionOf(range) {
@@ -259,8 +260,21 @@ extension ViewerInteraction {
     return shown.map { .redraw($0) }
   }
 
-  func runFind(_ query: String, in layout: PageLayout) -> [FindMatch] {
-    layout.find(query, caseSensitive: Self.isCaseSensitive(query), includeHidden: true, limit: Self.findLimit)
+  mutating func loadMatches(_ query: String, from start: Int, backward: Bool = false, in layout: PageLayout) {
+    var found = layout.find(
+      query, caseSensitive: Self.isCaseSensitive(query), includeHidden: true, from: start, backward: backward,
+      limit: Self.findLimit)
+    findWindowed = found.count >= Self.findLimit
+    if findWindowed {
+      if backward { found.reverse() }
+    } else {
+      found.sort { $0.range.lowerBound < $1.range.lowerBound }
+    }
+    overlay.findMatches = found
+  }
+
+  func viewTextOffset(at y: CGFloat, in layout: PageLayout) -> Int {
+    topLine(in: layout, at: y)?.range.lowerBound ?? 0
   }
 
   func matchTop(_ range: Range<Int>, in layout: PageLayout) -> CGFloat {
@@ -268,8 +282,7 @@ extension ViewerInteraction {
   }
 
   var findCount: String {
-    let count = overlay.findMatches.count
-    return count >= Self.findLimit ? "\(count)+" : "\(count)"
+    findWindowed ? "\(overlay.findMatches.count)+" : "\(overlay.findMatches.count)"
   }
 
   func matchRects(_ matches: [FindMatch]) -> [CGRect] {
@@ -296,10 +309,11 @@ extension ViewerInteraction {
     overlay.findMatches = []
     overlay.currentMatch = nil
     guard let layout, !query.isEmpty else { return redraws(old) + [.redrawStatusBar] }
-    overlay.findMatches = runFind(query, in: layout)
     let top = findBefore?.offset ?? offset
+    loadMatches(query, from: viewTextOffset(at: top, in: layout), in: layout)
     if !overlay.findMatches.isEmpty {
-      overlay.currentMatch = overlay.findMatches.firstIndex { matchTop($0.range, in: layout) >= top } ?? 0
+      overlay.currentMatch =
+        findWindowed ? 0 : overlay.findMatches.firstIndex { matchTop($0.range, in: layout) >= top } ?? 0
     }
     var effects = redraws(old + matchRects(overlay.findMatches))
     effects += revealCurrentMatch()
@@ -309,12 +323,12 @@ extension ViewerInteraction {
 
   mutating func refreshFind(keepingNear location: Int?) {
     guard let layout, let query = findQuery, !query.isEmpty else { return }
-    overlay.findMatches = runFind(query, in: layout)
+    loadMatches(query, from: location ?? viewTextOffset(at: offset, in: layout), in: layout)
     guard !overlay.findMatches.isEmpty else {
       overlay.currentMatch = nil
       return
     }
-    guard let location else {
+    guard let location, !findWindowed else {
       overlay.currentMatch = 0
       return
     }
@@ -328,8 +342,20 @@ extension ViewerInteraction {
     guard findQuery != nil else { return show("No search; / to search", kind: .info, at: now) }
     guard !overlay.findMatches.isEmpty else { return show("No matches", kind: .find, at: now) }
     let old = overlay.currentMatch
-    overlay.currentMatch = cycle(from: overlay.currentMatch, count: overlay.findMatches.count, forward: forward)
-    var effects = redraws(matchRects([old, overlay.currentMatch].compactMap { $0 }.map { overlay.findMatches[$0] }))
+    let count = overlay.findMatches.count
+    var effects: [InteractionEffect]
+    if findWindowed, let layout, let query = findQuery, let current = old,
+      forward ? current == count - 1 : current == 0
+    {
+      let previous = overlay.findMatches
+      let edge = previous[current].range
+      loadMatches(query, from: forward ? edge.upperBound : edge.lowerBound, backward: !forward, in: layout)
+      overlay.currentMatch = overlay.findMatches.isEmpty ? nil : (forward ? 0 : overlay.findMatches.count - 1)
+      effects = redraws(matchRects(previous) + matchRects(overlay.findMatches))
+    } else {
+      overlay.currentMatch = cycle(from: old, count: count, forward: forward)
+      effects = redraws(matchRects([old, overlay.currentMatch].compactMap { $0 }.map { overlay.findMatches[$0] }))
+    }
     effects += revealCurrentMatch()
     effects.append(.redrawStatusBar)
     return effects

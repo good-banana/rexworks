@@ -98,6 +98,8 @@ public struct ViewerInteraction {
   var regionWheel = WheelAccelerator()
   var findBefore: (query: String?, offset: CGFloat)?
   var codeFrames: [BlockID: CGRect] = [:]
+  var findWindowed = false
+  var focusFromPointer = false
   var regionRanges: [BlockID: Range<Int>] = [:]
 
   public init(geometry: ViewGeometry, typography: Typography, environment: InteractionEnvironment) {
@@ -140,7 +142,7 @@ public struct ViewerInteraction {
     var hint: String?
     if let hoverLink {
       hint = hoverLink
-    } else if case .link(_, let href) = focus {
+    } else if overlay.focus != nil, case .link(_, let href) = focus {
       hint = href
     }
     return StatusBarContent(
@@ -167,6 +169,7 @@ public struct ViewerInteraction {
     self.source = source
     overlay = RenderOverlay()
     focus = nil
+    focusFromPointer = false
     findField = nil
     findQuery = nil
     findBefore = nil
@@ -177,7 +180,7 @@ public struct ViewerInteraction {
     autoScrollDeadline = nil
     copiedUntil = nil
     reloadState = nil
-    var effects = requestLayout(source: source, expanded: .some(nil), offsets: [:], anchor: anchor)
+    var effects = requestLayout(source: source, expanded: .some(nil), offsets: [:], fresh: true, anchor: anchor)
     effects.append(.redrawStatusBar)
     return effects
   }
@@ -231,11 +234,24 @@ public struct ViewerInteraction {
 
   mutating func requestLayout(
     source newSource: String? = nil, expanded: Set<BlockID>?? = nil, offsets: [BlockID: CGFloat]? = nil,
-    carried: CarriedDetails? = nil, anchor: PendingAnchor, keepAnchor: Bool = false
+    carried: CarriedDetails? = nil, fresh: Bool = false, anchor: PendingAnchor, keepAnchor: Bool = false
   ) -> [InteractionEffect] {
     generation += 1
-    if !(keepAnchor && pendingAnchor != nil) { pendingAnchor = anchor }
     let current = pendingRequest
+    let pendingReload = fresh || current?.source == nil ? nil : current?.carriedDetails
+    var carriedResult = carried ?? pendingReload
+    var offsets = offsets
+    if carried == nil, var folded = pendingReload {
+      if case .some(let explicit?) = expanded, let layout {
+        let identities = BlockIdentity.details(in: layout.prepared)
+        folded.expanded = Set(explicit.compactMap { identities[$0] })
+        carriedResult = folded
+      }
+      offsets = [:]
+    }
+    var keepsSource = false
+    if pendingReload != nil, case .source = pendingAnchor { keepsSource = true }
+    if !keepsSource, !(keepAnchor && pendingAnchor != nil) { pendingAnchor = anchor }
     let reuse: PreparedDocument? =
       newSource == nil && current?.source == nil && layout?.prepared.typography == typography
       ? layout?.prepared : nil
@@ -244,7 +260,7 @@ public struct ViewerInteraction {
       typography: typography, width: geometry.width,
       expandedDetails: expanded ?? current?.expandedDetails ?? layout?.expandedDetails,
       scrollOffsets: offsets ?? current?.scrollOffsets ?? layout?.scrollOffsets ?? [:],
-      carriedDetails: carried ?? (newSource == nil ? current?.carriedDetails : nil))
+      carriedDetails: carriedResult)
     pendingRequest = request
     return [.requestLayout(request)]
   }
@@ -268,6 +284,7 @@ public struct ViewerInteraction {
       }
       let ringShown = overlay.focus != nil
       focus = state.focus.flatMap { focusable(for: $0, in: page) }
+      if focus == nil { focusFromPointer = false }
       overlay.focus = ringShown ? focus.map(ring(for:)) : nil
     }
     layout = page
@@ -400,15 +417,17 @@ public struct ViewerInteraction {
     guard let current = focus else { return }
     if !focusables(in: page).contains(current) {
       focus = nil
+      focusFromPointer = false
       overlay.focus = nil
     } else if overlay.focus != nil {
       overlay.focus = ring(for: current)
     }
   }
 
-  func topLine(in page: PageLayout) -> TextFragment? {
+  func topLine(in page: PageLayout, at y: CGFloat? = nil) -> TextFragment? {
+    let top = y ?? offset
     var best: TextFragment?
-    for fragment in page.fragments where fragment.lineBottom > offset {
+    for fragment in page.fragments where fragment.lineBottom > top {
       if best == nil || fragment.lineTop < best!.lineTop
         || (fragment.lineTop == best!.lineTop && fragment.range.lowerBound < best!.range.lowerBound)
       {

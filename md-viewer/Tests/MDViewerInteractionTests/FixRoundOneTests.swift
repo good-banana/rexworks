@@ -55,7 +55,7 @@ final class PointerFixTests: XCTestCase {
 
   func testOffscreenFocusedRegionLetsBackspaceGoBack() {
     var h = Harness(wideCode + "\n\n" + longDocument() + "\n\n## End")
-    h.click(h.point(of: "value"))
+    h.key(.tab)
     guard case .codeBlock = h.model.focus else { return XCTFail("code block focused") }
     XCTAssertNotNil(h.model.focusedRegion)
     XCTAssertEqual(h.key(.backspace), [], "Backspace is swallowed while the region is on screen")

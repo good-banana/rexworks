@@ -322,25 +322,43 @@ extension PageLayout {
   }
 
   public func find(
-    _ query: String, caseSensitive: Bool = false, includeHidden: Bool = false, limit: Int = .max
+    _ query: String, caseSensitive: Bool = false, includeHidden: Bool = false, from start: Int = 0,
+    backward: Bool = false, limit: Int = .max
   ) -> [FindMatch] {
     guard !query.isEmpty, limit > 0 else { return [] }
-    let options: NSString.CompareOptions =
+    var options: NSString.CompareOptions =
       caseSensitive ? [.diacriticInsensitive] : [.caseInsensitive, .diacriticInsensitive]
+    if backward { options.insert(.backwards) }
     let text = prepared.text
+    let length = text.length
+    let pivot = min(max(start, 0), length)
     var matches: [FindMatch] = []
-    var search = NSRange(location: 0, length: text.length)
-    while search.length > 0, matches.count < limit {
-      let found = text.range(of: query, options: options, range: search)
-      if found.location == NSNotFound || found.length == 0 { break }
-      let range = found.location..<(found.location + found.length)
-      if !hiddenRanges.contains(where: { $0.overlaps(range) }) {
-        matches.append(FindMatch(range: range, rects: rects(for: range)))
-      } else if includeHidden {
-        matches.append(FindMatch(range: range, rects: []))
+    func scan(_ bounds: Range<Int>, accept: (Range<Int>) -> Bool, stop: (Range<Int>) -> Bool) {
+      var search = NSRange(location: bounds.lowerBound, length: bounds.count)
+      while search.length > 0, matches.count < limit {
+        let found = text.range(of: query, options: options, range: search)
+        if found.location == NSNotFound || found.length == 0 { return }
+        let range = found.location..<(found.location + found.length)
+        if stop(range) { return }
+        if accept(range) {
+          if !hiddenRanges.contains(where: { $0.overlaps(range) }) {
+            matches.append(FindMatch(range: range, rects: rects(for: range)))
+          } else if includeHidden {
+            matches.append(FindMatch(range: range, rects: []))
+          }
+        }
+        search =
+          backward
+          ? NSRange(location: search.location, length: range.lowerBound - search.location)
+          : NSRange(location: range.upperBound, length: search.location + search.length - range.upperBound)
       }
-      let next = found.location + found.length
-      search = NSRange(location: next, length: text.length - next)
+    }
+    if backward {
+      scan(0..<pivot, accept: { _ in true }, stop: { _ in false })
+      scan(0..<length, accept: { _ in true }, stop: { $0.upperBound <= pivot })
+    } else {
+      scan(pivot..<length, accept: { _ in true }, stop: { _ in false })
+      scan(0..<length, accept: { _ in true }, stop: { $0.lowerBound >= pivot })
     }
     return matches
   }
