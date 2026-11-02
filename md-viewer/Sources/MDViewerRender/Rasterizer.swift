@@ -40,16 +40,18 @@ public struct RenderOverlay: Sendable {
   public var currentMatch: Int?
   public var focus: FocusRing?
   public var copyButton: CopyButtonOverlay?
+  public var hoverLink: Range<Int>?
 
   public init(
     selection: Range<Int>? = nil, findMatches: [FindMatch] = [], currentMatch: Int? = nil, focus: FocusRing? = nil,
-    copyButton: CopyButtonOverlay? = nil
+    copyButton: CopyButtonOverlay? = nil, hoverLink: Range<Int>? = nil
   ) {
     self.selection = selection
     self.findMatches = findMatches
     self.currentMatch = currentMatch
     self.focus = focus
     self.copyButton = copyButton
+    self.hoverLink = hoverLink
   }
 }
 

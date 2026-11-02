@@ -257,21 +257,26 @@ struct Painter {
             to: CGRect(
               x: fragment.minX, y: fragment.lineTop - bounds.height, width: bounds.width, height: bounds.height * 3))
         }
+        let hovered = isHovered(fragment, segment)
+        let textColor = hovered ? colors(\.linkHover) : colors(segment.style.color)
+        let decorations = hovered ? segment.style.decorations.union(.underline) : segment.style.decorations
         if segment.style.color == .code, let tokens = tokens(for: fragment) {
           drawTokens(segment, fragment: fragment, line: tokens.line, spans: tokens.spans)
         } else {
-          context.setFillColor(colors(segment.style.color))
+          context.setFillColor(textColor)
           context.textPosition = fragment.origin
           CTLineDraw(segment.line, context)
         }
-        if !segment.style.decorations.isEmpty {
+        if !decorations.isEmpty {
           let next = position + 1 < fragments.count ? fragments[position + 1] : nil
           let continues =
             next.map {
               $0.lineTop == fragment.lineTop
-                && segments[$0.segment].style.decorations.isSuperset(of: segment.style.decorations)
+                && (segments[$0.segment].style.decorations.isSuperset(of: decorations)
+                  || isHovered($0, segments[$0.segment]))
             } ?? false
-          drawDecorations(segment, fragment: fragment, trimTrailing: !continues)
+          drawDecorations(
+            segment, fragment: fragment, decorations: decorations, color: textColor, trimTrailing: !continues)
         }
         if fragment.isClipped { context.restoreGState() }
       }
@@ -320,7 +325,14 @@ struct Painter {
     }
   }
 
-  private func drawDecorations(_ segment: ShapedSegment, fragment: TextFragment, trimTrailing: Bool) {
+  private func isHovered(_ fragment: TextFragment, _ segment: ShapedSegment) -> Bool {
+    guard let hover = overlay.hoverLink, segment.style.link != nil else { return false }
+    return fragment.range.overlaps(hover)
+  }
+
+  private func drawDecorations(
+    _ segment: ShapedSegment, fragment: TextFragment, decorations: TextDecorations, color: CGColor, trimTrailing: Bool
+  ) {
     guard let run = (CTLineGetGlyphRuns(segment.line) as? [CTRun])?.first,
       let font = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName as String]
     else { return }
@@ -333,8 +345,7 @@ struct Painter {
     guard maxX > minX else { return }
     let thickness = max(hairline, CTFontGetUnderlineThickness(ctFont).rounded())
     let baseline = fragment.origin.y
-    context.setFillColor(colors(segment.style.color))
-    let decorations = segment.style.decorations
+    context.setFillColor(color)
     if decorations.contains(.underline) {
       let y = baseline - CTFontGetUnderlinePosition(ctFont)
       context.fill(CGRect(x: minX, y: y, width: maxX - minX, height: thickness))
@@ -346,7 +357,7 @@ struct Painter {
     if decorations.contains(.dottedUnderline) {
       let y = baseline - CTFontGetUnderlinePosition(ctFont) + thickness / 2
       context.saveGState()
-      context.setStrokeColor(colors(segment.style.color))
+      context.setStrokeColor(color)
       context.setLineWidth(thickness)
       context.setLineDash(phase: 0, lengths: [thickness, thickness * 2])
       context.move(to: CGPoint(x: minX, y: y))

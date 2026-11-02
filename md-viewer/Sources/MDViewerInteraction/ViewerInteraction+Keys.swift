@@ -6,10 +6,15 @@ import MDViewerRender
 
 extension ViewerInteraction {
   public mutating func handle(_ event: InputEvent, at now: UInt64) -> [InteractionEffect] {
+    if helpVisible, case .mouse(let mouse) = event {
+      guard mouse.kind == .press else { return [] }
+      helpVisible = false
+      return [.redrawAll]
+    }
     switch event {
-    case .key(let key): handle(key: key, at: now)
-    case .mouse(let mouse): handle(mouse: mouse, at: now)
-    default: []
+    case .key(let key): return handle(key: key, at: now)
+    case .mouse(let mouse): return handle(mouse: mouse, at: now)
+    default: return []
     }
   }
 
@@ -68,7 +73,8 @@ extension ViewerInteraction {
     case .char("/"), .command("f"): return openFind()
     case .char("?"):
       helpVisible = true
-      return [.redrawAll]
+      overlay.hoverLink = nil
+      return setPointerShape(.default) + [.redrawAll]
     case .char("n"): return stepMatch(forward: true, at: now)
     case .char("N"): return stepMatch(forward: false, at: now)
     case .char("y"), .command("c"): return copySelection(markdown: false, at: now)

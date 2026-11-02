@@ -49,7 +49,7 @@ final class RasterFrameSourceTests: XCTestCase {
     let frame = try XCTUnwrap(RasterBitmap(width: viewport.frameWidth, height: viewport.frameHeight))
     source.drawFrame(viewport, into: frame)
     let palette = RenderPalette.fallback(dark: true)
-    XCTAssertEqual(frame.pixel(x: 400, y: viewport.contentHeight + 20), palette.statusBarBackground.pixel)
+    XCTAssertEqual(frame.pixel(x: 300, y: viewport.contentHeight + 20), palette.statusBarBackground.pixel)
     XCTAssertEqual(frame.pixel(x: 2, y: viewport.contentHeight), palette.progressFill.pixel)
     XCTAssertEqual(frame.pixel(x: 790, y: viewport.contentHeight), palette.progressTrack.pixel)
   }

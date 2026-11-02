@@ -27,8 +27,8 @@ final class TerminalColorsTests: XCTestCase {
   func testRestoreDeletesImagesBeforeLeavingTheAlternateScreen() {
     XCTAssertEqual(
       TerminalSequences.restore,
-      "\u{1b}[?2031l\u{1b}[<u\u{1b}[>0s\u{1b}[?1003l\u{1b}[?2048l\u{1b}[?1016l\u{1b}[?1006l\u{1b}[?1000l\u{1b}[?25h\u{1b}_Ga=d,d=A,q=2\u{1b}\\"
-        + "\u{1b}[?1049l")
+      "\u{1b}[?2031l\u{1b}[<u\u{1b}[>0s\u{1b}[?1003l\u{1b}[?2048l\u{1b}[?1016l\u{1b}[?1006l\u{1b}[?1000l\u{1b}[?25h\u{1b}]22;default\u{1b}\\"
+        + "\u{1b}_Ga=d,d=A,q=2\u{1b}\\\u{1b}[?1049l")
     XCTAssertEqual(TerminalSequences.queryCellSize, "\u{1b}[16t")
   }
 
@@ -43,9 +43,20 @@ final class TerminalColorsTests: XCTestCase {
       TerminalSequences.enableViewerModes, "\u{1b}[?2048h\u{1b}[?1003h\u{1b}[>1s\u{1b}[>1u\u{1b}[?2031h")
     let undo = [
       "\u{1b}[?2031l", "\u{1b}[<u", "\u{1b}[>0s", "\u{1b}[?1003l", "\u{1b}[?2048l", "\u{1b}[?1016l",
-      "\u{1b}[?1006l", "\u{1b}[?1000l", "\u{1b}[?25h", "\u{1b}_Ga=d,d=A,q=2\u{1b}\\", "\u{1b}[?1049l",
+      "\u{1b}[?1006l", "\u{1b}[?1000l", "\u{1b}[?25h", "\u{1b}]22;default\u{1b}\\", "\u{1b}_Ga=d,d=A,q=2\u{1b}\\",
+      "\u{1b}[?1049l",
     ]
     XCTAssertEqual(TerminalSequences.restore, undo.joined())
+  }
+
+  func testPointerShapeSequences() {
+    XCTAssertEqual(TerminalSequences.pointerShape(.pointer), "\u{1b}]22;pointer\u{1b}\\")
+    XCTAssertEqual(TerminalSequences.pointerShape(.text), "\u{1b}]22;text\u{1b}\\")
+    XCTAssertEqual(TerminalSequences.pointerShape(.default), "\u{1b}]22;default\u{1b}\\")
+    let restore = TerminalSequences.restore
+    let reset = try? XCTUnwrap(restore.range(of: TerminalSequences.pointerShape(.default)))
+    XCTAssertLessThan(reset!.lowerBound, restore.range(of: Kitty.deleteAll())!.lowerBound)
+    XCTAssertLessThan(reset!.lowerBound, restore.range(of: "\u{1b}[?1049l")!.lowerBound)
   }
 
   func testColorSchemeReportsAreOptInAndDisabledOnRestore() {

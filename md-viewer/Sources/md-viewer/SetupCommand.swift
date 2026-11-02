@@ -65,16 +65,18 @@ enum SetupCommand {
   static func updateFindBinding(rex: String?, install: Bool) {
     let config = RexFindBinding.configFile(
       environment: ProcessInfo.processInfo.environment, home: FileManager.default.homeDirectoryForCurrentUser)
+    let editor = RexFindBinding.Editor(rexPath: rex)
     do {
-      let changed = install ? try RexFindBinding.install(at: config) : try RexFindBinding.remove(at: config)
+      let changed = install ? try editor.install(at: config) : try editor.remove(at: config)
       guard changed else { return }
-      if let rex { _ = try? ProcessRunner().run(rex, ["config", "reload"]) }
+      if let rex { _ = try? ProcessRunner(timeout: 10).run(rex, ["config", "reload", "--autostart=false"]) }
       print(
         install
           ? "Cmd-F in md-viewer panes now opens md-viewer's find (\(config.path))."
           : "Removed the md-viewer Cmd-F binding from \(config.path).")
     } catch {
-      FileHandle.standardError.write(Data("could not update \(config.path): \(error.localizedDescription)\n".utf8))
+      FileHandle.standardError.write(
+        Data("Left \(config.path) unchanged because \(error). Cmd-F was not \(install ? "set up" : "removed").\n".utf8))
     }
   }
 }

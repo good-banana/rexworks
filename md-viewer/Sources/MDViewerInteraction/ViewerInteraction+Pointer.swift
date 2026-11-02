@@ -49,6 +49,21 @@ extension ViewerInteraction {
     }
   }
 
+  mutating func setPointerShape(_ shape: PointerShape) -> [InteractionEffect] {
+    guard shape != pointerShape else { return [] }
+    pointerShape = shape
+    return [.pointerShape(shape)]
+  }
+
+  mutating func setHoverLink(_ range: Range<Int>?) -> [InteractionEffect] {
+    guard range != overlay.hoverLink, let layout else { return [] }
+    let rects = [overlay.hoverLink, range].compactMap { $0 }.flatMap { link in
+      layout.rects(for: link).map(\.rect)
+    }
+    overlay.hoverLink = range
+    return redraws(rects)
+  }
+
   // MARK: Press, drag, release
 
   mutating func pressed(at pane: CGPoint, now: UInt64) -> [InteractionEffect] {
@@ -243,12 +258,24 @@ extension ViewerInteraction {
   mutating func hovered(at pane: CGPoint) -> [InteractionEffect] {
     var link: String?
     var block: BlockID?
+    var linkRange: Range<Int>?
+    var shape = PointerShape.default
     if let layout, pane.y >= 0, pane.y < geometry.contentHeight {
       let page = pagePoint(pane)
-      if case .link(let href) = layout.target(at: page) { link = href }
+      let target = layout.target(at: page)
+      switch target {
+      case .link(let href):
+        link = href
+        shape = .pointer
+        if let position = layout.textPosition(at: page)?.offset {
+          linkRange = layout.prepared.links.first { $0.range.contains(position) && $0.href == href }?.range
+        }
+      case .copyCode, .detailsToggle: shape = .pointer
+      case .task, nil: shape = layout.isOverText(page) ? .text : .default
+      }
       block = codeBlock(at: page)
     }
-    var effects: [InteractionEffect] = []
+    var effects = setPointerShape(shape) + setHoverLink(linkRange)
     if link != hoverLink {
       hoverLink = link
       effects.append(.redrawStatusBar)

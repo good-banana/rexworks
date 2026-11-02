@@ -77,7 +77,7 @@ public struct StatusBar {
     return rows * cellPixelHeight
   }
 
-  public static let keyHints = "/ find   q quit   ? keys"
+  public static let keyHints = "/ find   r refresh   q quit   ? help"
 
   private func points(_ value: CGFloat) -> CGFloat { value * backingScale }
 
@@ -86,10 +86,10 @@ public struct StatusBar {
     var fontSize: CGFloat
     var padding: CGFloat
     var gap: CGFloat
-    var refresh: CGRect
     var hintFont: CTFont
     var hints: TextLine
     var hintsX: CGFloat
+    var showsHints: Bool
   }
 
   func metrics(in rect: CGRect) -> Metrics {
@@ -97,20 +97,16 @@ public struct StatusBar {
     let body = CGRect(x: rect.minX, y: rect.minY + trackHeight, width: rect.width, height: rect.height - trackHeight)
     let fontSize = min(max(body.height * 0.5, points(11)), points(13))
     let padding = points(10)
-    let size = max(min(body.height - points(4), fontSize * 1.6), 1)
-    let refresh = CGRect(
-      x: rect.maxX - padding - size, y: (body.midY - size / 2).rounded(), width: size, height: size)
     let hintFont = NSFont.systemFont(ofSize: fontSize * 0.92, weight: .regular) as CTFont
     let hints = TextLine(Self.keyHints, font: hintFont)
     return Metrics(
-      body: body, fontSize: fontSize, padding: padding, gap: points(12), refresh: refresh, hintFont: hintFont,
-      hints: hints, hintsX: refresh.minX - points(8) - hints.width)
+      body: body, fontSize: fontSize, padding: padding, gap: points(12), hintFont: hintFont, hints: hints,
+      hintsX: rect.maxX - padding - hints.width, showsHints: hints.width <= rect.width - padding * 2)
   }
-
-  public func refreshButton(in rect: CGRect) -> CGRect { metrics(in: rect).refresh }
 
   public func keyHintsRect(in rect: CGRect) -> CGRect {
     let metrics = metrics(in: rect)
+    guard metrics.showsHints else { return .null }
     return CGRect(x: metrics.hintsX, y: metrics.body.minY, width: metrics.hints.width, height: metrics.body.height)
   }
 
@@ -149,10 +145,12 @@ public struct StatusBar {
     let textColor = palette.statusBarText
     func baseline(_ line: TextLine) -> CGFloat { (body.midY + (line.ascent - line.descent) / 2).rounded() }
 
-    drawRefresh(in: metrics.refresh, context: context)
-    context.setFillColor(palette.statusHintText.cgColor)
-    metrics.hints.draw(in: context, at: CGPoint(x: metrics.hintsX, y: baseline(metrics.hints)))
-    var right = metrics.hintsX - gap
+    var right = rect.maxX - padding
+    if metrics.showsHints {
+      context.setFillColor(palette.statusHintText.cgColor)
+      metrics.hints.draw(in: context, at: CGPoint(x: metrics.hintsX, y: baseline(metrics.hints)))
+      right = metrics.hintsX - gap
+    }
     if let message = content.message {
       let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .medium) as CTFont
       let line = TextLine(
@@ -191,37 +189,23 @@ public struct StatusBar {
     }
 
     if let query = content.findField {
-      let font = NSFont.systemFont(ofSize: fontSize, weight: .regular) as CTFont
-      let iconSize = fontSize * 0.8
-      let inner = points(6)
-      let caretWidth = max(points(1), 1)
-      let maximumWidth = max(rect.width * 0.45, points(80))
-      let textRoom = maximumWidth - inner * 3 - iconSize - caretWidth
-      let line = TextLine(query, font: font, truncateTo: max(textRoom, 0), truncation: .start)
-      let fieldWidth = min(max(inner * 3 + iconSize + line.width + caretWidth, rect.width * 0.25), maximumWidth)
-      let fieldHeight = min(body.height - points(4), fontSize * 1.6)
-      let field = CGRect(
-        x: max(right - fieldWidth, rect.minX + padding), y: (body.midY - fieldHeight / 2).rounded(),
-        width: fieldWidth, height: fieldHeight)
+      let geometry = findField(query, right: right, in: rect)
+      let field = geometry.field
       context.setFillColor(palette.pageBackground.cgColor)
       context.addPath(CGPath(roundedRect: field, cornerWidth: points(4), cornerHeight: points(4), transform: nil))
       context.fillPath()
       context.setStrokeColor(palette.focusOutline.cgColor)
-      context.setLineWidth(max(points(1), 1))
+      context.setLineWidth(geometry.border)
       context.addPath(
         CGPath(
-          roundedRect: field.insetBy(dx: 0.5, dy: 0.5), cornerWidth: points(4), cornerHeight: points(4),
-          transform: nil))
+          roundedRect: field.insetBy(dx: geometry.border / 2, dy: geometry.border / 2), cornerWidth: points(4),
+          cornerHeight: points(4), transform: nil))
       context.strokePath()
-      let icon = CGRect(x: field.minX + inner, y: body.midY - iconSize / 2, width: iconSize, height: iconSize)
       Glyphs(context: context, hairline: max(1, backingScale.rounded())).magnifier(
-        in: icon, color: palette.statusMutedText.cgColor)
-      let textX = icon.maxX + inner
+        in: geometry.icon, color: palette.statusMutedText.cgColor)
       context.setFillColor(textColor.cgColor)
-      line.draw(in: context, at: CGPoint(x: textX, y: baseline(line)))
-      context.fill(
-        CGRect(
-          x: textX + line.width + points(1), y: body.midY - fontSize * 0.6, width: caretWidth, height: fontSize * 1.2))
+      geometry.line.draw(in: context, at: CGPoint(x: geometry.textX, y: geometry.baseline))
+      context.fill(geometry.caret)
       right = field.minX - gap
     }
 
@@ -256,24 +240,44 @@ public struct StatusBar {
     }
   }
 
-  private func drawRefresh(in rect: CGRect, context: CGContext) {
-    let radius = rect.width * 0.3
-    let center = CGPoint(x: rect.midX, y: rect.midY)
-    let width = max(points(1.4), 1)
-    context.saveGState()
-    context.setStrokeColor(palette.statusHintText.cgColor)
-    context.setLineWidth(width)
-    context.setLineCap(.round)
-    context.addArc(center: center, radius: radius, startAngle: -.pi * 0.25, endAngle: .pi * 1.45, clockwise: false)
-    context.strokePath()
-    let tip = CGPoint(x: center.x + radius * cos(-.pi * 0.25), y: center.y + radius * sin(-.pi * 0.25))
-    let head = radius * 0.6
-    context.setFillColor(palette.statusHintText.cgColor)
-    context.move(to: CGPoint(x: tip.x + head * 0.6, y: tip.y - head * 0.2))
-    context.addLine(to: CGPoint(x: tip.x - head * 0.5, y: tip.y - head * 0.7))
-    context.addLine(to: CGPoint(x: tip.x - head * 0.1, y: tip.y + head * 0.6))
-    context.closePath()
-    context.fillPath()
-    context.restoreGState()
+  struct FindFieldGeometry {
+    var field: CGRect
+    var icon: CGRect
+    var line: TextLine
+    var textX: CGFloat
+    var baseline: CGFloat
+    var caret: CGRect
+    var border: CGFloat
+  }
+
+  func findField(_ query: String, right: CGFloat, in rect: CGRect) -> FindFieldGeometry {
+    let metrics = metrics(in: rect)
+    let body = metrics.body
+    let fontSize = metrics.fontSize
+    let font = NSFont.systemFont(ofSize: fontSize, weight: .regular) as CTFont
+    let iconSize = fontSize * 0.8
+    let inner = points(6)
+    let caretWidth = max(points(1), 1)
+    let border = max(points(1), 1)
+    let maximumWidth = max(rect.width * 0.45, points(80))
+    let textRoom = maximumWidth - inner * 3 - iconSize - caretWidth
+    let line = TextLine(query, font: font, truncateTo: max(textRoom, 0), truncation: .start)
+    let fieldWidth = min(max(inner * 3 + iconSize + line.width + caretWidth, rect.width * 0.25), maximumWidth)
+    let fieldHeight = min(body.height - points(4), fontSize * 1.6)
+    let field = CGRect(
+      x: max(right - fieldWidth, rect.minX + metrics.padding), y: (body.midY - fieldHeight / 2).rounded(),
+      width: fieldWidth, height: fieldHeight)
+    let icon = CGRect(x: field.minX + inner, y: body.midY - iconSize / 2, width: iconSize, height: iconSize)
+    let textX = icon.maxX + inner
+    let ascent = CTFontGetAscent(font)
+    let descent = CTFontGetDescent(font)
+    let baseline = (body.midY + (ascent - descent) / 2).rounded()
+    let inside = field.insetBy(dx: 0, dy: border + max(points(2), 1))
+    let top = max(baseline - ascent, inside.minY)
+    let bottom = min(baseline + descent, inside.maxY)
+    let caret = CGRect(
+      x: textX + line.width + points(1), y: top, width: caretWidth, height: max(bottom - top, 1))
+    return FindFieldGeometry(
+      field: field, icon: icon, line: line, textX: textX, baseline: baseline, caret: caret, border: border)
   }
 }

@@ -12,6 +12,7 @@ public enum InteractionEffect: Equatable {
   case regionScrolled(BlockID, offset: CGFloat)
   case requestLayout(LayoutRequest)
   case writeClipboard(String, markdown: Bool)
+  case pointerShape(PointerShape)
   case loadDocument(URL)
   case reload
   case quit

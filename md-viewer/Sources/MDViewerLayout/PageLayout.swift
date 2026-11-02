@@ -112,6 +112,15 @@ extension PageLayout {
     return regions[index].rect.contains(point)
   }
 
+  public func isOverText(_ point: CGPoint) -> Bool {
+    fragments.contains { fragment in
+      guard isVisible(point, in: fragment.region) else { return false }
+      let shift = offset(of: fragment.region)
+      return point.y >= fragment.lineTop && point.y < fragment.lineBottom && point.x >= fragment.minX - shift
+        && point.x <= fragment.maxX - shift
+    }
+  }
+
   public func target(at point: CGPoint) -> HitTarget? {
     for fragment in fragments where isVisible(point, in: fragment.region) {
       let shift = offset(of: fragment.region)

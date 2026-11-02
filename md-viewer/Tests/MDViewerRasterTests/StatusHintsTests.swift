@@ -18,34 +18,35 @@ final class StatusHintsTests: XCTestCase {
     return count
   }
 
-  func testHintsAndRefreshAlwaysFitAndThePathYields() throws {
+  func testHintsAlwaysFitAndThePathYields() throws {
+    XCTAssertEqual(StatusBar.keyHints, "/ find   r refresh   q quit   ? help")
     let content = StatusBarContent(
       fileName: "a-very-long-file-name-that-would-never-fit-in-a-narrow-pane.md",
       folder: "~/Documents/projects/team-notes/drafts/screenshots/visual-check",
       progress: ScrollProgress(start: 0, fraction: 0.5), message: StatusMessage("3/14", kind: .find))
-    for width in [420, 640, 1600] {
+    for width in [640, 900, 1600] {
       let bar = StatusBar(palette: palette, backingScale: 2)
       let rect = CGRect(x: 0, y: 0, width: width, height: 44)
       let bitmap = try XCTUnwrap(RasterBitmap(width: width, height: 44))
       bar.draw(content, in: rect, bitmap: bitmap)
       let hints = bar.keyHintsRect(in: rect)
-      let refresh = bar.refreshButton(in: rect)
       XCTAssertGreaterThanOrEqual(hints.minX, 0, "the hints fit at \(width) px")
-      XCTAssertLessThanOrEqual(hints.maxX, refresh.minX, "the hints sit left of the refresh button")
-      XCTAssertLessThanOrEqual(refresh.maxX, rect.maxX)
+      XCTAssertLessThanOrEqual(hints.maxX, rect.maxX)
       XCTAssertGreaterThan(inkedPixels(bitmap, in: hints), 40, "the hints are drawn at \(width) px")
-      XCTAssertGreaterThan(inkedPixels(bitmap, in: refresh), 10, "the refresh control is drawn at \(width) px")
+      let right = CGRect(x: hints.maxX + 1, y: 4, width: rect.maxX - hints.maxX - 1, height: 36)
+      XCTAssertEqual(inkedPixels(bitmap, in: right), 0, "no refresh control right of the hints at \(width) px")
     }
   }
 
-  func testWithoutRoomForAnyPathTheHintsStillDraw() throws {
+  func testTooNarrowForTheHintsDropsThem() throws {
     let bar = StatusBar(palette: palette, backingScale: 2)
-    let rect = CGRect(x: 0, y: 0, width: 360, height: 44)
-    let bitmap = try XCTUnwrap(RasterBitmap(width: 360, height: 44))
+    let rect = CGRect(x: 0, y: 0, width: 300, height: 44)
+    let bitmap = try XCTUnwrap(RasterBitmap(width: 300, height: 44))
     bar.draw(
       StatusBarContent(fileName: "x.md", folder: "~/a", progress: ScrollProgress(start: 0, fraction: 1)), in: rect,
       bitmap: bitmap)
-    XCTAssertGreaterThan(inkedPixels(bitmap, in: bar.keyHintsRect(in: rect)), 40)
+    XCTAssertTrue(bar.keyHintsRect(in: rect).isNull)
+    XCTAssertGreaterThan(inkedPixels(bitmap, in: CGRect(x: 0, y: 6, width: 120, height: 34)), 20, "the path draws")
   }
 
   func testHelpOverlayDrawsAPanelOverTheContent() throws {
@@ -73,6 +74,58 @@ final class StatusHintsTests: XCTestCase {
     overlay.draw(in: area, clip: patchRect, origin: patchRect.origin, bitmap: patch)
     for (x, y) in [(10, 10), (120, 80), (230, 150)] {
       XCTAssertEqual(patch.pixel(x: x, y: y), full.pixel(x: 300 + x, y: 200 + y))
+    }
+  }
+
+  private func fieldFillPixels(_ bitmap: RasterBitmap) -> Int {
+    var count = 0
+    for y in 6..<bitmap.height {
+      for x in 0..<bitmap.width {
+        if let pixel = bitmap.pixel(x: x, y: y), pixel.distance(to: palette.pageBackground.pixel) <= 1 { count += 1 }
+      }
+    }
+    return count
+  }
+
+  func testTheFindFieldIsDrawnOnlyWhileSearching() throws {
+    let bar = StatusBar(palette: palette, backingScale: 2)
+    let rect = CGRect(x: 0, y: 0, width: 900, height: 44)
+    let progress = ScrollProgress(start: 0, fraction: 1)
+    let idle = try XCTUnwrap(RasterBitmap(width: 900, height: 44))
+    bar.draw(StatusBarContent(fileName: "a.md", progress: progress), in: rect, bitmap: idle)
+    XCTAssertEqual(fieldFillPixels(idle), 0, "no field by default")
+    let counting = try XCTUnwrap(RasterBitmap(width: 900, height: 44))
+    bar.draw(
+      StatusBarContent(fileName: "a.md", progress: progress, message: StatusMessage("2/14", kind: .find)), in: rect,
+      bitmap: counting)
+    XCTAssertEqual(fieldFillPixels(counting), 0, "no field while only the matches are active")
+    let searching = try XCTUnwrap(RasterBitmap(width: 900, height: 44))
+    bar.draw(StatusBarContent(fileName: "a.md", progress: progress, findField: "abc"), in: rect, bitmap: searching)
+    XCTAssertGreaterThan(fieldFillPixels(searching), 50)
+  }
+
+  func testTheCaretStaysInsideTheFieldAtTheTextHeight() throws {
+    let bar = StatusBar(palette: palette, backingScale: 2)
+    let rect = CGRect(x: 0, y: 0, width: 900, height: 44)
+    let metrics = bar.metrics(in: rect)
+    for query in ["", "abc", "Typography"] {
+      let bitmap = try XCTUnwrap(RasterBitmap(width: 900, height: 44))
+      bar.draw(
+        StatusBarContent(fileName: "a.md", progress: ScrollProgress(start: 0, fraction: 1), findField: query),
+        in: rect, bitmap: bitmap)
+      let geometry = bar.findField(query, right: metrics.hintsX - metrics.gap, in: rect)
+      let inside = geometry.field.insetBy(dx: 0, dy: geometry.border)
+      XCTAssertGreaterThanOrEqual(geometry.caret.minY, inside.minY + 1, query.debugDescription)
+      XCTAssertLessThanOrEqual(geometry.caret.maxY, inside.maxY - 1, query.debugDescription)
+      XCTAssertGreaterThan(geometry.caret.height, metrics.fontSize * 0.8, "as tall as a line of text")
+      let x = Int(geometry.caret.midX)
+      assertColor(bitmap.pixel(x: x, y: Int(geometry.caret.midY)), palette.statusBarText, tolerance: 8, "caret")
+      assertColor(
+        bitmap.pixel(x: x, y: Int(inside.minY.rounded(.up))), palette.pageBackground, tolerance: 8,
+        "the row inside the top border is clear")
+      assertColor(
+        bitmap.pixel(x: x, y: Int(inside.maxY.rounded(.down)) - 1), palette.pageBackground, tolerance: 8,
+        "the row inside the bottom border is clear")
     }
   }
 }

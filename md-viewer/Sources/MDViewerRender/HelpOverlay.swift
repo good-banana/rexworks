@@ -27,7 +27,7 @@ public struct HelpOverlay {
     ("Backspace  h", "Back"),
     ("L  Shift-Backspace", "Forward"),
     ("+  -  0", "Zoom in, out or reset"),
-    ("r, refresh button", "Reload the file and the theme"),
+    ("r", "Refresh: reload the file and the theme"),
     ("Esc", "Close find, clear the selection or focus"),
     ("?", "Show this help"),
     ("q  Ctrl-C", "Quit"),

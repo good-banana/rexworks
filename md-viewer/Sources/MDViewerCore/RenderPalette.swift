@@ -40,6 +40,7 @@ public struct RenderPalette: Equatable, Sendable {
   public var headingText: RGB
   public var link: RGB
   public var linkVisited: RGB
+  public var linkHover: RGB
   public var inlineCodeBackground: RGB
   public var inlineCodeText: RGB
   public var codeBlockBackground: RGB
@@ -95,6 +96,7 @@ public struct RenderPalette: Equatable, Sendable {
     headingText = fg
     link = blue
     linkVisited = blue
+    linkHover = blue.mixed(with: RGB(white: dark ? 1 : 0), dark ? 0.25 : 0.2)
     inlineCodeBackground = tint(0.1)
     inlineCodeText = fg
     codeBlockBackground = tint(0.06)
@@ -165,7 +167,8 @@ public struct RenderPalette: Equatable, Sendable {
       \.pageBackground, textContrast,
       [
         ("text", \.text), ("mutedText", \.mutedText), ("headingText", \.headingText), ("link", \.link),
-        ("linkVisited", \.linkVisited), ("alerts.note", \.alerts.note), ("alerts.tip", \.alerts.tip),
+        ("linkHover", \.linkHover), ("linkVisited", \.linkVisited), ("alerts.note", \.alerts.note),
+        ("alerts.tip", \.alerts.tip),
         ("alerts.important", \.alerts.important), ("alerts.warning", \.alerts.warning),
         ("alerts.caution", \.alerts.caution),
       ])

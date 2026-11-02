@@ -11,8 +11,8 @@ public enum RexFindBinding {
       if block == nil then return false end
       local terminal = "com.superlogical.terminal"
       local process = rex.block.call(terminal, "process", { block_id = block })
-      if process ~= nil and process.foreground ~= nil and process.foreground.name == "md-viewer" then
-        return true
+      if process ~= nil then
+        return process.foreground ~= nil and process.foreground.name == "md-viewer"
       end
       local listed = rex.session.list_blocks{}
       for _, entry in ipairs((listed or {}).blocks or {}) do
@@ -50,10 +50,26 @@ public enum RexFindBinding {
     return home.appendingPathComponent(".config/rex/init.lua")
   }
 
-  public static func removing(from text: String) -> String {
+  public enum EditError: Error, Equatable, CustomStringConvertible {
+    case unreadable(String)
+    case notUTF8
+    case unterminatedBlock
+    case checkFailed(String)
+
+    public var description: String {
+      switch self {
+      case .unreadable(let reason): "it could not be read (\(reason))"
+      case .notUTF8: "it is not valid UTF-8"
+      case .unterminatedBlock: "it has an md-viewer begin marker without the end marker"
+      case .checkFailed(let output): "the edited config did not pass rex config check: \(output)"
+      }
+    }
+  }
+
+  public static func removing(from text: String) throws -> String {
     var lines = text.components(separatedBy: "\n")
     while let start = lines.firstIndex(of: beginMarker) {
-      let end = lines[start...].firstIndex(of: endMarker) ?? lines.count - 1
+      guard let end = lines[start...].firstIndex(of: endMarker) else { throw EditError.unterminatedBlock }
       lines.removeSubrange(start...end)
       if start > 0, start <= lines.count, lines[start - 1].isEmpty, start == lines.count || lines[start].isEmpty {
         lines.remove(at: start - 1)
@@ -62,31 +78,78 @@ public enum RexFindBinding {
     return lines.joined(separator: "\n")
   }
 
-  public static func installing(into text: String) -> String {
-    var kept = removing(from: text)
+  public static func installing(into text: String) throws -> String {
+    var kept = try removing(from: text)
     while kept.hasSuffix("\n\n") { kept.removeLast() }
     if kept.isEmpty { return lua + "\n" }
     return kept + (kept.hasSuffix("\n") ? "\n" : "\n\n") + lua + "\n"
   }
 
-  @discardableResult
-  public static func install(at configured: URL) throws -> Bool {
-    let url = configured.resolvingSymlinksInPath()
-    let existing = try? String(contentsOf: url, encoding: .utf8)
-    let updated = installing(into: existing ?? "")
-    guard updated != existing else { return false }
-    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try updated.write(to: url, atomically: false, encoding: .utf8)
-    return true
+  public static func read(_ url: URL) throws -> String? {
+    let data: Data
+    do {
+      data = try Data(contentsOf: url)
+    } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+      return nil
+    } catch {
+      throw EditError.unreadable(error.localizedDescription)
+    }
+    guard let text = String(data: data, encoding: .utf8) else { throw EditError.notUTF8 }
+    return text
   }
 
-  @discardableResult
-  public static func remove(at configured: URL) throws -> Bool {
-    let url = configured.resolvingSymlinksInPath()
-    guard let existing = try? String(contentsOf: url, encoding: .utf8) else { return false }
-    let updated = removing(from: existing)
-    guard updated != existing else { return false }
-    try updated.write(to: url, atomically: false, encoding: .utf8)
-    return true
+  public struct Editor {
+    public var runner: ProcessRunning?
+    public var rexPath: String?
+
+    public init(runner: ProcessRunning? = ProcessRunner(timeout: 10), rexPath: String?) {
+      self.runner = runner
+      self.rexPath = rexPath
+    }
+
+    @discardableResult
+    public func install(at configured: URL) throws -> Bool {
+      try edit(configured) { try RexFindBinding.installing(into: $0 ?? "") }
+    }
+
+    @discardableResult
+    public func remove(at configured: URL) throws -> Bool {
+      try edit(configured) { existing in
+        guard let existing else { return nil }
+        return try RexFindBinding.removing(from: existing)
+      }
+    }
+
+    private func edit(_ configured: URL, _ change: (String?) throws -> String?) throws -> Bool {
+      let url = configured.resolvingSymlinksInPath()
+      let existing = try RexFindBinding.read(url)
+      guard let updated = try change(existing), updated != existing else { return false }
+      let directory = url.deletingLastPathComponent()
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let candidate = directory.appendingPathComponent(".\(url.lastPathComponent).md-viewer-\(UUID().uuidString)")
+      try Data(updated.utf8).write(to: candidate, options: .withoutOverwriting)
+      do {
+        let permissions = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]) ?? 0o644
+        try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: candidate.path)
+        try check(candidate)
+        guard rename(candidate.path, url.path) == 0 else {
+          throw EditError.unreadable(String(cString: strerror(errno)))
+        }
+      } catch {
+        try? FileManager.default.removeItem(at: candidate)
+        throw error
+      }
+      return true
+    }
+
+    private func check(_ candidate: URL) throws {
+      guard let runner, let rexPath else { return }
+      let result = try runner.run(rexPath, ["config", "check", candidate.path, "--autostart=false"], timeout: 10)
+      guard result.status == 0 else {
+        let output = String(decoding: result.stdout + result.stderr, as: UTF8.self)
+          .split(separator: "\n").filter { $0.lowercased().contains("error") }.joined(separator: "; ")
+        throw EditError.checkFailed(output.isEmpty ? "exit status \(result.status)" : output)
+      }
+    }
   }
 }

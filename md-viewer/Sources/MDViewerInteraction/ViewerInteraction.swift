@@ -78,6 +78,7 @@ public struct ViewerInteraction {
   public internal(set) var findField: String?
   public internal(set) var findQuery: String?
   public internal(set) var helpVisible = false
+  public internal(set) var pointerShape = PointerShape.default
   public internal(set) var history = History()
   public internal(set) var pendingRequest: LayoutRequest?
 

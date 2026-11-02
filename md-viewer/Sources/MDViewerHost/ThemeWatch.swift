@@ -119,16 +119,38 @@ public struct ThemeWatchState: Equatable, Sendable {
 public final class FileChangeWatcher {
   public static let debounce: TimeInterval = 0.15
 
+  struct Stamp: Equatable {
+    var inode: UInt64
+    var modified: timespec
+    var size: Int64
+
+    init?(_ path: String) {
+      var info = stat()
+      guard stat(path, &info) == 0 else { return nil }
+      inode = info.st_ino
+      modified = info.st_mtimespec
+      size = info.st_size
+    }
+
+    static func == (lhs: Stamp, rhs: Stamp) -> Bool {
+      lhs.inode == rhs.inode && lhs.size == rhs.size && lhs.modified.tv_sec == rhs.modified.tv_sec
+        && lhs.modified.tv_nsec == rhs.modified.tv_nsec
+    }
+  }
+
   private let file: URL
   private let onChange: () -> Void
   private var fileSource: DispatchSourceFileSystemObject?
   private var directorySource: DispatchSourceFileSystemObject?
+  private var watchedInode: UInt64?
+  private var lastStamp: Stamp?
   private var pending = false
   private var stopped = false
 
   public init(file: URL, onChange: @escaping () -> Void) {
     self.file = file
     self.onChange = onChange
+    lastStamp = Stamp(file.path)
     armDirectory()
     armFile()
   }
@@ -147,11 +169,7 @@ public final class FileChangeWatcher {
     let source = DispatchSource.makeFileSystemObjectSource(
       fileDescriptor: descriptor, eventMask: [.write, .rename, .delete], queue: .main)
     source.setEventHandler { [weak self] in
-      MainActor.assumeIsolated {
-        guard let self else { return }
-        if self.fileSource == nil { self.armFile() }
-        self.changed()
-      }
+      MainActor.assumeIsolated { self?.inspect() }
     }
     source.setCancelHandler { close(descriptor) }
     directorySource = source
@@ -159,24 +177,31 @@ public final class FileChangeWatcher {
   }
 
   private func armFile() {
+    fileSource?.cancel()
+    fileSource = nil
+    watchedInode = nil
     let descriptor = open(file.path, O_EVTONLY)
     guard descriptor >= 0 else { return }
+    var info = stat()
+    if fstat(descriptor, &info) == 0 { watchedInode = info.st_ino }
     let source = DispatchSource.makeFileSystemObjectSource(
       fileDescriptor: descriptor, eventMask: [.write, .extend, .attrib, .rename, .delete], queue: .main)
     source.setEventHandler { [weak self] in
-      MainActor.assumeIsolated {
-        guard let self else { return }
-        if !source.data.isDisjoint(with: [.rename, .delete]) {
-          source.cancel()
-          self.fileSource = nil
-          self.armFile()
-        }
-        self.changed()
-      }
+      MainActor.assumeIsolated { self?.inspect() }
     }
     source.setCancelHandler { close(descriptor) }
     fileSource = source
     source.resume()
+  }
+
+  private func inspect() {
+    guard !stopped else { return }
+    let stamp = Stamp(file.path)
+    if stamp?.inode != watchedInode { armFile() }
+    guard stamp != lastStamp else { return }
+    lastStamp = stamp
+    guard stamp != nil else { return }
+    changed()
   }
 
   private func changed() {
@@ -203,6 +228,9 @@ public final class ThemeWatchService {
   let viewersDirectory: URL
   let ownSocket: URL?
   let isRexRunning: () -> Bool
+  let workspaceCenter: NotificationCenter
+  let appearanceCenter: NotificationCenter
+  let isRexApplication: @Sendable (NSRunningApplication?) -> Bool
   private var preferences: FileChangeWatcher?
   private var observers: [(NotificationCenter, NSObjectProtocol)] = []
   private let broadcastQueue = DispatchQueue(label: "md-viewer.theme-broadcast", qos: .utility)
@@ -211,8 +239,16 @@ public final class ThemeWatchService {
     paths: SupportPaths, ownSocket: URL?,
     preferencesFile: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
       "Library/Preferences/com.superlogical.rex.plist"),
-    isRexRunning: @escaping () -> Bool = ThemeWatchService.rexIsRunning
+    isRexRunning: @escaping () -> Bool = ThemeWatchService.rexIsRunning,
+    workspaceCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+    appearanceCenter: NotificationCenter = DistributedNotificationCenter.default(),
+    isRexApplication: @escaping @Sendable (NSRunningApplication?) -> Bool = {
+      $0?.bundleIdentifier.map(ThemeResolver.rexBundleIDs.contains) ?? false
+    }
   ) {
+    self.workspaceCenter = workspaceCenter
+    self.appearanceCenter = appearanceCenter
+    self.isRexApplication = isRexApplication
     lock = LeaderLock(url: paths.root.appendingPathComponent("theme-watch.lock"))
     self.preferencesFile = preferencesFile
     viewersDirectory = paths.viewersDirectory
@@ -258,13 +294,14 @@ public final class ThemeWatchService {
   }
 
   private func observeRexApp() {
-    let center = NSWorkspace.shared.notificationCenter
+    let center = workspaceCenter
+    let isRexApplication = isRexApplication
     for (name, launched) in [
       (NSWorkspace.didLaunchApplicationNotification, true), (NSWorkspace.didTerminateApplicationNotification, false),
     ] {
       let observer = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
         let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-        guard let bundle = app?.bundleIdentifier, ThemeResolver.rexBundleIDs.contains(bundle) else { return }
+        guard isRexApplication(app) else { return }
         MainActor.assumeIsolated {
           guard let self else { return }
           if launched {
@@ -283,7 +320,7 @@ public final class ThemeWatchService {
       guard let self else { return }
       perform(state.themeSourceChanged())
     }
-    let center = DistributedNotificationCenter.default()
+    let center = appearanceCenter
     let observer = center.addObserver(forName: Self.appearanceNotification, object: nil, queue: .main) {
       [weak self] _ in
       MainActor.assumeIsolated {
@@ -297,20 +334,22 @@ public final class ThemeWatchService {
   private func stopWatching() {
     preferences?.stop()
     preferences = nil
-    let distributed = DistributedNotificationCenter.default()
-    for (center, observer) in observers where center === distributed { center.removeObserver(observer) }
-    observers.removeAll { $0.0 === distributed }
+    let appearance = appearanceCenter
+    for (center, observer) in observers where center === appearance { center.removeObserver(observer) }
+    observers.removeAll { $0.0 === appearance }
   }
 
   private func broadcast() {
     onLocalChange()
-    let directory = viewersDirectory
-    let own = ownSocket?.standardizedFileURL.path
+    let targets = Self.peerSockets(in: viewersDirectory, excluding: ownSocket)
     broadcastQueue.async {
-      let sockets = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-      for socket in sockets where socket.pathExtension == "sock" && socket.standardizedFileURL.path != own {
-        _ = ViewerSocketClient.sendTheme(to: socket)
-      }
+      for socket in targets { _ = ViewerSocketClient.sendTheme(to: socket) }
     }
+  }
+
+  nonisolated static func peerSockets(in directory: URL, excluding own: URL?) -> [URL] {
+    let ownPath = own?.standardizedFileURL.path
+    let sockets = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+    return sockets.filter { $0.pathExtension == "sock" && $0.standardizedFileURL.path != ownPath }
   }
 }

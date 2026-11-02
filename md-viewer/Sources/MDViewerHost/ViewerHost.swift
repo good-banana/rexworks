@@ -198,10 +198,6 @@ public final class ViewerHost {
     switch event {
     case .key, .mouse:
       if transport.isStopped { transport.resume() }
-      if case .mouse(let mouse) = event, mouse.kind == .press, mouse.button == 0, isOnRefreshButton(mouse) {
-        perform(interaction.handle(.key(.char("r")), at: now))
-        return
-      }
       perform(interaction.handle(event, at: now))
     case .colorScheme:
       if !answeringThemeQuery { requestTheme(.colorScheme) }
@@ -216,14 +212,6 @@ public final class ViewerHost {
     case .graphics(let response):
       driver.handle(response)
     }
-  }
-
-  var refreshButton: CGRect {
-    StatusBar(palette: palette, backingScale: backingScale).refreshButton(in: transport.viewport.statusBarRect.cgRect)
-  }
-
-  func isOnRefreshButton(_ mouse: MouseEvent) -> Bool {
-    refreshButton.insetBy(dx: -4, dy: -4).contains(CGPoint(x: mouse.x, y: mouse.y))
   }
 
   func apply(_ actions: [PaneSizeTracker.Action]) {
@@ -277,6 +265,9 @@ public final class ViewerHost {
       if !services.pasteboard.write(text, markdown: markdown) {
         perform(interaction.show("Could not copy to the clipboard", kind: .error, at: Self.now()))
       }
+    case .pointerShape(let shape):
+      trace("pointer \(shape.rawValue)")
+      services.output.write(TerminalSequences.pointerShape(shape))
     case .loadDocument(let url):
       trace("load \(url.lastPathComponent)")
       load(url)

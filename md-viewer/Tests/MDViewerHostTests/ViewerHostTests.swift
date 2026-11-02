@@ -314,17 +314,23 @@ final class ViewerHostTests: XCTestCase {
     }
   }
 
-  func testRefreshButtonReloadsTheFileAndTheTheme() throws {
-    let fixture = try HostFixture(document)
-    _ = fixture.output.take()
-    try fixture.directory.write("main.md", document + "\n\nRefreshed text.")
-    let button = fixture.host.refreshButton
-    fixture.host.receive(Array("\u{1b}[<0;\(Int(button.midX) + 1);\(Int(button.midY) + 1)M".utf8))
-    spin(until: { fixture.output.joined.contains(TerminalColorQuery.primaryDeviceAttributes) }, timeout: 1)
-    XCTAssertTrue(fixture.output.joined.contains(TerminalColorQuery.primaryDeviceAttributes), "the theme is queried")
-    spin(until: { fixture.host.interaction.layout?.prepared.source.contains("Refreshed") == true })
-    XCTAssertTrue(fixture.host.interaction.source.contains("Refreshed text."))
-    XCTAssertGreaterThanOrEqual(button.minY, CGFloat(fixture.host.transport.viewport.statusBarRect.y))
+  func testTheFindFieldShowsOnlyWhileTyping() throws {
+    let fixture = try HostFixture(document + "\n\nAnother paragraph with words.")
+    XCTAssertNil(fixture.host.source.status?.findField, "hidden by default")
+    fixture.host.receive(Array("/".utf8))
+    XCTAssertEqual(fixture.host.source.status?.findField, "")
+    for character in "para" { fixture.host.receive(Array(String(character).utf8)) }
+    XCTAssertEqual(fixture.host.source.status?.findField, "para")
+    fixture.host.receive(Array("\r".utf8))
+    XCTAssertNil(fixture.host.source.status?.findField, "hidden after Enter")
+    XCTAssertEqual(fixture.host.source.status?.message?.text, "1/2", "the matches stay active")
+    fixture.host.receive(Array("n".utf8))
+    XCTAssertEqual(fixture.host.source.status?.message?.text, "2/2")
+    XCTAssertNil(fixture.host.source.status?.findField)
+    fixture.host.receive(Array("\u{1b}[102;9u".utf8))
+    XCTAssertEqual(fixture.host.source.status?.findField, "", "Cmd-F opens it again")
+    fixture.host.receive(Array("\u{1b}[27u".utf8))
+    XCTAssertNil(fixture.host.source.status?.findField, "hidden after Esc")
   }
 
   func testHelpReachesTheFrameSource() throws {

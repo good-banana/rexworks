@@ -5,6 +5,7 @@ import XCTest
 
 final class RexFindBindingTests: XCTestCase {
   private var directory: URL!
+  private let editor = RexFindBinding.Editor(runner: nil, rexPath: nil)
 
   override func setUpWithError() throws {
     directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -30,10 +31,10 @@ final class RexFindBindingTests: XCTestCase {
 
   func testInstallCreatesTheFileAndIsIdempotent() throws {
     let config = directory.appendingPathComponent("rex/init.lua")
-    XCTAssertTrue(try RexFindBinding.install(at: config))
+    XCTAssertTrue(try editor.install(at: config))
     let first = try String(contentsOf: config, encoding: .utf8)
     XCTAssertEqual(first, RexFindBinding.lua + "\n")
-    XCTAssertFalse(try RexFindBinding.install(at: config), "a second install changes nothing")
+    XCTAssertFalse(try editor.install(at: config), "a second install changes nothing")
     XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), first)
     XCTAssertTrue(first.contains("rex.bind(\"cmd+f\", \"md_viewer_find\")"))
     XCTAssertTrue(first.contains("client.find.open"))
@@ -45,23 +46,23 @@ final class RexFindBindingTests: XCTestCase {
     let mine = "require(\"nubs-tasks\")\nrex.bind(\"cmd+e\", \"pane.zoom\")\n"
     let stale = "\(RexFindBinding.beginMarker)\nold contents\n\(RexFindBinding.endMarker)\n"
     try (mine + "\n" + stale + "-- after\n").write(to: config, atomically: true, encoding: .utf8)
-    XCTAssertTrue(try RexFindBinding.install(at: config))
+    XCTAssertTrue(try editor.install(at: config))
     let text = try String(contentsOf: config, encoding: .utf8)
     XCTAssertTrue(text.hasPrefix(mine))
     XCTAssertTrue(text.contains("-- after"))
     XCTAssertFalse(text.contains("old contents"))
     XCTAssertEqual(text.components(separatedBy: RexFindBinding.beginMarker).count, 2, "exactly one block")
-    XCTAssertTrue(try RexFindBinding.remove(at: config))
+    XCTAssertTrue(try editor.remove(at: config))
     XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), mine + "\n-- after\n")
-    XCTAssertFalse(try RexFindBinding.remove(at: config))
+    XCTAssertFalse(try editor.remove(at: config))
   }
 
   func testInstallAndRemoveRoundTripExactly() throws {
     let config = directory.appendingPathComponent("init.lua")
     for original in ["require(\"x\")\n", "require(\"x\")", "", "a\n\n\nb\n"] {
       try original.write(to: config, atomically: true, encoding: .utf8)
-      try RexFindBinding.install(at: config)
-      try RexFindBinding.remove(at: config)
+      try editor.install(at: config)
+      try editor.remove(at: config)
       XCTAssertEqual(
         try String(contentsOf: config, encoding: .utf8).trimmingCharacters(in: .newlines),
         original.trimmingCharacters(in: .newlines), original.debugDescription)
@@ -74,8 +75,97 @@ final class RexFindBindingTests: XCTestCase {
     try "require(\"x\")\n".write(to: target, atomically: true, encoding: .utf8)
     let link = directory.appendingPathComponent("init.lua")
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
-    try RexFindBinding.install(at: link)
+    try editor.install(at: link)
     XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), target.path)
     XCTAssertTrue(try String(contentsOf: target, encoding: .utf8).contains(RexFindBinding.beginMarker))
+  }
+
+  func testAFileThatIsNotUTF8IsLeftAlone() throws {
+    let config = directory.appendingPathComponent("init.lua")
+    let original = Data([0x2d, 0x2d, 0x20, 0xe9, 0x74, 0xe9, 0x0a])
+    try original.write(to: config)
+    XCTAssertThrowsError(try editor.install(at: config)) {
+      XCTAssertEqual($0 as? RexFindBinding.EditError, .notUTF8)
+    }
+    XCTAssertEqual(try Data(contentsOf: config), original)
+  }
+
+  func testAnUnreadableFileIsLeftAlone() throws {
+    let config = directory.appendingPathComponent("init.lua")
+    try "require(\"x\")\n".write(to: config, atomically: true, encoding: .utf8)
+    XCTAssertEqual(chmod(config.path, 0o200), 0)
+    defer { chmod(config.path, 0o600) }
+    XCTAssertThrowsError(try editor.install(at: config)) {
+      guard case .unreadable = $0 as? RexFindBinding.EditError else { return XCTFail("\($0)") }
+    }
+    chmod(config.path, 0o600)
+    XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), "require(\"x\")\n")
+  }
+
+  func testAMissingEndMarkerStopsTheEdit() throws {
+    let config = directory.appendingPathComponent("init.lua")
+    let original = "a\n\(RexFindBinding.beginMarker)\nhalf a block\nrex.bind(\"cmd+e\", \"pane.zoom\")\n"
+    try original.write(to: config, atomically: true, encoding: .utf8)
+    XCTAssertThrowsError(try editor.install(at: config)) {
+      XCTAssertEqual($0 as? RexFindBinding.EditError, .unterminatedBlock)
+    }
+    XCTAssertThrowsError(try editor.remove(at: config))
+    XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), original)
+  }
+
+  func testTheCandidateMustPassRexConfigCheck() throws {
+    let config = directory.appendingPathComponent("init.lua")
+    let original = "return {}\n"
+    try original.write(to: config, atomically: true, encoding: .utf8)
+    let failing = FakeRunner(
+      status: 1, output: "error init.lua:3: syntax error near 'local'\nError: the configuration has errors")
+    XCTAssertThrowsError(try RexFindBinding.Editor(runner: failing, rexPath: "/usr/bin/rex").install(at: config)) {
+      XCTAssertEqual(
+        $0 as? RexFindBinding.EditError,
+        .checkFailed("error init.lua:3: syntax error near 'local'; Error: the configuration has errors"))
+    }
+    XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), original)
+    XCTAssertEqual(failing.calls.count, 1)
+    XCTAssertEqual(failing.calls.first?.executable, "/usr/bin/rex")
+    XCTAssertEqual(failing.calls.first?.arguments.first, "config")
+    XCTAssertEqual(failing.calls.first?.arguments.last, "--autostart=false")
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    XCTAssertEqual(leftovers, ["init.lua"], "the candidate file is cleaned up")
+
+    let passing = FakeRunner(status: 0, output: "")
+    XCTAssertTrue(try RexFindBinding.Editor(runner: passing, rexPath: "/usr/bin/rex").install(at: config))
+    XCTAssertTrue(try String(contentsOf: config, encoding: .utf8).contains(RexFindBinding.beginMarker))
+    let checked = try XCTUnwrap(passing.calls.first?.arguments[2])
+    XCTAssertNotEqual(checked, config.path, "the candidate, not the real file, is checked")
+    XCTAssertEqual(URL(fileURLWithPath: checked).deletingLastPathComponent().path, directory.path)
+  }
+
+  func testWritesAreAtomicAndKeepPermissions() throws {
+    let config = directory.appendingPathComponent("init.lua")
+    try "require(\"x\")\n".write(to: config, atomically: true, encoding: .utf8)
+    XCTAssertEqual(chmod(config.path, 0o600), 0)
+    let before = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: config.path)[.systemFileNumber] as? Int)
+    try editor.install(at: config)
+    let attributes = try FileManager.default.attributesOfItem(atPath: config.path)
+    XCTAssertNotEqual(attributes[.systemFileNumber] as? Int, before, "replaced by rename")
+    XCTAssertEqual(attributes[.posixPermissions] as? Int, 0o600)
+  }
+}
+
+final class FakeRunner: ProcessRunning, @unchecked Sendable {
+  let status: Int32
+  let output: String
+  var calls: [(executable: String, arguments: [String])] = []
+
+  init(status: Int32, output: String) {
+    self.status = status
+    self.output = output
+  }
+
+  func run(_ executable: String, _ arguments: [String], timeout: TimeInterval?) throws -> (
+    status: Int32, stdout: Data, stderr: Data
+  ) {
+    calls.append((executable, arguments))
+    return (status, Data(output.utf8), Data())
   }
 }

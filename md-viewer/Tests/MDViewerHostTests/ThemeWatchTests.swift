@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import MDViewerCore
 import XCTest
 
 @testable import MDViewerHost
@@ -94,6 +96,24 @@ final class FileChangeWatcherTests: XCTestCase {
     XCTAssertEqual(changes, 2)
   }
 
+  func testOtherFilesInTheDirectoryAreIgnored() throws {
+    let directory = try TestDirectory()
+    let file = directory.url.appendingPathComponent("com.superlogical.rex.plist")
+    try Data("a".utf8).write(to: file)
+    var changes = 0
+    let watcher = FileChangeWatcher(file: file) { changes += 1 }
+    defer { watcher.stop() }
+    for index in 0..<5 {
+      try Data("x".utf8).write(to: directory.url.appendingPathComponent("com.other.app\(index).plist"))
+      try Data("y".utf8).write(to: directory.url.appendingPathComponent("com.other.app\(index).plist"))
+    }
+    spin(0.5)
+    XCTAssertEqual(changes, 0, "unrelated preference files do not count")
+    try Data("b".utf8).write(to: file)
+    spin(until: { changes == 1 })
+    XCTAssertEqual(changes, 1)
+  }
+
   func testStoppedWatchersStaySilent() throws {
     let directory = try TestDirectory()
     let file = directory.url.appendingPathComponent("x.plist")
@@ -104,5 +124,105 @@ final class FileChangeWatcherTests: XCTestCase {
     try Data("b".utf8).write(to: file)
     spin(0.4)
     XCTAssertEqual(changes, 0)
+  }
+}
+
+@MainActor
+final class ThemeWatchServiceTests: XCTestCase {
+  private final class Flags: @unchecked Sendable {
+    var rexRunning = true
+  }
+
+  func testLeaderBroadcastsToPeersAndPausesWhileRexIsClosed() throws {
+    let home = URL(fileURLWithPath: "/tmp/mdvt-\(UUID().uuidString.prefix(6))")
+    defer { try? FileManager.default.removeItem(at: home) }
+    let paths = SupportPaths(home: home)
+    let preferences = home.appendingPathComponent("Library/Preferences/com.superlogical.rex.plist")
+    try FileManager.default.createDirectory(
+      at: preferences.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("1".utf8).write(to: preferences)
+    let own = paths.viewerSocket(block: "own")
+    let peer = paths.viewerSocket(block: "peer")
+    var ownMessages = 0
+    var peerMessages = 0
+    let ownServer = try ViewerSocketServer(
+      socket: own, onOpen: { _ in },
+      onTheme: { DispatchQueue.main.async { MainActor.assumeIsolated { ownMessages += 1 } } })
+    let peerServer = try ViewerSocketServer(
+      socket: peer, onOpen: { _ in },
+      onTheme: { DispatchQueue.main.async { MainActor.assumeIsolated { peerMessages += 1 } } })
+    defer {
+      ownServer.close()
+      peerServer.close()
+    }
+    let flags = Flags()
+    let workspace = NotificationCenter()
+    let appearance = NotificationCenter()
+    let app = NSRunningApplication.current
+    let service = ThemeWatchService(
+      paths: paths, ownSocket: own, preferencesFile: preferences, isRexRunning: { flags.rexRunning },
+      workspaceCenter: workspace, appearanceCenter: appearance, isRexApplication: { $0 === app })
+    var local = 0
+    service.onLocalChange = { local += 1 }
+    service.start()
+    defer { service.stop() }
+    XCTAssertTrue(service.state.watching)
+
+    try Data("2".utf8).write(to: preferences)
+    spin(until: { peerMessages == 1 && local == 1 })
+    XCTAssertEqual(peerMessages, 1)
+    XCTAssertEqual(local, 1, "the leader re-resolves itself directly")
+    spin(0.2)
+    XCTAssertEqual(ownMessages, 0, "its own socket is skipped")
+
+    appearance.post(name: ThemeWatchService.appearanceNotification, object: nil)
+    spin(until: { peerMessages == 2 })
+    XCTAssertEqual(peerMessages, 2)
+
+    flags.rexRunning = false
+    workspace.post(
+      name: NSWorkspace.didTerminateApplicationNotification, object: nil,
+      userInfo: [NSWorkspace.applicationUserInfoKey: app])
+    XCTAssertFalse(service.state.watching, "paused while Rex is closed")
+    try Data("3".utf8).write(to: preferences)
+    appearance.post(name: ThemeWatchService.appearanceNotification, object: nil)
+    spin(0.5)
+    XCTAssertEqual(peerMessages, 2)
+
+    flags.rexRunning = true
+    workspace.post(
+      name: NSWorkspace.didLaunchApplicationNotification, object: nil,
+      userInfo: [NSWorkspace.applicationUserInfoKey: app])
+    XCTAssertTrue(service.state.watching)
+    spin(until: { peerMessages == 3 })
+    XCTAssertEqual(peerMessages, 3, "relaunch triggers one re-resolve")
+    XCTAssertEqual(local, 3)
+  }
+
+  func testOnlyTheLeaderWatches() throws {
+    let home = try TestDirectory()
+    let paths = SupportPaths(home: home.url)
+    let first = ThemeWatchService(
+      paths: paths, ownSocket: nil, isRexRunning: { true }, workspaceCenter: NotificationCenter(),
+      appearanceCenter: NotificationCenter())
+    let second = ThemeWatchService(
+      paths: paths, ownSocket: nil, isRexRunning: { true }, workspaceCenter: NotificationCenter(),
+      appearanceCenter: NotificationCenter())
+    first.start()
+    second.start()
+    XCTAssertTrue(first.state.watching)
+    XCTAssertFalse(second.state.watching)
+    first.stop()
+    spin(until: { second.state.watching })
+    XCTAssertTrue(second.state.watching, "the waiting viewer takes over")
+    second.stop()
+  }
+
+  func testPeerSocketsExcludeTheViewersOwn() throws {
+    let directory = try TestDirectory()
+    for name in ["a.sock", "b.sock", "notes.txt"] { try Data().write(to: directory.url.appendingPathComponent(name)) }
+    let peers = ThemeWatchService.peerSockets(
+      in: directory.url, excluding: directory.url.appendingPathComponent("a.sock"))
+    XCTAssertEqual(peers.map(\.lastPathComponent), ["b.sock"])
   }
 }

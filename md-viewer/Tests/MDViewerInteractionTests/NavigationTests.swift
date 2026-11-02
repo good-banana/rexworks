@@ -165,6 +165,17 @@ final class LinkTests: XCTestCase {
     XCTAssertEqual(h.model.offset, before)
   }
 
+  func testAClickClosesHelpAndOtherMouseEventsAreIgnored() {
+    var h = Harness(document())
+    h.key(.char("?"))
+    XCTAssertEqual(h.mouse(.motion, at: h.point(of: "Web"), button: 3), [])
+    XCTAssertEqual(h.mouse(.wheelDown, at: h.point(of: "Web")), [])
+    XCTAssertTrue(h.model.helpVisible)
+    XCTAssertEqual(h.mouse(.press, at: h.point(of: "Web")), [.redrawAll])
+    XCTAssertFalse(h.model.helpVisible)
+    XCTAssertTrue(h.system.opened.isEmpty, "the closing click does not follow the link")
+  }
+
   func testCommandFOpensFind() {
     var h = Harness(document())
     h.key(.command("f"))
