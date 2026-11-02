@@ -5,11 +5,11 @@ import MDViewerCore
 import MDViewerDisplay
 import MDViewerInteraction
 import MDViewerLayout
-import MDViewerRender
 import XCTest
 
 @testable import MDViewerHost
 @testable import MDViewerMermaid
+@testable import MDViewerRender
 
 @MainActor
 final class ViewerHostTests: XCTestCase {
@@ -249,13 +249,53 @@ final class ViewerHostTests: XCTestCase {
   }
 
   func testCancelledDiagramsDrawNothingAndAreRequestedAgain() throws {
-    let fixture = try HostFixture("# D\n\n```mermaid\ngraph TD; A-->B;\n```\n")
-    let layout = try XCTUnwrap(fixture.host.interaction.layout)
-    let request = fixture.host.diagramContext(for: layout).request("graph TD; A-->B;\n")
-    fixture.host.diagramsInFlight.insert(request.key)
-    fixture.host.diagramArrived(request, MermaidDiagram.cancelled)
-    XCTAssertFalse(fixture.host.diagramsInFlight.contains(request.key))
-    XCTAssertFalse(fixture.host.assetsPending)
+    let directory = try TestDirectory()
+    let file = try directory.write("main.md", "# D\n\n```mermaid\ngraph TD; A-->B;\n```\n")
+    let services = HostServices(
+      output: RecordingOutput(), pasteboard: FakePasteboard(), stagers: (MemoryStager(), nil),
+      environment: InteractionEnvironment(openURL: { _ in true }, copyOnSelect: { false }),
+      mermaid: MermaidRenderer(pageURL: nil), watchesFiles: false)
+    let host = ViewerHost(
+      size: testPaneSize, theme: ResolvedTheme(colors: TerminalColorSet(), source: .terminalQuery),
+      services: services)
+    host.start(file: file, windowSize: testPaneSize)
+    let layout = try XCTUnwrap(host.interaction.layout)
+    let request = host.diagramContext(for: layout).request("graph TD; A-->B;\n")
+    host.diagramsInFlight = [request.key]
+    let rasterizer = host.source.rasterizer.index
+    host.diagramArrived(request, MermaidDiagram.cancelled)
+    XCTAssertTrue(host.diagramsInFlight.contains(request.key), "the still-wanted diagram was requested again")
+    XCTAssertTrue(host.source.rasterizer.index === rasterizer, "nothing was redrawn for the cancellation")
+    XCTAssertFalse(host.assetsPending)
+    host.shutdown()
+  }
+
+  func testRegionScrollKeepsTheRasterizer() throws {
+    let wide = "```\n" + String(repeating: "wide ", count: 200) + "\n```\n"
+    let fixture = try HostFixture(wide)
+    let before = fixture.host.source.rasterizer.index
+    fixture.host.receive(Array("\t".utf8))
+    fixture.host.receive(Array("l".utf8))
+    let region = try XCTUnwrap(fixture.host.interaction.layout?.regions.first)
+    XCTAssertGreaterThan(fixture.host.source.rasterizer.layout.offset(of: region.id), 0)
+    XCTAssertTrue(fixture.host.source.rasterizer.index === before)
+  }
+
+  func testImagesCreatedOrChangedOnDiskAppearAfterAReload() throws {
+    let fixture = try HostFixture("![pic](pic.png)\n")
+    XCTAssertFalse(fixture.host.interaction.layout?.images.first?.hasIntrinsicSize ?? true)
+    spin(0.2)
+    let picture = fixture.directory.url.appendingPathComponent("pic.png")
+    try pngData(width: 40, height: 20).write(to: picture)
+    fixture.host.fileChanged()
+    spin(until: { fixture.host.interaction.layout?.images.first?.hasIntrinsicSize == true })
+    let first = try XCTUnwrap(fixture.host.interaction.layout?.images.first)
+    try pngData(width: 80, height: 20).write(to: picture)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date().addingTimeInterval(5)], ofItemAtPath: picture.path)
+    fixture.host.receive(Array("r".utf8))
+    spin(until: { (fixture.host.interaction.layout?.images.first?.rect.width ?? 0) > first.rect.width })
+    XCTAssertEqual(fixture.host.interaction.layout?.images.first?.rect.width, first.rect.width * 2)
   }
 
   func testStoppedDrawingIsReportedAsTextAndLogged() throws {

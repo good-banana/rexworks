@@ -464,7 +464,7 @@ extension ViewerInteraction {
   }
 
   public mutating func open(_ url: URL) -> [InteractionEffect] {
-    if let file, url.standardizedFileURL.path == file.standardizedFileURL.path { return [] }
+    if let file, url.standardizedFileURL.path == file.standardizedFileURL.path { return [.reload] }
     pendingNavigation = .link(url, from: file.map { History.Entry(file: $0, offset: offset) }, fragment: nil)
     return [.loadDocument(url)]
   }

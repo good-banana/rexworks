@@ -105,6 +105,7 @@ public final class ViewerHost {
     ) { _, viewport in viewport }
     driver = DisplayDriver(transport: transport)
     if themeQueryTimedOut { themeScheduler.queryTimedOut(at: Self.seconds()) }
+    services.images.setDisplayWidth(viewport.frameWidth)
     transport.relayout = { [unowned self] size, old in relayout(size, old) }
     transport.onEvent = { [unowned self] event in displayEvent(event) }
   }
@@ -293,6 +294,7 @@ public final class ViewerHost {
 
   func reloadFile() {
     guard let url = interaction.file else { return }
+    services.images.forgetFailures()
     do {
       perform(interaction.fileChanged(source: try read(url)))
     } catch {
@@ -361,6 +363,7 @@ public final class ViewerHost {
     defer { inRelayout = false }
     var viewport = DisplayViewport(
       size: size, backingScale: backingScale, pageHeight: old.pageHeight, offset: old.offset)
+    services.images.setDisplayWidth(viewport.frameWidth)
     perform(interaction.resize(Self.geometry(viewport)))
     viewport.setPageHeight(interaction.pageHeight)
     viewport.scroll(to: interaction.offset)
@@ -455,6 +458,9 @@ public final class ViewerHost {
   func requestImages() {
     guard let layout = interaction.layout else { return }
     let document = interaction.file
+    services.images.pin(
+      layout.images.compactMap { if case .image(let source) = $0.content { source } else { nil } },
+      relativeTo: document)
     for box in layout.images {
       guard case .image(let image) = box.content else { continue }
       let arrived: @Sendable (Bool) -> Void = { [weak self] available in
@@ -470,14 +476,10 @@ public final class ViewerHost {
 
   func imageArrived(_ image: String, available: Bool) {
     trace("image \(image) \(available ? "loaded" : "failed")")
-    guard available, let layout = interaction.layout else { return }
-    let boxes = layout.images.filter { $0.content == .image(source: image) }
-    if boxes.contains(where: { !$0.hasIntrinsicSize }) {
-      scheduleAssetsChanged()
-    } else {
-      for box in boxes { invalidate(layout.displayRect(box.rect, region: box.region)) }
-      settle()
-    }
+    guard available, let layout = interaction.layout,
+      layout.images.contains(where: { $0.content == .image(source: image) })
+    else { return }
+    scheduleAssetsChanged()
   }
 
   var visibleRect: CGRect {
@@ -508,9 +510,12 @@ public final class ViewerHost {
   func diagramArrived(_ request: MermaidRequest, _ diagram: MermaidDiagram) {
     diagramsInFlight.remove(request.key)
     trace("diagram \(diagram.size) \(diagram.failure.map { "\($0)" } ?? "ok")")
-    guard diagram.failure != .cancelled, let layout = interaction.layout,
-      diagramContext(for: layout).request(request.code).key == request.key
+    guard let layout = interaction.layout, diagramContext(for: layout).request(request.code).key == request.key
     else { return }
+    if diagram.failure == .cancelled {
+      updateDiagrams()
+      return
+    }
     let boxes = layout.images.filter { $0.content == .diagram(code: request.code) }
     if boxes.contains(where: { !$0.hasIntrinsicSize }) {
       scheduleAssetsChanged()

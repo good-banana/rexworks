@@ -2,6 +2,7 @@ import Darwin
 import Dispatch
 import Foundation
 import MDViewerCore
+import MDViewerSystem
 
 nonisolated(unsafe) private var savedAttributes = termios()
 nonisolated(unsafe) private var rawModeActive = false
@@ -11,6 +12,7 @@ nonisolated(unsafe) private var signalSources: [DispatchSourceSignal] = []
 private func restoreTerminalState() {
   guard rawModeActive else { return }
   rawModeActive = false
+  mdv_crash_restore_disarm()
   restoreBytes.withUnsafeBufferPointer { buffer in
     _ = Darwin.write(STDOUT_FILENO, buffer.baseAddress, buffer.count)
   }
@@ -43,6 +45,12 @@ enum Terminal {
     restoreBytes = Array(TerminalSequences.restore.utf8)
     rawModeActive = true
     atexit { restoreTerminalState() }
+    _ = restoreBytes.withUnsafeBufferPointer { bytes in
+      bytes.withMemoryRebound(to: CChar.self) {
+        mdv_crash_restore_prepare($0.baseAddress, $0.count, STDOUT_FILENO, STDIN_FILENO, &savedAttributes)
+      }
+    }
+    mdv_crash_restore_arm()
     return true
   }
 

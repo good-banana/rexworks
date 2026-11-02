@@ -39,6 +39,9 @@ final class VideoTests: XCTestCase {
     XCTAssertEqual(
       VideoEmbed(source: "https://www.youtube-nocookie.com/embed/xyz")?.poster,
       "https://img.youtube.com/vi/xyz/hqdefault.jpg")
+    XCTAssertEqual(
+      VideoEmbed(source: "https://www.youtube.com/watch?v=abc123&t=10")?.href, "https://www.youtube.com/watch?v=abc123")
+    XCTAssertNil(VideoEmbed(source: "https://www.youtube.com/watch?v=a%22b"))
     XCTAssertNil(VideoEmbed(source: "https://vimeo.com/"))
     XCTAssertNil(VideoEmbed(source: "javascript://youtube.com/x"))
     XCTAssertNil(VideoEmbed(source: "https://youtube.com/embed/a%22b"))

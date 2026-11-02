@@ -11,7 +11,10 @@ public struct VideoEmbed: Hashable, Sendable {
       var host = url.host?.lowercased()
     else { return nil }
     if host.hasPrefix("www.") { host.removeFirst(4) }
-    guard let id = url.pathComponents.last(where: { $0 != "/" }),
+    let watched =
+      url.pathComponents.last == "watch"
+      ? URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "v" }?.value : nil
+    guard let id = watched ?? url.pathComponents.last(where: { $0 != "/" }),
       id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
     else { return nil }
     switch host {

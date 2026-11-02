@@ -18,7 +18,7 @@ public enum ImageLocation: Hashable, Sendable {
     }
     if let scheme = Self.scheme(of: trimmed) {
       guard let url = URL(string: trimmed) else { return nil }
-      if scheme == "http" || scheme == "https", url.host?.isEmpty == false {
+      if scheme == "https", url.host?.isEmpty == false {
         self = .remote(url)
       } else if scheme == "file", url.isFileURL {
         self = .local(url.standardizedFileURL)
@@ -56,27 +56,52 @@ public struct LoadedImage: @unchecked Sendable {
 }
 
 public final class ImageStore: @unchecked Sendable {
+  public static let maximumDisplayDimension = 4096
+
   public struct Limits: Sendable {
     public var maximumBytes: Int
     public var maximumPixels: Int
     public var maximumDimension: Int
+    public var cacheBytes: Int
     public var timeout: TimeInterval
 
     public init(
-      maximumBytes: Int = 16 << 20, maximumPixels: Int = 64 << 20, maximumDimension: Int = 8192,
+      maximumBytes: Int = 16 << 20,
+      maximumPixels: Int = ImageStore.maximumDisplayDimension * ImageStore.maximumDisplayDimension,
+      maximumDimension: Int = ImageStore.maximumDisplayDimension, cacheBytes: Int = 128 << 20,
       timeout: TimeInterval = 5
     ) {
       self.maximumBytes = maximumBytes
       self.maximumPixels = maximumPixels
       self.maximumDimension = maximumDimension
+      self.cacheBytes = cacheBytes
       self.timeout = timeout
     }
   }
 
-  private enum Entry {
-    case loading
+  struct FileStamp: Equatable {
+    var modified: Date
+    var size: Int
+
+    init?(_ url: URL) {
+      guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+        let modified = values.contentModificationDate, let size = values.fileSize
+      else { return nil }
+      self.modified = modified
+      self.size = size
+    }
+  }
+
+  private enum State {
+    case loading(previous: LoadedImage?)
     case loaded(LoadedImage)
     case failed
+  }
+
+  private struct Entry {
+    var state: State
+    var stamp: FileStamp?
+    var lastUse: UInt64 = 0
   }
 
   public let limits: Limits
@@ -85,7 +110,11 @@ public final class ImageStore: @unchecked Sendable {
   private let posterFrame: @Sendable (URL) -> CGImage?
   private let lock = NSLock()
   private var entries: [ImageLocation: Entry] = [:]
-  private let work = DispatchQueue(label: "md-viewer.images", qos: .userInitiated, attributes: .concurrent)
+  private var pinned: Set<ImageLocation> = []
+  private var useCounter: UInt64 = 0
+  private var displayDimension = ImageStore.maximumDisplayDimension
+  private let decoding = DispatchQueue(label: "md-viewer.images.decode", qos: .userInitiated)
+  private let posters = DispatchQueue(label: "md-viewer.images.posters", qos: .utility)
 
   public init(
     limits: Limits = Limits(), readLocal: (@Sendable (URL) -> Data?)? = nil,
@@ -114,11 +143,44 @@ public final class ImageStore: @unchecked Sendable {
     return try? Data(contentsOf: url, options: .mappedIfSafe)
   }
 
+  public var cachedBytes: Int {
+    lock.withLock { entries.values.reduce(0) { $0 + Self.cost($1) } }
+  }
+
+  public func setDisplayWidth(_ pixels: Int) {
+    let dimension = min(max(pixels * 2, 1), limits.maximumDimension)
+    lock.withLock { displayDimension = dimension }
+  }
+
+  public func pin(_ sources: [String], relativeTo document: URL?) {
+    let locations = Set(sources.compactMap { ImageLocation(source: $0, relativeTo: document) })
+    lock.withLock {
+      pinned = locations
+      evict()
+    }
+  }
+
+  public func forgetFailures() {
+    lock.withLock {
+      entries = entries.filter {
+        if case .failed = $0.value.state { return false }
+        return true
+      }
+    }
+  }
+
   public func image(for source: String, relativeTo document: URL?) -> LoadedImage? {
     guard let location = ImageLocation(source: source, relativeTo: document) else { return nil }
     return lock.withLock {
-      if case .loaded(let image) = entries[location] { return image }
-      return nil
+      guard var entry = entries[location] else { return nil }
+      useCounter += 1
+      entry.lastUse = useCounter
+      entries[location] = entry
+      switch entry.state {
+      case .loaded(let image): return image
+      case .loading(let previous): return previous
+      case .failed: return nil
+      }
     }
   }
 
@@ -135,25 +197,22 @@ public final class ImageStore: @unchecked Sendable {
     _ source: String, relativeTo document: URL?, queue: DispatchQueue = .main,
     completion: @escaping @Sendable (Bool) -> Void
   ) -> Bool {
-    guard let location = ImageLocation(source: source, relativeTo: document) else { return false }
-    let started: Bool = lock.withLock {
-      guard entries[location] == nil else { return false }
-      entries[location] = .loading
-      return true
-    }
-    guard started else { return false }
+    guard let location = ImageLocation(source: source, relativeTo: document),
+      let stamp = begin(location)
+    else { return false }
     let finish: @Sendable (Data?) -> Void = { [weak self] data in
       guard let self else { return }
-      let image = data.flatMap { ImageStore.decode($0, limits: self.limits) }
-      self.lock.withLock { self.entries[location] = image.map(Entry.loaded) ?? .failed }
+      let dimension = lock.withLock { displayDimension }
+      let image = data.flatMap { ImageStore.decode($0, limits: self.limits, dimension: dimension) }
+      store(image, at: location, stamp: stamp)
       queue.async { completion(image != nil) }
     }
     switch location {
     case .local(let url):
       let readLocal = readLocal
-      work.async { finish(readLocal(url)) }
+      decoding.async { finish(readLocal(url)) }
     case .remote(let url):
-      fetchRemote(url) { [work] data in work.async { finish(data) } }
+      fetchRemote(url) { [decoding] data in decoding.async { finish(data) } }
     }
     return true
   }
@@ -163,24 +222,64 @@ public final class ImageStore: @unchecked Sendable {
     _ source: String, relativeTo document: URL?, queue: DispatchQueue = .main,
     completion: @escaping @Sendable (Bool) -> Void
   ) -> Bool {
-    guard case .local(let url)? = ImageLocation(source: source, relativeTo: document) else { return false }
-    let location = ImageLocation.local(url)
-    let started: Bool = lock.withLock {
-      guard entries[location] == nil else { return false }
-      entries[location] = .loading
-      return true
-    }
-    guard started else { return false }
+    guard case .local(let url)? = ImageLocation(source: source, relativeTo: document),
+      let stamp = begin(.local(url))
+    else { return false }
     let posterFrame = posterFrame
-    work.async { [weak self] in
+    posters.async { [weak self] in
       let image = posterFrame(url).map { LoadedImage(image: $0, size: CGSize(width: $0.width, height: $0.height)) }
-      self?.lock.withLock { self?.entries[location] = image.map(Entry.loaded) ?? .failed }
+      self?.store(image, at: .local(url), stamp: stamp)
       queue.async { completion(image != nil) }
     }
     return true
   }
 
-  public static func decode(_ data: Data, limits: Limits) -> LoadedImage? {
+  private func begin(_ location: ImageLocation) -> FileStamp?? {
+    var stamp: FileStamp?
+    if case .local(let url) = location { stamp = FileStamp(url) }
+    return lock.withLock {
+      var previous: LoadedImage?
+      if let entry = entries[location] {
+        switch entry.state {
+        case .loading: return nil
+        case .failed: guard stamp != nil, entry.stamp != stamp else { return nil }
+        case .loaded(let image):
+          guard stamp != nil, entry.stamp != stamp else { return nil }
+          previous = image
+        }
+      }
+      entries[location] = Entry(state: .loading(previous: previous), stamp: entries[location]?.stamp)
+      return .some(stamp)
+    }
+  }
+
+  private func store(_ image: LoadedImage?, at location: ImageLocation, stamp: FileStamp?) {
+    lock.withLock {
+      useCounter += 1
+      entries[location] = Entry(state: image.map(State.loaded) ?? .failed, stamp: stamp, lastUse: useCounter)
+      evict()
+    }
+  }
+
+  private func evict() {
+    var total = entries.values.reduce(0) { $0 + Self.cost($1) }
+    guard total > limits.cacheBytes else { return }
+    let candidates = entries.filter { !pinned.contains($0.key) && Self.cost($0.value) > 0 }
+      .sorted { $0.value.lastUse < $1.value.lastUse }
+    for (location, entry) in candidates where total > limits.cacheBytes {
+      total -= Self.cost(entry)
+      entries[location] = nil
+    }
+  }
+
+  private static func cost(_ entry: Entry) -> Int {
+    switch entry.state {
+    case .loaded(let image), .loading(.some(let image)): image.image.bytesPerRow * image.image.height
+    default: 0
+    }
+  }
+
+  public static func decode(_ data: Data, limits: Limits, dimension: Int? = nil) -> LoadedImage? {
     guard data.count <= limits.maximumBytes,
       let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
       CGImageSourceGetCount(source) > 0,
@@ -191,11 +290,12 @@ public final class ImageStore: @unchecked Sendable {
     else { return nil }
     let orientation = properties[kCGImagePropertyOrientation] as? Int ?? 1
     let size = orientation >= 5 ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
+    let cap = min(dimension ?? limits.maximumDimension, limits.maximumDimension)
     let options: [CFString: Any] = [
       kCGImageSourceCreateThumbnailFromImageAlways: true,
       kCGImageSourceCreateThumbnailWithTransform: true,
       kCGImageSourceShouldCacheImmediately: true,
-      kCGImageSourceThumbnailMaxPixelSize: min(max(width, height), limits.maximumDimension),
+      kCGImageSourceThumbnailMaxPixelSize: min(max(width, height), max(cap, 1)),
     ]
     guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
     return LoadedImage(image: image, size: size)
@@ -203,9 +303,12 @@ public final class ImageStore: @unchecked Sendable {
 }
 
 public final class RemoteImageFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+  public static let maximumRedirects = 5
+
   private struct Transfer {
     var data = Data()
     var rejected = false
+    var redirects = 0
     var completion: @Sendable (Data?) -> Void
   }
 
@@ -231,7 +334,7 @@ public final class RemoteImageFetcher: NSObject, URLSessionDataDelegate, @unchec
   }
 
   public func fetch(_ url: URL, completion: @escaping @Sendable (Data?) -> Void) {
-    guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return completion(nil) }
+    guard url.scheme?.lowercased() == "https" else { return completion(nil) }
     var request = URLRequest(url: url)
     request.setValue("image/*", forHTTPHeaderField: "Accept")
     let task = session.dataTask(with: request)
@@ -254,6 +357,29 @@ public final class RemoteImageFetcher: NSObject, URLSessionDataDelegate, @unchec
       return completionHandler(.cancel)
     }
     completionHandler(.allow)
+  }
+
+  public func urlSession(
+    _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void
+  ) {
+    let allowed: Bool = lock.withLock {
+      guard var transfer = transfers[task.taskIdentifier], request.url?.scheme?.lowercased() == "https",
+        transfer.redirects < Self.maximumRedirects
+      else {
+        transfers[task.taskIdentifier]?.rejected = true
+        return false
+      }
+      transfer.redirects += 1
+      transfers[task.taskIdentifier] = transfer
+      return true
+    }
+    if allowed {
+      completionHandler(request)
+    } else {
+      completionHandler(nil)
+      task.cancel()
+    }
   }
 
   public func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {

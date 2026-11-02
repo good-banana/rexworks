@@ -149,7 +149,7 @@ final class LinkTests: XCTestCase {
     h.run(h.model.open(URL(fileURLWithPath: "/docs/other.md")))
     XCTAssertEqual(h.model.file?.lastPathComponent, "other.md")
     XCTAssertEqual(h.model.offset, 0)
-    XCTAssertEqual(h.model.open(URL(fileURLWithPath: "/docs/./other.md")), [], "the shown file is not reopened")
+    XCTAssertEqual(h.model.open(URL(fileURLWithPath: "/docs/./other.md")), [.reload], "the shown file reloads")
     h.key(.backspace)
     XCTAssertEqual(h.model.file?.lastPathComponent, "guide.md")
     XCTAssertEqual(h.model.offset, before)
