@@ -92,7 +92,7 @@ macOS may ask you to confirm the change of default app for Markdown files.
 ```
 md-viewer doctor
 ```
-`md-viewer doctor` diagnoses the installation: handler app, web resources, and default handler registration.
+`md-viewer doctor` diagnoses the installation: handler app, highlighting and diagram resource bundles, and default handler registration.
 
 The handler log is at `~/Library/Application Support/md-viewer/handler.log`.
 
@@ -115,7 +115,7 @@ md-viewer uninstall && brew uninstall md-viewer
 
 ## Credits
 
-Vendored web libraries and their licenses are listed in `Sources/MDViewerWeb/Resources/web/THIRD_PARTY_NOTICES`.
+Vendored libraries and their licenses are listed in `Sources/MDViewerRender/Resources/THIRD_PARTY_NOTICES` (highlight.js) and `Sources/MDViewerMermaid/Resources/mermaid/THIRD_PARTY_NOTICES` (mermaid).
 
 ## Releasing
 

@@ -28,14 +28,19 @@ let package = Package(
       name: "MDViewerInteraction",
       dependencies: ["MDViewerCore", "MDViewerDocument", "MDViewerLayout", "MDViewerRender"]),
     .target(
-      name: "MDViewerWeb",
-      dependencies: ["MDViewerCore"],
-      resources: [.copy("Resources/web")]),
-    .target(
       name: "MDViewerMermaid",
       dependencies: ["MDViewerCore"],
       resources: [.copy("Resources/mermaid")]),
-    .executableTarget(name: "md-viewer", dependencies: ["MDViewerCore", "MDViewerWeb"]),
+    .target(
+      name: "MDViewerHost",
+      dependencies: [
+        "MDViewerCore", "MDViewerDisplay", "MDViewerInteraction", "MDViewerLayout", "MDViewerMermaid", "MDViewerRender",
+      ]),
+    .executableTarget(
+      name: "md-viewer",
+      dependencies: [
+        "MDViewerCore", "MDViewerDisplay", "MDViewerHost", "MDViewerInteraction", "MDViewerMermaid", "MDViewerRender",
+      ]),
     .executableTarget(name: "MDViewerHandler", dependencies: ["MDViewerCore"]),
     .testTarget(
       name: "MDViewerCoreTests",
@@ -65,8 +70,10 @@ let package = Package(
       dependencies: ["MDViewerMermaid", "MDViewerCore"],
       resources: [.copy("Fixtures")]),
     .testTarget(
-      name: "MDViewerRenderTests",
-      dependencies: ["MDViewerCore", "MDViewerWeb"],
-      resources: [.copy("Fixtures")]),
+      name: "MDViewerHostTests",
+      dependencies: [
+        "MDViewerHost", "MDViewerCore", "MDViewerDisplay", "MDViewerInteraction", "MDViewerLayout", "MDViewerMermaid",
+        "MDViewerRender",
+      ]),
   ]
 )

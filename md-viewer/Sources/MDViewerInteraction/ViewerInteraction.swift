@@ -521,7 +521,7 @@ public struct ViewerInteraction {
 
   // MARK: Messages
 
-  mutating func show(_ text: String, kind: StatusMessage.Kind, at now: UInt64) -> [InteractionEffect] {
+  public mutating func show(_ text: String, kind: StatusMessage.Kind, at now: UInt64) -> [InteractionEffect] {
     let duration: UInt64 =
       switch kind {
       case .success: timing.successNanoseconds

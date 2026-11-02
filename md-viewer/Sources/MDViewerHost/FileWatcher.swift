@@ -3,7 +3,7 @@ import Dispatch
 import Foundation
 
 @MainActor
-final class FileWatcher {
+public final class FileWatcher {
   private static let debounce = DispatchTimeInterval.milliseconds(100)
   private static let rearmAttempts = 20
 
@@ -15,19 +15,19 @@ final class FileWatcher {
   private var stopped = false
   private var arming = false
 
-  init(url: URL, onChange: @escaping () -> Void, onMissing: @escaping () -> Void) {
+  public init(url: URL, onChange: @escaping () -> Void, onMissing: @escaping () -> Void) {
     self.url = url
     self.onChange = onChange
     self.onMissing = onMissing
     arm(remainingAttempts: Self.rearmAttempts, notify: false)
   }
 
-  func rearmIfNeeded() {
+  public func rearmIfNeeded() {
     guard source == nil, !stopped, !arming else { return }
     arm(remainingAttempts: Self.rearmAttempts, notify: false)
   }
 
-  func stop() {
+  public func stop() {
     stopped = true
     source?.cancel()
     source = nil

@@ -46,6 +46,17 @@ fi
 
 sha=$(shasum -a 256 "$tarball" | cut -d' ' -f1)
 
+manifest="$root/md-viewer/Package.swift"
+cmark_line=$(grep -o '\.package(url: "https://github.com/swiftlang/swift-cmark", revision: "[0-9a-f]*")' "$manifest")
+cmark_revision=$(printf '%s' "$cmark_line" | sed 's/.*revision: "\([0-9a-f]*\)".*/\1/')
+if [ -z "$cmark_revision" ]; then
+  echo "could not find the pinned swift-cmark revision in $manifest" >&2
+  exit 1
+fi
+cmark_url="https://github.com/swiftlang/swift-cmark/archive/$cmark_revision.tar.gz"
+curl --fail --location --silent --show-error --output "$work/swift-cmark.tar.gz" "$cmark_url"
+cmark_sha=$(shasum -a 256 "$work/swift-cmark.tar.gz" | cut -d' ' -f1)
+
 cat > "$formula" <<RUBY
 class MdViewer < Formula
   desc "Preview Markdown files clicked in Rex terminal panes"
@@ -55,15 +66,24 @@ class MdViewer < Formula
 
   depends_on macos: :sonoma
 
+  resource "swift-cmark" do
+    url "$cmark_url"
+    sha256 "$cmark_sha"
+  end
+
   def install
     swift_major = Utils.safe_popen_read("swift", "--version")[/Swift version (\d+)/, 1].to_i
     if swift_major < 6
       odie "md-viewer needs Swift 6 or later. Install Xcode 16 or later Command Line Tools: xcode-select --install"
     end
+    resource("swift-cmark").stage(buildpath/"swift-cmark")
     cd "md-viewer" do
+      inreplace "Package.swift", '$cmark_line', '.package(path: "../swift-cmark")'
+      rm "Package.resolved"
       system "swift", "build", "--disable-sandbox", "-c", "release"
       bin.install ".build/release/md-viewer"
-      libexec.install ".build/release/md-viewer_MDViewerWeb.bundle"
+      libexec.install ".build/release/md-viewer_MDViewerRender.bundle"
+      libexec.install ".build/release/md-viewer_MDViewerMermaid.bundle"
       system "scripts/build-app.sh", ".build/release/MDViewerHandler", version.to_s, libexec
     end
   end
@@ -80,6 +100,7 @@ class MdViewer < Formula
 
   test do
     assert_match "Usage", shell_output("#{bin}/md-viewer --help")
+    assert_match version.to_s, shell_output("#{bin}/md-viewer --version")
   end
 end
 RUBY

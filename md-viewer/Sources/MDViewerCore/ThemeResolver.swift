@@ -359,6 +359,10 @@ public struct ThemeRefreshScheduler: Equatable, Sendable {
     pendingColorScheme = false
   }
 
+  public mutating func queryTimedOut(at now: TimeInterval) {
+    awaitingLateReplySince = now
+  }
+
   public mutating func deviceAttributesReceived() {
     awaitingLateReplySince = nil
   }

@@ -46,7 +46,7 @@ case "view":
   guard let view = ViewArguments(Array(arguments.dropFirst())) else {
     fail("usage: md-viewer view [--theme-source-block <block>] <file>", status: 64)
   }
-  await ViewCommand.run(file: view.file)
+  await ViewCommand.run(view)
 case let command?:
   fail("unknown command: \(command)\n\n\(usage)", status: 64)
 }

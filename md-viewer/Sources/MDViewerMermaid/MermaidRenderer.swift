@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import MDViewerCore
 import os
 
 public final class MermaidRenderer: @unchecked Sendable {
@@ -75,15 +76,9 @@ public final class MermaidRenderer: @unchecked Sendable {
   }
 
   public static func locatePage() -> URL? {
-    var directories = [
-      Bundle.main.bundleURL, Bundle(for: MermaidRenderer.self).bundleURL.deletingLastPathComponent(),
-    ]
-    if let executable = Bundle.main.executableURL?.resolvingSymlinksInPath() {
-      let directory = executable.deletingLastPathComponent()
-      directories.append(directory)
-      directories.append(directory.appendingPathComponent("../libexec").standardizedFileURL)
-    }
-    return locatePage(candidates: directories.map { $0.appendingPathComponent(bundleName) })
+    let anchors = [Bundle.main.bundleURL, Bundle(for: MermaidRenderer.self).bundleURL.deletingLastPathComponent()]
+    return locatePage(
+      candidates: ResourceLocator.directories(anchors: anchors).map { $0.appendingPathComponent(bundleName) })
   }
 
   static func locatePage(candidates: [URL]) -> URL? {

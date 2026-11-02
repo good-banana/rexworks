@@ -48,7 +48,7 @@ final class ConfigTests: XCTestCase {
     XCTAssertEqual(paths.configFile.path, "\(root)/config.json")
     XCTAssertEqual(paths.handlerLog.path, "\(root)/handler.log")
     XCTAssertEqual(paths.viewersDirectory.path, "\(root)/viewers")
-    XCTAssertEqual(paths.tileDirectory.path, "\(root)/tiles")
+    XCTAssertEqual(paths.viewerLog.path, "\(root)/viewer.log")
     XCTAssertEqual(paths.installedApp.path, "/Users/x/Applications/MD Viewer.app")
   }
 }

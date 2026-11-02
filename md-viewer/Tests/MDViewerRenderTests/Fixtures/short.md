@@ -1,3 +1,0 @@
-# Short
-
-One line.

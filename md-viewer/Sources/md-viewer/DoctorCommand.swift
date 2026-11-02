@@ -1,5 +1,7 @@
 import Foundation
 import MDViewerCore
+import MDViewerMermaid
+import MDViewerRender
 
 enum DoctorCommand {
   static func run() -> Never {
@@ -39,24 +41,19 @@ enum DoctorCommand {
       report(resolvable, "previous handler \(bundleID) for \(type) is installed")
     }
 
-    let resources = webResourcesLocation()
-    report(resources != nil, "web resources \(resources?.path ?? "not found")")
+    let highlight = SyntaxHighlighter.locateScript()
+    report(
+      highlight != nil,
+      "\(SyntaxHighlighter.bundleName) \(highlight.map { "at \($0.deletingLastPathComponent().path)" } ?? "not found")")
+    let mermaid = MermaidRenderer.locatePage()
+    report(
+      mermaid != nil,
+      "\(MermaidRenderer.bundleName) \(mermaid.map { "at \($0.deletingLastPathComponent().path)" } ?? "not found")")
 
     for line in agentStatusLines(AgentSkills(home: paths.home).status()) {
       print("info \(line)")
     }
 
     exit(allPassed ? 0 : 1)
-  }
-
-  private static func webResourcesLocation() -> URL? {
-    let name = "md-viewer_MDViewerWeb.bundle"
-    let executable = ownExecutable()
-    let directories = [executable, executable.resolvingSymlinksInPath()].map {
-      $0.deletingLastPathComponent()
-    }
-    return directories.flatMap { [$0, $0.appendingPathComponent("../libexec")] }
-      .map { $0.appendingPathComponent(name).standardizedFileURL }
-      .first { FileManager.default.fileExists(atPath: $0.path) }
   }
 }

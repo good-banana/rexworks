@@ -142,6 +142,19 @@ final class LinkTests: XCTestCase {
     XCTAssertEqual(h.model.file?.lastPathComponent, "other.md")
   }
 
+  func testOpeningAnotherFileFromOutsideKeepsHistory() {
+    var h = Harness(document(), files: ["/docs/other.md": "# Other"])
+    h.key(.char("G"))
+    let before = h.model.offset
+    h.run(h.model.open(URL(fileURLWithPath: "/docs/other.md")))
+    XCTAssertEqual(h.model.file?.lastPathComponent, "other.md")
+    XCTAssertEqual(h.model.offset, 0)
+    XCTAssertEqual(h.model.open(URL(fileURLWithPath: "/docs/./other.md")), [], "the shown file is not reopened")
+    h.key(.backspace)
+    XCTAssertEqual(h.model.file?.lastPathComponent, "guide.md")
+    XCTAssertEqual(h.model.offset, before)
+  }
+
   func testFailedLoadKeepsHistoryIntact() {
     var h = Harness(document(), files: ["/docs/other.md": "# Other"])
     h.click(h.point(of: "Other"))

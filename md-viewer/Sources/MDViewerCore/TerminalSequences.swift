@@ -6,6 +6,10 @@ public enum TerminalSequences {
   public static let enableKeyboardDisambiguation = "\u{1b}[>1u"
   public static let enableShiftCapture = "\u{1b}[>1s"
 
+  public static let enableViewerModes =
+    enableInBandResizeReports + enableMouseMotion + enableShiftCapture + enableKeyboardDisambiguation
+    + enableColorSchemeReports
+
   public static let enter =
     "\u{1b}[?1049h\u{1b}[?25l\u{1b}[?1000h\u{1b}[?1006h\u{1b}[?1016h"
 

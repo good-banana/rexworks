@@ -46,12 +46,6 @@ final class LinkRoutingTests: XCTestCase {
       .openMarkdown(URL(fileURLWithPath: "/docs/guide/other.md"), fragment: nil))
   }
 
-  func testHitTest() {
-    let links = [PageLink(href: "a.md", kind: .link, rect: CGRect(x: 10, y: 100, width: 50, height: 20))]
-    XCTAssertEqual(hitTest(links, pageX: 30, pageY: 110)?.href, "a.md")
-    XCTAssertNil(hitTest(links, pageX: 30, pageY: 130))
-  }
-
   func testSchemesAreCaseInsensitiveAndWhitespaceTrimmed() {
     XCTAssertEqual(
       linkAction(href: " HTTPS://example.com/a ", currentFile: current, fileExists: exists),
@@ -107,7 +101,7 @@ final class LinkRoutingTests: XCTestCase {
     XCTAssertFalse(isSafeToOpenLocally(directory.appendingPathComponent("absent.png")))
   }
 
-  func testPosterCandidates() throws {
+  func testSafeLocalImages() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -116,20 +110,23 @@ final class LinkRoutingTests: XCTestCase {
       try Data("x".utf8).write(to: url)
       return url
     }
-    XCTAssertTrue(isPosterCandidate(try make("clip.mp4")))
-    XCTAssertTrue(isPosterCandidate(try make("clip.mov")))
-    XCTAssertFalse(isPosterCandidate(try make("live.m3u8")))
-    XCTAssertFalse(isPosterCandidate(try make("list.m3u")))
-    XCTAssertFalse(isPosterCandidate(try make("notes.txt")))
-    XCTAssertFalse(isPosterCandidate(try make("img.png")))
-    XCTAssertFalse(isPosterCandidate(URL(fileURLWithPath: "/dev/zero")))
-    XCTAssertFalse(isPosterCandidate(directory.appendingPathComponent("absent.mp4")))
-    let folder = directory.appendingPathComponent("folder.mp4")
+    XCTAssertTrue(isSafeLocalImage(try make("photo.png")))
+    XCTAssertTrue(isSafeLocalImage(try make("photo.jpeg")))
+    XCTAssertTrue(isSafeLocalImage(try make("anim.gif")))
+    XCTAssertFalse(isSafeLocalImage(try make("vector.svg")))
+    XCTAssertFalse(isSafeLocalImage(try make("clip.mp4")))
+    XCTAssertFalse(isSafeLocalImage(try make("notes.txt")))
+    XCTAssertFalse(isSafeLocalImage(try make("page.html")))
+    XCTAssertFalse(isSafeLocalImage(directory.appendingPathComponent("absent.png")))
+    let folder = directory.appendingPathComponent("folder.png")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    XCTAssertFalse(isPosterCandidate(folder))
-    let fifo = directory.appendingPathComponent("pipe.mp4")
+    XCTAssertFalse(isSafeLocalImage(folder))
+    let fifo = directory.appendingPathComponent("pipe.png")
     XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
-    XCTAssertFalse(isPosterCandidate(fifo))
+    XCTAssertFalse(isSafeLocalImage(fifo))
+    let executable = try make("run.png")
+    XCTAssertEqual(chmod(executable.path, 0o755), 0)
+    XCTAssertFalse(isSafeLocalImage(executable))
   }
 
   func testCycleWraps() {

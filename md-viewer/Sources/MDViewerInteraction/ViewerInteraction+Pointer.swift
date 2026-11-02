@@ -459,6 +459,12 @@ extension ViewerInteraction {
     return setOffset(position.y)
   }
 
+  public mutating func open(_ url: URL) -> [InteractionEffect] {
+    if let file, url.standardizedFileURL.path == file.standardizedFileURL.path { return [] }
+    pendingNavigation = .link(url, from: file.map { History.Entry(file: $0, offset: offset) }, fragment: nil)
+    return [.loadDocument(url)]
+  }
+
   mutating func goBack(at now: UInt64) -> [InteractionEffect] {
     guard let file else { return [] }
     let current = History.Entry(file: file, offset: offset)

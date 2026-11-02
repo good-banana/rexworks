@@ -3,13 +3,6 @@ import Dispatch
 import Foundation
 import MDViewerCore
 
-struct TerminalSize: Equatable {
-  var columns: Int
-  var rows: Int
-  var pixelWidth: Int
-  var pixelHeight: Int
-}
-
 nonisolated(unsafe) private var savedAttributes = termios()
 nonisolated(unsafe) private var rawModeActive = false
 nonisolated(unsafe) private var restoreBytes: [UInt8] = []
@@ -63,14 +56,13 @@ enum Terminal {
     restoreTerminalState()
   }
 
-  static func size() -> TerminalSize? {
+  static func size() -> PaneSize? {
     var ws = winsize()
     guard ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0, ws.ws_col > 0, ws.ws_row > 0 else {
       return nil
     }
-    return TerminalSize(
-      columns: Int(ws.ws_col), rows: Int(ws.ws_row),
-      pixelWidth: Int(ws.ws_xpixel), pixelHeight: Int(ws.ws_ypixel))
+    return PaneSize(
+      columns: Int(ws.ws_col), rows: Int(ws.ws_row), pixelWidth: Int(ws.ws_xpixel), pixelHeight: Int(ws.ws_ypixel))
   }
 
   static func installRestoreHandlers() {
@@ -92,13 +84,6 @@ enum Terminal {
     var buffer = [UInt8](repeating: 0, count: 4096)
     let count = read(STDIN_FILENO, &buffer, buffer.count)
     return count > 0 ? Array(buffer[0..<count]) : []
-  }
-
-  static func queryColors(timeoutMilliseconds: Int = 200) -> (
-    foreground: (r: Double, g: Double, b: Double)?, background: (r: Double, g: Double, b: Double)?
-  ) {
-    let colors = queryColorSet(includePalette: false, timeoutMilliseconds: timeoutMilliseconds).colors
-    return (colors.foreground?.tuple, colors.background?.tuple)
   }
 
   static func queryColorSet(

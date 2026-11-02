@@ -396,6 +396,17 @@ final class ThemeRefreshSchedulerTests: XCTestCase {
     XCTAssertTrue(scheduler.start(now: 4.11))
   }
 
+  func testStartupQueryTimeoutWaitsForTheLateReply() {
+    var scheduler = ThemeRefreshScheduler()
+    scheduler.queryTimedOut(at: 0)
+    XCTAssertFalse(scheduler.sendsColorSchemeQuery)
+    scheduler.request(.colorScheme, now: 1)
+    XCTAssertNil(scheduler.dueAt)
+    scheduler.deviceAttributesReceived()
+    scheduler.request(.colorScheme, now: 2)
+    XCTAssertTrue(scheduler.start(now: 2.11))
+  }
+
   func testWaitForLateReplyExpires() {
     var scheduler = timedOutScheduler()
     scheduler.request(.colorScheme, now: 5)

@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 
 public enum Kitty {
@@ -32,24 +31,8 @@ public enum Kitty {
   public static let beginSynchronizedUpdate = "\u{1b}[?2026h"
   public static let endSynchronizedUpdate = "\u{1b}[?2026l"
 
-  public static func transmitFile(id: UInt32, path: String) -> String {
-    let payload = Data(path.utf8).base64EncodedString()
-    return "\(start)a=t,f=100,t=t,i=\(id),q=2;\(payload)\(end)"
-  }
-
   public static func transmitRGBA(id: UInt32, width: Int, height: Int, medium: Medium, quiet: Quiet) -> String {
     "\(start)a=t,f=32,s=\(width),v=\(height),t=\(medium.key),i=\(id),q=\(quiet.rawValue);\(medium.payload)\(end)"
-  }
-
-  public static func place(
-    id: UInt32, placement: UInt32, source: CGRect, columns: Int, rows: Int, z: Int
-  ) -> String {
-    let x = Int(source.origin.x.rounded())
-    let y = Int(source.origin.y.rounded())
-    let w = Int(source.size.width.rounded())
-    let h = Int(source.size.height.rounded())
-    return
-      "\(start)a=p,i=\(id),p=\(placement),x=\(x),y=\(y),w=\(w),h=\(h),c=\(columns),r=\(rows),z=\(z),C=1,q=2\(end)"
   }
 
   public static func place(id: UInt32, placement: UInt32, columns: Int, rows: Int, quiet: Quiet) -> String {
@@ -77,10 +60,6 @@ public enum Kitty {
 
   public static func fence(id: UInt32) -> String {
     "\(start)a=q,i=\(id),s=1,v=1,f=32,t=d;AAAAAA==\(end)"
-  }
-
-  public static func deletePlacements(id: UInt32) -> String {
-    "\(start)a=d,d=i,i=\(id),q=2\(end)"
   }
 
   public static func deleteImage(id: UInt32) -> String {

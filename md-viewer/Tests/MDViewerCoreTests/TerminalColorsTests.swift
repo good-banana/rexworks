@@ -38,20 +38,14 @@ final class TerminalColorsTests: XCTestCase {
     }
   }
 
-  func testThemeFromTerminalColors() {
-    let theme = Theme(foreground: (1, 1, 1), background: (0x1e / 255.0, 0x1e / 255.0, 0x2e / 255.0))
-    XCTAssertEqual(theme, Theme(dark: true, background: "#1e1e2e", foreground: "#ffffff"))
-  }
-
-  func testThemeFallsBackToDarkWhenColorsAreMissing() {
-    let theme = Theme(foreground: nil, background: nil)
-    XCTAssertTrue(theme.dark)
-    XCTAssertEqual(theme.background, "#1e1e1e")
-  }
-
-  func testThemeDerivesMissingForegroundFromBackground() {
-    let theme = Theme(foreground: nil, background: (1, 1, 1))
-    XCTAssertEqual(theme, Theme(dark: false, background: "#ffffff", foreground: "#1f2328"))
+  func testRestoreUndoesTheViewerModesInReverseOrder() {
+    XCTAssertEqual(
+      TerminalSequences.enableViewerModes, "\u{1b}[?2048h\u{1b}[?1003h\u{1b}[>1s\u{1b}[>1u\u{1b}[?2031h")
+    let undo = [
+      "\u{1b}[?2031l", "\u{1b}[<u", "\u{1b}[>0s", "\u{1b}[?1003l", "\u{1b}[?2048l", "\u{1b}[?1016l",
+      "\u{1b}[?1006l", "\u{1b}[?1000l", "\u{1b}[?25h", "\u{1b}_Ga=d,d=A,q=2\u{1b}\\", "\u{1b}[?1049l",
+    ]
+    XCTAssertEqual(TerminalSequences.restore, undo.joined())
   }
 
   func testColorSchemeReportsAreOptInAndDisabledOnRestore() {

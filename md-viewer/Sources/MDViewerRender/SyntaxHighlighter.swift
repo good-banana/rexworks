@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import JavaScriptCore
+import MDViewerCore
 import MDViewerLayout
 
 public struct HighlightResult: Hashable, Sendable {
@@ -77,14 +78,11 @@ public final class SyntaxHighlighter: @unchecked Sendable {
   }
 
   public static func locateScript() -> URL? {
-    var directories = [
-      Bundle.main.bundleURL, Bundle(for: SyntaxHighlighter.self).bundleURL.deletingLastPathComponent(),
-    ]
-    if let executable = Bundle.main.executableURL?.resolvingSymlinksInPath() {
-      let directory = executable.deletingLastPathComponent()
-      directories.append(directory)
-      directories.append(directory.appendingPathComponent("../libexec").standardizedFileURL)
-    }
+    let anchors = [Bundle.main.bundleURL, Bundle(for: SyntaxHighlighter.self).bundleURL.deletingLastPathComponent()]
+    return locateScript(in: ResourceLocator.directories(anchors: anchors))
+  }
+
+  static func locateScript(in directories: [URL]) -> URL? {
     for directory in directories {
       let candidate = directory.appendingPathComponent(bundleName)
       let base = Bundle(url: candidate).flatMap(\.resourceURL) ?? candidate

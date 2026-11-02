@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 import UniformTypeIdentifiers
 
@@ -31,10 +30,6 @@ public func linkAction(href: String, currentFile: URL, fileExists: (URL) -> Bool
   return .ignore
 }
 
-public func hitTest(_ links: [PageLink], pageX: CGFloat, pageY: CGFloat) -> PageLink? {
-  links.first { $0.rect.contains(CGPoint(x: pageX, y: pageY)) }
-}
-
 public func cycle(from current: Int?, count: Int, forward: Bool) -> Int? {
   guard count > 0 else { return nil }
   guard let current, (0..<count).contains(current) else { return forward ? 0 : count - 1 }
@@ -49,8 +44,8 @@ public func isSafeToOpenLocally(_ url: URL) -> Bool {
   localFileType(url, allowed: [.image, .audiovisualContent, .pdf, .plainText]) != nil
 }
 
-public func isPosterCandidate(_ url: URL) -> Bool {
-  localFileType(url, allowed: [.audiovisualContent]) != nil
+public func isSafeLocalImage(_ url: URL) -> Bool {
+  localFileType(url, allowed: [.image]) != nil
 }
 
 private func localFileType(_ url: URL, allowed: [UTType]) -> UTType? {
