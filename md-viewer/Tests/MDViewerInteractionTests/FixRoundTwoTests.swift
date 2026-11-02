@@ -147,3 +147,59 @@ final class ReloadRaceTests: XCTestCase {
     XCTAssertGreaterThan(h.layout.regions.first { $0.maxOffset > 0 }!.offset, 0)
   }
 }
+
+final class QueuedLayoutTests: XCTestCase {
+  func pressAndRelease(_ h: inout Harness, _ page: CGPoint, at time: UInt64) -> [InteractionEffect] {
+    let (x, y) = h.pane(page)
+    var effects = h.model.handle(.mouse(MouseEvent(kind: .press, x: x, y: y)), at: time)
+    effects += h.model.handle(.mouse(MouseEvent(kind: .release, x: x, y: y)), at: time + 1)
+    return effects
+  }
+
+  func settle(_ h: inout Harness, _ effects: [InteractionEffect]) {
+    let request = effects.layoutRequests.last!
+    h.run(h.model.apply(request.perform(), for: request))
+  }
+
+  func testAnchorLinkDuringAPendingReloadLandsOnTheTarget() {
+    let original =
+      "[deep](#deep)\n\n" + longDocument(paragraphs: 30)
+      + "\n\n<details><summary>Box</summary>\n\n### Deep\n\nText.\n\n</details>"
+    var h = Harness(original)
+    let link = h.point(of: "deep")
+    let edited = "Inserted line.\n\n" + original
+    _ = h.model.fileChanged(source: edited)
+    settle(&h, pressAndRelease(&h, link, at: h.now + second))
+    XCTAssertEqual(h.layout.prepared.source, edited)
+    XCTAssertEqual(h.layout.expandedDetails.count, 1, "the details holding the target opened")
+    XCTAssertGreaterThan(h.model.offset, 0)
+    XCTAssertEqual(h.model.offset, h.model.snapped(h.layout.anchorPosition("deep")!.y))
+  }
+
+  func testQueuedDetailsTogglesAllApply() {
+    var h = Harness(
+      (1...3).map { "<details><summary>Box \($0)</summary>\n\nBody \($0).\n\n</details>" }.joined(separator: "\n\n"))
+    let points = (1...3).map { h.point(of: "Box \($0)") }
+    var effects: [InteractionEffect] = []
+    for (index, point) in points.enumerated() {
+      effects += pressAndRelease(&h, point, at: h.now + UInt64(index + 1) * second)
+    }
+    XCTAssertEqual(effects.layoutRequests.count, 3)
+    settle(&h, effects)
+    XCTAssertEqual(h.layout.expandedDetails.count, 3)
+  }
+
+  func testQueuedTogglesDuringAPendingReloadAllApply() {
+    let original = (1...3).map { "<details><summary>Box \($0)</summary>\n\nBody \($0).\n\n</details>" }
+      .joined(separator: "\n\n")
+    var h = Harness(original)
+    let points = (1...2).map { h.point(of: "Box \($0)") }
+    _ = h.model.fileChanged(source: "Inserted.\n\n" + original)
+    var effects: [InteractionEffect] = []
+    for (index, point) in points.enumerated() {
+      effects += pressAndRelease(&h, point, at: h.now + UInt64(index + 1) * second)
+    }
+    settle(&h, effects)
+    XCTAssertEqual(h.layout.expandedDetails.count, 2)
+  }
+}

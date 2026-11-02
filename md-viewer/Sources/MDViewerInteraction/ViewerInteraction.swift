@@ -194,7 +194,7 @@ public struct ViewerInteraction {
     if let layout {
       let details = BlockIdentity.details(in: layout.prepared)
       carried = CarriedDetails(
-        expanded: Set(layout.expandedDetails.compactMap { details[$0] }), known: Set(details.values))
+        expanded: Set(queuedExpandedDetails(in: layout).compactMap { details[$0] }), known: Set(details.values))
       let regions = BlockIdentity.regions(in: layout)
       for region in layout.regions where region.offset > 0 {
         if let identity = regions[region.id] { state.regionOffsets[identity] = region.offset }
@@ -250,7 +250,12 @@ public struct ViewerInteraction {
       offsets = [:]
     }
     var keepsSource = false
-    if pendingReload != nil, case .source = pendingAnchor { keepsSource = true }
+    if pendingReload != nil, case .source = pendingAnchor {
+      switch anchor {
+      case .fragment, .revealMatch: break
+      default: keepsSource = true
+      }
+    }
     if !keepsSource, !(keepAnchor && pendingAnchor != nil) { pendingAnchor = anchor }
     let reuse: PreparedDocument? =
       newSource == nil && current?.source == nil && layout?.prepared.typography == typography

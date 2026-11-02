@@ -367,7 +367,7 @@ extension ViewerInteraction {
     if let layout {
       let collapsed = layout.collapsedDetails(containing: range.lowerBound)
       if !collapsed.isEmpty {
-        return requestLayout(expanded: .some(layout.expandedDetails.union(collapsed)), anchor: .revealMatch)
+        return requestLayout(expanded: .some(queuedExpandedDetails(in: layout).union(collapsed)), anchor: .revealMatch)
       }
     }
     var effects: [InteractionEffect] = []

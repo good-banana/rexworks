@@ -394,9 +394,17 @@ extension ViewerInteraction {
 
   // MARK: Details
 
+  func queuedExpandedDetails(in layout: PageLayout) -> Set<BlockID> {
+    guard let pending = pendingRequest else { return layout.expandedDetails }
+    if let carried = pending.carriedDetails {
+      return Set(BlockIdentity.details(in: layout.prepared).filter { carried.expanded.contains($0.value) }.keys)
+    }
+    return pending.expandedDetails ?? layout.expandedDetails
+  }
+
   mutating func toggleDetails(_ id: BlockID) -> [InteractionEffect] {
     guard let layout else { return [] }
-    var expanded = layout.expandedDetails
+    var expanded = queuedExpandedDetails(in: layout)
     if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
     var anchor = topAnchor(ratio: 1)
     if let area = layout.targets.first(where: { $0.target == .detailsToggle(id) }),
@@ -446,7 +454,7 @@ extension ViewerInteraction {
     history.push(History.Entry(file: file, offset: offset))
     if !position.collapsedDetails.isEmpty {
       return requestLayout(
-        expanded: .some(layout.expandedDetails.union(position.collapsedDetails)), anchor: .fragment(name))
+        expanded: .some(queuedExpandedDetails(in: layout).union(position.collapsedDetails)), anchor: .fragment(name))
     }
     return setOffset(position.y)
   }
