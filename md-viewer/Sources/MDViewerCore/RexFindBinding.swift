@@ -101,26 +101,41 @@ public enum RexFindBinding {
   public struct Editor {
     public var runner: ProcessRunning?
     public var rexPath: String?
+    public var synchronize: (URL) throws -> Void
 
-    public init(runner: ProcessRunning? = ProcessRunner(timeout: 10), rexPath: String?) {
+    public init(
+      runner: ProcessRunning? = ProcessRunner(timeout: 10), rexPath: String?,
+      synchronize: @escaping (URL) throws -> Void = Editor.fsync
+    ) {
       self.runner = runner
       self.rexPath = rexPath
+      self.synchronize = synchronize
+    }
+
+    public static func fsync(_ url: URL) throws {
+      let handle = try FileHandle(forWritingTo: url)
+      defer { try? handle.close() }
+      try handle.synchronize()
     }
 
     @discardableResult
     public func install(at configured: URL) throws -> Bool {
-      try edit(configured) { try RexFindBinding.installing(into: $0 ?? "") }
+      try edit(configured, checksCandidate: { _ in true }, change: { try RexFindBinding.installing(into: $0 ?? "") })
     }
 
     @discardableResult
     public func remove(at configured: URL) throws -> Bool {
-      try edit(configured) { existing in
-        guard let existing else { return nil }
-        return try RexFindBinding.removing(from: existing)
-      }
+      try edit(
+        configured, checksCandidate: { (try? check($0)) != nil },
+        change: { existing in
+          guard let existing else { return nil }
+          return try RexFindBinding.removing(from: existing)
+        })
     }
 
-    private func edit(_ configured: URL, _ change: (String?) throws -> String?) throws -> Bool {
+    private func edit(
+      _ configured: URL, checksCandidate: (URL) -> Bool, change: (String?) throws -> String?
+    ) throws -> Bool {
       let url = configured.resolvingSymlinksInPath()
       let existing = try RexFindBinding.read(url)
       guard let updated = try change(existing), updated != existing else { return false }
@@ -131,7 +146,8 @@ public enum RexFindBinding {
       do {
         let permissions = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]) ?? 0o644
         try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: candidate.path)
-        try check(candidate)
+        try synchronize(candidate)
+        if checksCandidate(url) { try check(candidate) }
         guard rename(candidate.path, url.path) == 0 else {
           throw EditError.unreadable(String(cString: strerror(errno)))
         }

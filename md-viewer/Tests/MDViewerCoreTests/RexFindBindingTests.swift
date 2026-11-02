@@ -140,6 +140,41 @@ final class RexFindBindingTests: XCTestCase {
     XCTAssertEqual(URL(fileURLWithPath: checked).deletingLastPathComponent().path, directory.path)
   }
 
+  func testTheCandidateIsSyncedBeforeItReplacesTheFile() throws {
+    let config = directory.appendingPathComponent("init.lua")
+    try "a\n".write(to: config, atomically: true, encoding: .utf8)
+    var synced: [(URL, String)] = []
+    let editor = RexFindBinding.Editor(runner: nil, rexPath: nil) { url in
+      synced.append((url, try String(contentsOf: url, encoding: .utf8)))
+    }
+    try editor.install(at: config)
+    XCTAssertEqual(synced.count, 1)
+    XCTAssertNotEqual(synced.first?.0, config, "the candidate is synced, not the original")
+    XCTAssertEqual(synced.first?.1, try String(contentsOf: config, encoding: .utf8), "with the final contents")
+    try RexFindBinding.Editor.fsync(config)
+  }
+
+  func testABrokenConfigCanStillHaveTheBlockRemoved() throws {
+    let config = directory.appendingPathComponent("init.lua")
+    try "return {}\n".write(to: config, atomically: true, encoding: .utf8)
+    try RexFindBinding.Editor(runner: nil, rexPath: nil).install(at: config)
+    let failing = FakeRunner(status: 1, output: "error init.lua:3: syntax error")
+    XCTAssertTrue(try RexFindBinding.Editor(runner: failing, rexPath: "/usr/bin/rex").remove(at: config))
+    XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), "return {}\n")
+    XCTAssertEqual(failing.calls.count, 1, "only the original was checked; its failure skips the candidate check")
+    XCTAssertEqual(failing.calls.first?.arguments[2], config.path)
+  }
+
+  func testRemovingFromAValidConfigStillChecksTheCandidate() throws {
+    let config = directory.appendingPathComponent("init.lua")
+    try "require(\"x\")\n".write(to: config, atomically: true, encoding: .utf8)
+    try RexFindBinding.Editor(runner: nil, rexPath: nil).install(at: config)
+    let passing = FakeRunner(status: 0, output: "")
+    XCTAssertTrue(try RexFindBinding.Editor(runner: passing, rexPath: "/usr/bin/rex").remove(at: config))
+    XCTAssertEqual(passing.calls.count, 2, "the original, then the candidate")
+    XCTAssertNotEqual(passing.calls.last?.arguments[2], config.path)
+  }
+
   func testWritesAreAtomicAndKeepPermissions() throws {
     let config = directory.appendingPathComponent("init.lua")
     try "require(\"x\")\n".write(to: config, atomically: true, encoding: .utf8)
@@ -153,7 +188,7 @@ final class RexFindBindingTests: XCTestCase {
 }
 
 final class FakeRunner: ProcessRunning, @unchecked Sendable {
-  let status: Int32
+  var status: Int32
   let output: String
   var calls: [(executable: String, arguments: [String])] = []
 

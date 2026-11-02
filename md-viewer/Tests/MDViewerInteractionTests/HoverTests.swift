@@ -19,6 +19,7 @@ final class HoverTests: XCTestCase {
     rects.map { "\($0)" }.sorted()
   }
 
+  @discardableResult
   private func hover(_ h: inout Harness, _ point: CGPoint) -> [InteractionEffect] {
     h.mouse(.motion, at: point, button: 3)
   }
@@ -59,5 +60,17 @@ final class HoverTests: XCTestCase {
     let off = hover(&h, h.point(of: "Intro"))
     XCTAssertNil(h.model.overlay.hoverLink)
     XCTAssertEqual(sorted(off.redrawRects), sorted(rects))
+  }
+
+  func testReloadsAndNewLayoutsClearTheHoveredLink() {
+    var h = Harness(text, width: 700)
+    hover(&h, h.point(of: "link"))
+    XCTAssertNotNil(h.model.overlay.hoverLink)
+    h.run(h.model.fileChanged(source: text + "\n\nMore."))
+    XCTAssertNil(h.model.overlay.hoverLink, "a reload drops the stale range")
+    hover(&h, h.point(of: "link"))
+    XCTAssertNotNil(h.model.overlay.hoverLink)
+    h.key(.char("+"))
+    XCTAssertNil(h.model.overlay.hoverLink, "a new layout drops it too")
   }
 }

@@ -190,6 +190,7 @@ public struct ViewerInteraction {
   public mutating func fileChanged(source: String) -> [InteractionEffect] {
     guard file != nil else { return [] }
     self.source = source
+    overlay.hoverLink = nil
     let selected = overlay.selection.flatMap { range in layout.map { $0.plainText(range) } }
     var state = ReloadState(selectionText: selected, selection: overlay.selection)
     var carried: CarriedDetails?
@@ -295,6 +296,7 @@ public struct ViewerInteraction {
       overlay.focus = ringShown ? focus.map(ring(for:)) : nil
     }
     layout = page
+    overlay.hoverLink = nil
     codeFrames = Self.codeBlockFrames(in: page)
     regionRanges = Self.regionRanges(in: page)
     var target = offset
