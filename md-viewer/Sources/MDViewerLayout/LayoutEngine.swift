@@ -59,12 +59,14 @@ struct LayoutEngine {
   let prepared: PreparedDocument
   let input: LayoutInput
   let typography: Typography
+  let copyButtonWidth: CGFloat
   var out = LayoutBuilder()
 
   init(prepared: PreparedDocument, input: LayoutInput) {
     self.prepared = prepared
     self.input = input
     typography = prepared.typography
+    copyButtonWidth = prepared.codeBlocks.isEmpty ? 0 : CopyButtonMetrics.width(prepared.typography)
   }
 
   func em(_ value: CGFloat) -> CGFloat { typography.pixels(em: value) }
@@ -364,7 +366,8 @@ struct LayoutEngine {
       at: start.decorations)
     let size = em(typography.copyButtonSize)
     let inset = em(typography.copyButtonInset)
-    let button = CGRect(x: box.maxX - inset - size, y: top + inset, width: size, height: size)
+    let buttonWidth = min(copyButtonWidth, max(box.width - inset * 2, size))
+    let button = CGRect(x: box.maxX - inset - buttonWidth, y: top + inset, width: buttonWidth, height: size)
     out.decorations.append(
       Decoration(rect: button, kind: .copyButton, region: nil, cornerRadius: em(typography.cornerRadius)))
     out.targets.append(

@@ -20,6 +20,7 @@ public struct RenderAssets: Sendable {
 public enum FocusRing: Hashable, Sendable {
   case text(Range<Int>)
   case codeBlock(BlockID)
+  case region(BlockID)
   case target(HitTarget)
 }
 

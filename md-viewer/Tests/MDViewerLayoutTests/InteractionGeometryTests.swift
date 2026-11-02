@@ -133,3 +133,37 @@ final class InteractionGeometryTests: XCTestCase {
     XCTAssertTrue(shifted.rects(for: hidden).allSatisfy { $0.rect.minX >= region.rect.minX })
   }
 }
+
+final class InteractionSupportTests: XCTestCase {
+  func testCaseSensitiveFind() {
+    let page = layout("Apple apple APPLE")
+    XCTAssertEqual(page.find("apple").count, 3)
+    XCTAssertEqual(page.find("Apple", caseSensitive: true).map(\.range), [0..<5])
+    XCTAssertEqual(page.find("apple", caseSensitive: true).map(\.range), [6..<11])
+  }
+
+  func testSettingScrollOffsetMovesOnlyThatRegion() throws {
+    let page = layout("```\n" + String(repeating: "wide ", count: 200) + "\n```")
+    let region = try XCTUnwrap(page.regions.first)
+    let scrolled = page.settingScrollOffset(120, for: region.id)
+    XCTAssertEqual(scrolled.region(region.id)?.offset, 120)
+    XCTAssertEqual(scrolled.fragments, page.fragments)
+    XCTAssertEqual(scrolled.settingScrollOffset(1e9, for: region.id).region(region.id)?.offset, region.maxOffset)
+    XCTAssertEqual(scrolled.settingScrollOffset(-5, for: region.id).region(region.id)?.offset, 0)
+    XCTAssertEqual(scrolled.scrollOffsets, [region.id: 120])
+    let range = try XCTUnwrap(page.range(of: "wide", occurrence: 10))
+    let shifted = try XCTUnwrap(scrolled.rects(for: range).first?.rect)
+    let unscrolled = try XCTUnwrap(scrolled.rects(for: range, scrolled: false).first?.rect)
+    XCTAssertEqual(unscrolled.minX - shifted.minX, 120, accuracy: 0.5)
+    let far = try XCTUnwrap(page.range(of: "wide", occurrence: 190))
+    XCTAssertTrue(page.rects(for: far).isEmpty, "clipped out of the region")
+    XCTAssertFalse(page.rects(for: far, scrolled: false).isEmpty)
+  }
+
+  func testCopyTargetFitsTheWidestLabel() throws {
+    let page = layout("```\nx\n```")
+    let area = try XCTUnwrap(page.targets.first)
+    XCTAssertEqual(area.rect.width, CopyButtonMetrics.width(page.prepared.typography))
+    XCTAssertGreaterThan(area.rect.width, area.rect.height)
+  }
+}

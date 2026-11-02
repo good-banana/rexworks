@@ -12,7 +12,7 @@ public struct PageLayout: Equatable, Sendable {
   public let labels: [PlacedLabel]
   public let images: [ImageBox]
   public let targets: [TargetArea]
-  public let regions: [ScrollRegion]
+  public private(set) var regions: [ScrollRegion]
   public let hiddenRanges: [Range<Int>]
   let anchorOffsets: [String: CGFloat]
   let detailsTops: [BlockID: CGFloat]
@@ -73,6 +73,18 @@ public struct PageLayout: Equatable, Sendable {
 
   public func displayRect(_ rect: CGRect, region: BlockID?) -> CGRect {
     rect.offsetBy(dx: -offset(of: region), dy: 0)
+  }
+
+  public func settingScrollOffset(_ offset: CGFloat, for region: BlockID) -> PageLayout {
+    guard let index = regionIndex[region] else { return self }
+    var copy = self
+    let maximum = copy.regions[index].maxOffset
+    copy.regions[index].offset = offset.isFinite ? min(max(offset, 0), maximum) : 0
+    return copy
+  }
+
+  public var scrollOffsets: [BlockID: CGFloat] {
+    Dictionary(regions.map { ($0.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
   }
 }
 
@@ -164,7 +176,7 @@ extension PageLayout {
     return low - 1
   }
 
-  public func rects(for range: Range<Int>) -> [HighlightRect] {
+  public func rects(for range: Range<Int>, scrolled: Bool = true) -> [HighlightRect] {
     guard !range.isEmpty else { return [] }
     var result: [HighlightRect] = []
     func ordered(_ position: Int) -> TextFragment { fragments[fragmentOrder?[position] ?? position] }
@@ -183,11 +195,11 @@ extension PageLayout {
       let upper = min(range.upperBound, fragment.range.upperBound)
       guard lower < upper else { continue }
       let segment = prepared.segments[fragment.segment]
-      let shift = offset(of: fragment.region)
+      let shift = scrolled ? offset(of: fragment.region) : 0
       guard let span = segment.span(from: lower, to: upper) else { continue }
       var minX = max(fragment.origin.x + span.lowerBound, fragment.minX) - shift
       var maxX = min(fragment.origin.x + span.upperBound, fragment.maxX) - shift
-      if let region = fragment.region, let index = regionIndex[region] {
+      if scrolled, let region = fragment.region, let index = regionIndex[region] {
         let clip = regions[index].rect
         minX = max(minX, clip.minX)
         maxX = min(maxX, clip.maxX)
@@ -309,13 +321,15 @@ extension PageLayout {
     return links[low].href
   }
 
-  public func find(_ query: String) -> [FindMatch] {
+  public func find(_ query: String, caseSensitive: Bool = false) -> [FindMatch] {
     guard !query.isEmpty else { return [] }
+    let options: NSString.CompareOptions =
+      caseSensitive ? [.diacriticInsensitive] : [.caseInsensitive, .diacriticInsensitive]
     let text = prepared.text
     var matches: [FindMatch] = []
     var search = NSRange(location: 0, length: text.length)
     while search.length > 0 {
-      let found = text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive], range: search)
+      let found = text.range(of: query, options: options, range: search)
       if found.location == NSNotFound || found.length == 0 { break }
       let range = found.location..<(found.location + found.length)
       if !hiddenRanges.contains(where: { $0.overlaps(range) }) {

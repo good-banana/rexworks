@@ -248,6 +248,11 @@ public struct HighlightRect: Hashable, Sendable {
 public struct FindMatch: Hashable, Sendable {
   public var range: Range<Int>
   public var rects: [HighlightRect]
+
+  public init(range: Range<Int>, rects: [HighlightRect]) {
+    self.range = range
+    self.rects = rects
+  }
 }
 
 public struct AnchorPosition: Hashable, Sendable {

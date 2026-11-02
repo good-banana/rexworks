@@ -25,6 +25,9 @@ let package = Package(
     .target(
       name: "MDViewerDisplay", dependencies: ["MDViewerCore", "MDViewerLayout", "MDViewerRender", "MDViewerSystem"]),
     .target(
+      name: "MDViewerInteraction",
+      dependencies: ["MDViewerCore", "MDViewerDocument", "MDViewerLayout", "MDViewerRender"]),
+    .target(
       name: "MDViewerWeb",
       dependencies: ["MDViewerCore"],
       resources: [.copy("Resources/web")]),
@@ -54,6 +57,9 @@ let package = Package(
       name: "MDViewerDisplayTests",
       dependencies: ["MDViewerDisplay", "MDViewerRender", "MDViewerLayout", "MDViewerCore", "MDViewerSystem"],
       resources: [.copy("Fixtures")]),
+    .testTarget(
+      name: "MDViewerInteractionTests",
+      dependencies: ["MDViewerInteraction", "MDViewerLayout", "MDViewerRender", "MDViewerCore", "MDViewerDocument"]),
     .testTarget(
       name: "MDViewerMermaidTests",
       dependencies: ["MDViewerMermaid", "MDViewerCore"],

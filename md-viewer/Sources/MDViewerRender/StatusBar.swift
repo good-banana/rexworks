@@ -41,16 +41,18 @@ public struct StatusBarContent: Hashable, Sendable {
   public var progress: ScrollProgress
   public var message: StatusMessage?
   public var hint: String?
+  public var findField: String?
 
   public init(
     fileName: String, folder: String? = nil, progress: ScrollProgress, message: StatusMessage? = nil,
-    hint: String? = nil
+    hint: String? = nil, findField: String? = nil
   ) {
     self.fileName = fileName
     self.folder = folder
     self.progress = progress
     self.message = message
     self.hint = hint
+    self.findField = findField
   }
 }
 
@@ -146,6 +148,41 @@ public struct StatusBar {
       context.setFillColor(color.cgColor)
       line.draw(in: context, at: CGPoint(x: x, y: baseline(line)))
       right = pill.minX - gap
+    }
+
+    if let query = content.findField {
+      let font = NSFont.systemFont(ofSize: fontSize, weight: .regular) as CTFont
+      let iconSize = fontSize * 0.8
+      let inner = points(6)
+      let caretWidth = max(points(1), 1)
+      let maximumWidth = max(rect.width * 0.45, points(80))
+      let textRoom = maximumWidth - inner * 3 - iconSize - caretWidth
+      let line = TextLine(query, font: font, truncateTo: max(textRoom, 0), truncation: .start)
+      let fieldWidth = min(max(inner * 3 + iconSize + line.width + caretWidth, rect.width * 0.25), maximumWidth)
+      let fieldHeight = min(body.height - points(4), fontSize * 1.6)
+      let field = CGRect(
+        x: max(right - fieldWidth, rect.minX + padding), y: (body.midY - fieldHeight / 2).rounded(),
+        width: fieldWidth, height: fieldHeight)
+      context.setFillColor(palette.pageBackground.cgColor)
+      context.addPath(CGPath(roundedRect: field, cornerWidth: points(4), cornerHeight: points(4), transform: nil))
+      context.fillPath()
+      context.setStrokeColor(palette.focusOutline.cgColor)
+      context.setLineWidth(max(points(1), 1))
+      context.addPath(
+        CGPath(
+          roundedRect: field.insetBy(dx: 0.5, dy: 0.5), cornerWidth: points(4), cornerHeight: points(4),
+          transform: nil))
+      context.strokePath()
+      let icon = CGRect(x: field.minX + inner, y: body.midY - iconSize / 2, width: iconSize, height: iconSize)
+      Glyphs(context: context, hairline: max(1, backingScale.rounded())).magnifier(
+        in: icon, color: palette.statusMutedText.cgColor)
+      let textX = icon.maxX + inner
+      context.setFillColor(textColor.cgColor)
+      line.draw(in: context, at: CGPoint(x: textX, y: baseline(line)))
+      context.fill(
+        CGRect(
+          x: textX + line.width + points(1), y: body.midY - fontSize * 0.6, width: caretWidth, height: fontSize * 1.2))
+      right = field.minX - gap
     }
 
     let nameFont = NSFont.systemFont(ofSize: fontSize, weight: .semibold) as CTFont

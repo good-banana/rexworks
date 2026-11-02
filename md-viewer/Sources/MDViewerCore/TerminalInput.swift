@@ -1,12 +1,13 @@
 public enum Key: Equatable {
   case char(Character)
-  case up, down, pageUp, pageDown, home, end
-  case enter, tab, backTab, backspace, escape
+  case up, down, left, right, pageUp, pageDown, home, end
+  case enter, tab, backTab, backspace, shiftBackspace, escape
   case ctrl(Character)
+  case command(Character)
 }
 
 public struct MouseEvent: Equatable {
-  public enum Kind: Equatable { case press, release, wheelUp, wheelDown }
+  public enum Kind: Equatable { case press, release, motion, wheelUp, wheelDown, wheelLeft, wheelRight }
 
   public struct Modifiers: OptionSet, Equatable, Sendable {
     public let rawValue: Int
@@ -162,6 +163,8 @@ public struct InputParser {
       switch pending[2] {
       case 0x41: .up
       case 0x42: .down
+      case 0x43: .right
+      case 0x44: .left
       case 0x48: .home
       case 0x46: .end
       default: nil
@@ -269,9 +272,13 @@ public struct InputParser {
       guard fields.count == 2 else { return nil }
       return .modeReport(ModeReport(mode: fields[0], state: fields[1]))
     }
+    if final == 0x75, !params.hasPrefix("?") { return decodeKittyKey(params) }
+    if final == 0x7e, params.hasPrefix("27;") { return decodeModifiedKey(params) }
     switch final {
     case 0x41: return .key(.up)
     case 0x42: return .key(.down)
+    case 0x43: return .key(.right)
+    case 0x44: return .key(.left)
     case 0x48: return .key(.home)
     case 0x46: return .key(.end)
     case 0x5a: return .key(.backTab)
@@ -287,6 +294,38 @@ public struct InputParser {
     }
   }
 
+  private func decodeKittyKey(_ params: String) -> InputEvent? {
+    let fields = params.split(separator: ";", omittingEmptySubsequences: false)
+    guard let first = fields.first, let code = Int(first.split(separator: ":").first ?? "") else { return nil }
+    let modifiers = fields.count > 1 ? Int(fields[1].split(separator: ":").first ?? "") ?? 1 : 1
+    return Self.modifiedKey(code: code, modifiers: modifiers).map { .key($0) }
+  }
+
+  private func decodeModifiedKey(_ params: String) -> InputEvent? {
+    let fields = params.split(separator: ";").compactMap { Int($0) }
+    guard fields.count == 3 else { return nil }
+    return Self.modifiedKey(code: fields[2], modifiers: fields[1]).map { .key($0) }
+  }
+
+  private static func modifiedKey(code: Int, modifiers: Int) -> Key? {
+    let bits = max(modifiers - 1, 0)
+    let shift = bits & 1 != 0
+    let control = bits & 4 != 0
+    let command = bits & 8 != 0
+    switch code {
+    case 27: return .escape
+    case 13: return .enter
+    case 9: return shift ? .backTab : .tab
+    case 127, 8: return shift ? .shiftBackspace : .backspace
+    default: break
+    }
+    guard code >= 0x20, !(0xe000...0xf8ff).contains(code), let scalar = UnicodeScalar(code) else { return nil }
+    let character = Character(scalar)
+    if command { return .command(Character(character.lowercased())) }
+    if control { return .ctrl(Character(character.lowercased())) }
+    return .char(shift ? Character(character.uppercased()) : character)
+  }
+
   private func decodeMouse(_ params: String, final: UInt8) -> InputEvent? {
     let fields = params.split(separator: ";").compactMap { Int($0) }
     guard fields.count == 3, final == 0x4d || final == 0x6d else { return nil }
@@ -296,12 +335,21 @@ public struct InputParser {
     let modifiers = MouseEvent.Modifiers(rawValue: button & 0x1c)
     let kind: MouseEvent.Kind
     var pressed = 0
-    switch button & ~0x1c {
+    let base = button & ~0x1c
+    switch base {
     case 64: kind = .wheelUp
     case 65: kind = .wheelDown
+    case 66: kind = .wheelLeft
+    case 67: kind = .wheelRight
     case 0...2:
       kind = final == 0x4d ? .press : .release
       pressed = button & 0x3
+    case 3 where final == 0x6d:
+      kind = .release
+      pressed = 3
+    case 32...35:
+      kind = .motion
+      pressed = base - 32
     default: return nil
     }
     return .mouse(MouseEvent(kind: kind, x: x, y: y, button: pressed, modifiers: modifiers))

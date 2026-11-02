@@ -18,7 +18,7 @@ final class TerminalColorsTests: XCTestCase {
   }
 
   func testRestoreSequenceUndoesEverything() {
-    for mode in ["?2031l", "?2048l", "?1016l", "?1006l", "?1000l", "?25h", "?1049l"] {
+    for mode in ["?1003l", "?2031l", "?2048l", "?1016l", "?1006l", "?1000l", "?25h", "?1049l"] {
       XCTAssertTrue(TerminalSequences.restore.contains(mode))
     }
     XCTAssertTrue(TerminalSequences.restore.contains(Kitty.deleteAll()))
@@ -27,7 +27,7 @@ final class TerminalColorsTests: XCTestCase {
   func testRestoreDeletesImagesBeforeLeavingTheAlternateScreen() {
     XCTAssertEqual(
       TerminalSequences.restore,
-      "\u{1b}[?2031l\u{1b}[?2048l\u{1b}[?1016l\u{1b}[?1006l\u{1b}[?1000l\u{1b}[?25h\u{1b}_Ga=d,d=A,q=2\u{1b}\\"
+      "\u{1b}[?2031l\u{1b}[<u\u{1b}[?1003l\u{1b}[?2048l\u{1b}[?1016l\u{1b}[?1006l\u{1b}[?1000l\u{1b}[?25h\u{1b}_Ga=d,d=A,q=2\u{1b}\\"
         + "\u{1b}[?1049l")
     XCTAssertEqual(TerminalSequences.queryCellSize, "\u{1b}[16t")
   }

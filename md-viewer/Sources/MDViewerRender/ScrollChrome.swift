@@ -36,16 +36,8 @@ struct ScrollChrome {
       context.restoreGState()
     }
 
-    let inset = painter.em(0.5)
-    let track = region.rect.width - inset * 2
-    guard track > 0, region.contentWidth > 0 else { return }
-    let height = max(painter.hairline * 2, painter.css(3).rounded())
-    let width = min(max(painter.css(24), track * region.rect.width / region.contentWidth), track)
-    let progress = region.maxOffset > 0 ? min(max(region.offset / region.maxOffset, 0), 1) : 0
-    let thumb = CGRect(
-      x: region.rect.minX + inset + (track - width) * progress, y: region.rect.maxY - height - painter.css(3),
-      width: width, height: height)
-    painter.fill(thumb, colors.faded(\.mutedText, 0.55), radius: height / 2)
+    guard let bar = RegionScrollbar(region: region, typography: painter.typography) else { return }
+    painter.fill(bar.thumb, colors.faded(\.mutedText, 0.55), radius: bar.thumb.height / 2)
   }
 
   private func drawFades(_ region: ScrollRegion, color: RGB, width fade: CGFloat) {
@@ -67,5 +59,35 @@ struct ScrollChrome {
         gradient, start: CGPoint(x: region.rect.maxX - fade, y: 0), end: CGPoint(x: region.rect.maxX, y: 0),
         options: [])
     }
+  }
+}
+
+public struct RegionScrollbar: Hashable, Sendable {
+  public let track: CGRect
+  public let thumb: CGRect
+  public let hitArea: CGRect
+  public let region: ScrollRegion
+
+  public init?(region: ScrollRegion, typography: Typography) {
+    let hairline = max(1, typography.pixels(cssPoints: typography.hairline).rounded())
+    let inset = typography.pixels(em: 0.5)
+    let trackWidth = region.rect.width - inset * 2
+    guard trackWidth > 0, region.contentWidth > 0 else { return nil }
+    let height = max(hairline * 2, typography.pixels(cssPoints: 3).rounded())
+    let width = min(
+      max(typography.pixels(cssPoints: 24), trackWidth * region.rect.width / region.contentWidth), trackWidth)
+    let progress = region.maxOffset > 0 ? min(max(region.offset / region.maxOffset, 0), 1) : 0
+    let y = region.rect.maxY - height - typography.pixels(cssPoints: 3)
+    self.region = region
+    track = CGRect(x: region.rect.minX + inset, y: y, width: trackWidth, height: height)
+    thumb = CGRect(x: track.minX + (trackWidth - width) * progress, y: y, width: width, height: height)
+    let reach = typography.pixels(cssPoints: 6)
+    hitArea = CGRect(x: track.minX, y: y - reach, width: trackWidth, height: region.rect.maxY - y + reach)
+  }
+
+  public func offset(forThumbMinX minX: CGFloat) -> CGFloat {
+    let travel = track.width - thumb.width
+    guard travel > 0 else { return 0 }
+    return min(max((minX - track.minX) / travel, 0), 1) * region.maxOffset
   }
 }

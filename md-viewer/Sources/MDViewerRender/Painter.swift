@@ -344,23 +344,22 @@ struct Painter {
     }
     guard let block, let rect = index.copyButtons[block], visible.intersects(rect) else { return }
     let copied = overlay.copyButton?.block == block && overlay.copyButton?.copied == true
-    let font = NSFont.systemFont(ofSize: em(0.75), weight: .medium) as CTFont
-    let label = TextLine(copied ? "Copied" : "Copy", font: font)
-    let iconSize = em(0.8)
-    let gap = em(0.35)
-    let padding = em(0.55)
-    let width = max(rect.width, padding * 2 + iconSize + gap + label.width)
-    let button = CGRect(x: rect.maxX - width, y: rect.minY, width: width, height: rect.height)
+    let label = TextLine(
+      copied ? CopyButtonMetrics.copiedLabel : CopyButtonMetrics.copyLabel,
+      font: CopyButtonMetrics.labelFont(typography))
+    let iconSize = em(CopyButtonMetrics.iconScale)
+    let gap = em(CopyButtonMetrics.gapScale)
     let radius = em(typography.cornerRadius)
-    fill(button, colors(\.inlineCodeBackground), radius: radius)
-    stroke(button, colors(\.border), width: hairline, radius: radius)
-    let icon = CGRect(x: button.minX + padding, y: button.midY - iconSize / 2, width: iconSize, height: iconSize)
+    fill(rect, colors(\.inlineCodeBackground), radius: radius)
+    stroke(rect, colors(\.border), width: hairline, radius: radius)
+    let contentWidth = iconSize + gap + label.width
+    let icon = CGRect(
+      x: rect.midX - contentWidth / 2, y: rect.midY - iconSize / 2, width: iconSize, height: iconSize)
     let accent = copied ? colors(\.alerts.tip) : colors(\.text)
     let glyphs = Glyphs(context: context, hairline: hairline)
     if copied { glyphs.check(in: icon, color: accent) } else { glyphs.copy(in: icon, color: accent) }
     context.setFillColor(accent)
-    label.draw(
-      in: context, at: CGPoint(x: icon.maxX + gap, y: button.midY + (label.ascent - label.descent) / 2))
+    label.draw(in: context, at: CGPoint(x: icon.maxX + gap, y: rect.midY + (label.ascent - label.descent) / 2))
   }
 
   private func paintFocus() {
@@ -371,6 +370,8 @@ struct Painter {
       rects = layout.rects(for: range).map(\.rect)
     case .codeBlock(let id):
       if let rect = index.codeBlockRects[id] { rects = [rect] }
+    case .region(let id):
+      if let rect = index.codeBlockRects[id] ?? layout.region(id)?.rect { rects = [rect] }
     case .target(let target):
       if case .copyCode(let id, _) = target, let rect = index.codeBlockRects[id] {
         rects = [rect]
