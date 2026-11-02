@@ -565,4 +565,55 @@ final class DisplayTransportTests: XCTestCase {
     transport.handle(GraphicsResponse(id: FenceIDs.base + 2, message: "OK"), at: timeout + 101 * ms)
     XCTAssertEqual(stager.outstanding, 0)
   }
+
+  func testLateFenceReleasesOnlyItsOwnStagersFrames() {
+    let fallback = MemoryStager(name: "fallback")
+    let transport = makeTransport(fallback: fallback)
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.scroll(to: 400)
+    transport.pump(at: 20 * ms)
+    let timeout = 20 * ms + FramePacer.defaultFenceTimeout
+    transport.pump(at: timeout)
+    stager.failNext = true
+    transport.invalidateStatusBar()
+    transport.pump(at: timeout + 100 * ms)
+    XCTAssertEqual(fallback.staged.count, 1)
+    XCTAssertNotNil(transport.pacer.inFlight)
+    transport.handle(GraphicsResponse(id: FenceIDs.base + 1, message: "OK"), at: timeout + 101 * ms)
+    XCTAssertEqual(fallback.staged.count, 1)
+    XCTAssertEqual(fallback.acknowledged, 0)
+    acknowledge(transport, at: timeout + 102 * ms)
+    XCTAssertEqual(fallback.staged.count, 0)
+  }
+
+  func testErrorAfterAnEditOfAnUnsettledImageOnlyInvalidates() {
+    let transport = makeTransport()
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.scroll(to: 400)
+    transport.pump(at: 20 * ms)
+    let timeout = 20 * ms + FramePacer.defaultFenceTimeout
+    transport.pump(at: timeout)
+    transport.invalidateStatusBar()
+    transport.pump(at: timeout + 100 * ms)
+    output.writes = []
+    transport.handle(
+      GraphicsResponse(id: 101, message: "EINVAL: frame dimensions exceed image"), at: timeout + 101 * ms)
+    XCTAssertEqual(output.writes, [])
+    XCTAssertEqual(transport.ledger.unsettled, [101])
+    XCTAssertTrue(transport.damage.needsFullFrame)
+  }
+
+  func testErrorForAnUnsettledImageWithoutEditsDiscardsItAtOnce() {
+    let transport = makeTransport()
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.scroll(to: 400)
+    transport.pump(at: 20 * ms)
+    output.writes = []
+    transport.handle(GraphicsResponse(id: 101, message: "EINVAL: invalid data"), at: 21 * ms)
+    XCTAssertEqual(output.take(), [Kitty.deleteImage(id: 101)])
+    XCTAssertEqual(transport.ledger.live, [100])
+  }
 }

@@ -31,13 +31,16 @@ final class PaneSizeTrackerTests: XCTestCase {
       [.observe(PaneSize(columns: 107, rows: 29, pixelWidth: 1498, pixelHeight: 957))])
     XCTAssertEqual(
       tracker.windowChanged(PaneSize(columns: 50, rows: 10, pixelWidth: 712, pixelHeight: 343)),
-      [.observe(PaneSize(columns: 50, rows: 10, pixelWidth: 700, pixelHeight: 330))])
+      [.queryCellSize, .observe(PaneSize(columns: 50, rows: 10, pixelWidth: 700, pixelHeight: 330))])
+    XCTAssertEqual(
+      tracker.cellSizeReport(width: 16, height: 36),
+      [.observe(PaneSize(columns: 50, rows: 10, pixelWidth: 800, pixelHeight: 360))])
   }
 
   func testUnsupportedModeReportUsesTheLastWindowSize() {
     var tracker = PaneSizeTracker()
     _ = tracker.windowChanged(padded)
-    XCTAssertEqual(tracker.modeReport(ModeReport(mode: 2048, state: 0)), [.observe(padded)])
+    XCTAssertEqual(tracker.modeReport(ModeReport(mode: 2048, state: 0)), [.queryCellSize, .observe(padded)])
     XCTAssertEqual(tracker.inBandReports, false)
     XCTAssertEqual(tracker.modeReport(ModeReport(mode: 2031, state: 2)), [])
     var permanent = PaneSizeTracker()

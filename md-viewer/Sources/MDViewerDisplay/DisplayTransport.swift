@@ -66,6 +66,7 @@ public final class DisplayTransport {
   private struct Outstanding {
     var record: FrameRecord
     var stagedThrough: UInt64?
+    var stager: FrameStager
   }
 
   private let output: TerminalOutput
@@ -178,7 +179,10 @@ public final class DisplayTransport {
     }
     guard !response.isOK, ledger.live.contains(response.id) else { return }
     failures[response.id] = response.message
-    if ledger.unsettled.contains(response.id) {
+    let editedSinceTransmit = outstanding.contains {
+      $0.record.imageID == response.id && $0.record.kind != .full
+    }
+    if ledger.unsettled.contains(response.id), !editedSinceTransmit {
       ledger.discard(response.id)
       output.write(Kitty.deleteImage(id: response.id))
     }
@@ -340,7 +344,7 @@ public final class DisplayTransport {
 
   private func dispatched(_ record: FrameRecord, stagedThrough: UInt64?, at now: UInt64) {
     pacer.sent(fence: record.fence, stagedThrough: stagedThrough, at: now)
-    outstanding.append(Outstanding(record: record, stagedThrough: stagedThrough))
+    outstanding.append(Outstanding(record: record, stagedThrough: stagedThrough, stager: stager))
     onEvent(.sent(record))
   }
 
@@ -384,7 +388,7 @@ public final class DisplayTransport {
     let settled = outstanding[...index]
     outstanding.removeFirst(index + 1)
     for entry in settled {
-      if let sequence = entry.stagedThrough { stager.acknowledge(through: sequence) }
+      if let sequence = entry.stagedThrough { entry.stager.acknowledge(through: sequence) }
       onEvent(.acknowledged(entry.record, latency: now - entry.record.sentAt))
       settle(entry.record, failure: failures.removeValue(forKey: entry.record.imageID), at: now)
     }

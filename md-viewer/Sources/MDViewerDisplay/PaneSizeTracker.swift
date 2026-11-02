@@ -9,7 +9,6 @@ public struct PaneSizeTracker: Sendable {
   public private(set) var inBandReports: Bool?
   public private(set) var cellSize: (width: Int, height: Int)?
   private var lastGrid: PaneSize?
-  private var queriedCellSize = false
 
   public init() {}
 
@@ -35,13 +34,7 @@ public struct PaneSizeTracker: Sendable {
   public mutating func windowChanged(_ ioctl: PaneSize) -> [Action] {
     lastGrid = ioctl
     guard inBandReports != true else { return [] }
-    var actions: [Action] = []
-    if cellSize == nil, !queriedCellSize {
-      queriedCellSize = true
-      actions.append(.queryCellSize)
-    }
-    actions.append(.observe(sized(ioctl)))
-    return actions
+    return [.queryCellSize, .observe(sized(ioctl))]
   }
 
   private func sized(_ grid: PaneSize) -> PaneSize {
