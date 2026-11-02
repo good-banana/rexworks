@@ -90,6 +90,8 @@ public final class ViewerHost {
   var player = AnimationPlayer()
   let animationFrames = AnimationFrames()
   var animationTimer: DispatchSourceTimer?
+  var animationTimerDeadline: UInt64?
+  var tickTimerDeadline: UInt64?
   var lastAnimationTick: UInt64 = 0
 
   public init(size: PaneSize, theme: ResolvedTheme, themeQueryTimedOut: Bool = false, services: HostServices) {
@@ -454,7 +456,11 @@ public final class ViewerHost {
   }
 
   func scheduleAnimation() {
-    guard let deadline = player.nextDeadline else { return }
+    guard let deadline = player.nextDeadline else {
+      if animationTimerDeadline != nil { animationTimer?.schedule(deadline: .distantFuture) }
+      animationTimerDeadline = nil
+      return
+    }
     if animationTimer == nil {
       let timer = DispatchSource.makeTimerSource(queue: .main)
       timer.setEventHandler { [weak self] in
@@ -465,6 +471,7 @@ public final class ViewerHost {
       animationTimer = timer
     }
     let at = max(deadline, lastAnimationTick + AnimationPlayer.minimumTickInterval)
+    animationTimerDeadline = at
     animationTimer?.schedule(deadline: DispatchTime(uptimeNanoseconds: at))
   }
 
@@ -694,7 +701,11 @@ public final class ViewerHost {
   // MARK: Timers and display events
 
   func scheduleTick() {
-    guard let deadline = interaction.nextDeadline else { return }
+    guard let deadline = interaction.nextDeadline else {
+      if tickTimerDeadline != nil { tickTimer?.schedule(deadline: .distantFuture) }
+      tickTimerDeadline = nil
+      return
+    }
     if tickTimer == nil {
       let timer = DispatchSource.makeTimerSource(queue: .main)
       timer.setEventHandler { [weak self] in
@@ -708,6 +719,7 @@ public final class ViewerHost {
       timer.resume()
       tickTimer = timer
     }
+    tickTimerDeadline = deadline
     tickTimer?.schedule(deadline: DispatchTime(uptimeNanoseconds: deadline))
   }
 

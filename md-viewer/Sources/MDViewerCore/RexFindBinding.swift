@@ -169,3 +169,11 @@ public enum RexFindBinding {
     }
   }
 }
+
+public func uninstallThenRemoveFindBinding(
+  restore: () async throws -> [String], removeFindBinding: () -> Void
+) async rethrows -> [String] {
+  let failures = try await restore()
+  if failures.isEmpty { removeFindBinding() }
+  return failures
+}

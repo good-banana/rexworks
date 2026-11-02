@@ -349,6 +349,17 @@ final class ViewerHostTests: XCTestCase {
     XCTAssertTrue(fixture.output.joined.contains(TerminalColorQuery.primaryDeviceAttributes))
   }
 
+  func testTheTickTimerGoesIdleWhenNothingIsDue() throws {
+    let fixture = try HostFixture(document)
+    XCTAssertNil(fixture.host.tickTimerDeadline)
+    fixture.host.receive(Array("y".utf8))
+    XCTAssertEqual(fixture.host.interaction.status.message?.text, "Nothing selected")
+    XCTAssertNotNil(fixture.host.tickTimerDeadline)
+    spin(until: { fixture.host.interaction.status.message == nil }, timeout: 4)
+    XCTAssertNil(fixture.host.interaction.status.message)
+    XCTAssertNil(fixture.host.tickTimerDeadline, "no wakeup is left scheduled")
+  }
+
   func testStoppedDrawingIsReportedAsTextAndLogged() throws {
     let fixture = try HostFixture(document)
     _ = fixture.output.take()

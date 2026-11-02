@@ -187,6 +187,25 @@ final class RexFindBindingTests: XCTestCase {
   }
 }
 
+final class UninstallOrderTests: XCTestCase {
+  func testTheBindingIsRemovedOnlyAfterAFullRestore() async throws {
+    var removed = 0
+    let failed = await uninstallThenRemoveFindBinding(
+      restore: { ["could not restore net.daringfireball.markdown"] }, removeFindBinding: { removed += 1 })
+    XCTAssertEqual(failed.count, 1)
+    XCTAssertEqual(removed, 0, "a failed restore keeps the binding with the app and config")
+    struct Broken: Error {}
+    do {
+      _ = try await uninstallThenRemoveFindBinding(restore: { throw Broken() }, removeFindBinding: { removed += 1 })
+      XCTFail("the error propagates")
+    } catch {}
+    XCTAssertEqual(removed, 0)
+    let done = await uninstallThenRemoveFindBinding(restore: { [] }, removeFindBinding: { removed += 1 })
+    XCTAssertTrue(done.isEmpty)
+    XCTAssertEqual(removed, 1)
+  }
+}
+
 final class FakeRunner: ProcessRunning, @unchecked Sendable {
   var status: Int32
   let output: String

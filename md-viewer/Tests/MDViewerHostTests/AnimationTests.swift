@@ -162,8 +162,10 @@ final class HostAnimationTests: XCTestCase {
     XCTAssertTrue(offscreen.player.playing.isEmpty, "an image below the view does not animate")
     offscreen.receive(Array("G".utf8))
     XCTAssertEqual(offscreen.player.playing, ["spin.gif"], "scrolled into view, it plays")
+    XCTAssertNotNil(offscreen.animationTimerDeadline)
     offscreen.receive(Array("?".utf8))
     XCTAssertTrue(offscreen.player.playing.isEmpty, "help pauses it")
+    XCTAssertNil(offscreen.animationTimerDeadline, "the timer goes idle instead of waking once more")
     offscreen.shutdown()
 
     let (reduced, _, _) = try host("![spin](spin.gif)", reduceMotion: true)

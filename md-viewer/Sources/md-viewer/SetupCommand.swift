@@ -46,9 +46,11 @@ enum SetupCommand {
 
   static func uninstall() async -> Never {
     AgentsCommand.removeQuietly()
-    updateFindBinding(rex: (try? ConfigStore.load(currentPaths()))?.rexPath ?? locateExecutable("rex"), install: false)
+    let rex = (try? ConfigStore.load(currentPaths()))?.rexPath ?? locateExecutable("rex")
     do {
-      let failures = try await systemInstaller().uninstall()
+      let failures = try await uninstallThenRemoveFindBinding(
+        restore: { try await systemInstaller().uninstall() },
+        removeFindBinding: { updateFindBinding(rex: rex, install: false) })
       for failure in failures { FileHandle.standardError.write(Data((failure + "\n").utf8)) }
       if failures.isEmpty {
         print("md-viewer removed and previous handlers restored.")
