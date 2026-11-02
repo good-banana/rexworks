@@ -54,7 +54,7 @@ public struct RenderOverlay: Sendable {
 }
 
 public struct Rasterizer: @unchecked Sendable {
-  public let layout: PageLayout
+  public private(set) var layout: PageLayout
   public let palette: RenderPalette
   public var assets: RenderAssets
   public var highlights: [BlockID: HighlightResult]
@@ -69,6 +69,10 @@ public struct Rasterizer: @unchecked Sendable {
     self.assets = assets
     self.highlights = highlights
     index = SceneIndex(layout)
+  }
+
+  public mutating func setScrollOffset(_ offset: CGFloat, for region: BlockID) {
+    layout = layout.settingScrollOffset(offset, for: region)
   }
 
   public func render(_ rect: CGRect, scale: CGFloat = 1, overlay: RenderOverlay = RenderOverlay()) -> RasterBitmap? {

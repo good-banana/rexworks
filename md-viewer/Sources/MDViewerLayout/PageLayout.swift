@@ -321,24 +321,34 @@ extension PageLayout {
     return links[low].href
   }
 
-  public func find(_ query: String, caseSensitive: Bool = false) -> [FindMatch] {
-    guard !query.isEmpty else { return [] }
+  public func find(
+    _ query: String, caseSensitive: Bool = false, includeHidden: Bool = false, limit: Int = .max
+  ) -> [FindMatch] {
+    guard !query.isEmpty, limit > 0 else { return [] }
     let options: NSString.CompareOptions =
       caseSensitive ? [.diacriticInsensitive] : [.caseInsensitive, .diacriticInsensitive]
     let text = prepared.text
     var matches: [FindMatch] = []
     var search = NSRange(location: 0, length: text.length)
-    while search.length > 0 {
+    while search.length > 0, matches.count < limit {
       let found = text.range(of: query, options: options, range: search)
       if found.location == NSNotFound || found.length == 0 { break }
       let range = found.location..<(found.location + found.length)
       if !hiddenRanges.contains(where: { $0.overlaps(range) }) {
         matches.append(FindMatch(range: range, rects: rects(for: range)))
+      } else if includeHidden {
+        matches.append(FindMatch(range: range, rects: []))
       }
       let next = found.location + found.length
       search = NSRange(location: next, length: text.length - next)
     }
     return matches
+  }
+
+  public func collapsedDetails(containing offset: Int) -> [BlockID] {
+    prepared.detailsBlocks.filter { id in
+      !expandedDetails.contains(id) && (prepared.detailsBody(id)?.contains(offset) ?? false)
+    }
   }
 
   public func anchorPosition(_ fragment: String) -> AnchorPosition? {

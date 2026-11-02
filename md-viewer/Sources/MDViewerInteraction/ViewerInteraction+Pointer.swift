@@ -41,9 +41,10 @@ extension ViewerInteraction {
       return pressed(at: pane, extend: mouse.modifiers.contains(.shift), now: now)
     case .motion:
       if mouse.button == 0, press != nil { return dragged(to: pane, now: now) }
+      if mouse.button == 3, press != nil { return released(at: now) + hovered(at: pane) }
       return hovered(at: pane)
     case .release:
-      guard press != nil else { return [] }
+      guard press != nil, mouse.button == 0 else { return [] }
       return released(at: now)
     }
   }
@@ -66,7 +67,7 @@ extension ViewerInteraction {
     if let last = clicks, now >= last.time, now - last.time <= timing.multiClickNanoseconds,
       abs(last.point.x - pane.x) <= dragThreshold * 2, abs(last.point.y - pane.y) <= dragThreshold * 2
     {
-      count = last.count % 3 + 1
+      count = min(last.count + 1, 3)
     }
     clicks = ClickRecord(time: now, point: pane, count: count)
     let hit = layout.hit(page)
@@ -74,7 +75,34 @@ extension ViewerInteraction {
     if case .task = target { target = nil }
     let before = overlay.selection
     press = Press(kind: .content(target: target, region: hit.region), start: pane, selectionBefore: before)
-    guard let position = hit.position?.offset else { return [] }
+    let focusEffects = setFocus(
+      clickedFocusable(at: page, target: target, position: hit.position?.offset), fromPointer: true)
+    guard let position = hit.position?.offset else { return focusEffects }
+    return focusEffects + selectionPress(at: position, count: count, extend: extend, in: layout)
+  }
+
+  func clickedFocusable(at page: CGPoint, target: HitTarget?, position: Int?) -> Focusable? {
+    guard let layout else { return nil }
+    switch target {
+    case .link(let href):
+      if let position, let link = layout.prepared.links.first(where: { $0.range.contains(position) && $0.href == href })
+      {
+        return .link(link.range, href: href)
+      }
+    case .detailsToggle(let id): return .details(id)
+    case .copyCode(let id, _): return .codeBlock(id)
+    default: break
+    }
+    if let block = codeBlock(at: page) { return .codeBlock(block) }
+    if let region = layout.regions.first(where: { $0.kind == .table && $0.maxOffset > 0 && $0.rect.contains(page) }) {
+      return .table(region.id)
+    }
+    return nil
+  }
+
+  mutating func selectionPress(at position: Int, count: Int, extend: Bool, in layout: PageLayout)
+    -> [InteractionEffect]
+  {
     if extend, let anchor = selectionAnchor {
       press?.selecting = true
       press?.moved = true
@@ -189,10 +217,11 @@ extension ViewerInteraction {
     if !current.moved, let target, clicks?.count == 1 {
       return activate(target, at: now)
     }
-    if current.selecting, copyOnSelect, let selection = overlay.selection, !selection.isEmpty,
+    if current.selecting, let selection = overlay.selection, !selection.isEmpty,
       selection != current.selectionBefore
     {
-      return copySelection(markdown: false, at: now)
+      copyOnSelect = environment.copyOnSelect()
+      if copyOnSelect { return copySelection(markdown: false, at: now) }
     }
     return []
   }
@@ -288,6 +317,13 @@ extension ViewerInteraction {
     return merged
   }
 
+  mutating func selectAll() -> [InteractionEffect] {
+    guard let length = layout?.prepared.text.length, length > 0 else { return [] }
+    selectionAnchor = 0..<0
+    granularity = .character
+    return setSelection(0..<length)
+  }
+
   // MARK: Copy
 
   mutating func copySelection(markdown: Bool, at now: UInt64) -> [InteractionEffect] {
@@ -330,8 +366,14 @@ extension ViewerInteraction {
     let updated = layout.settingScrollOffset(value, for: id)
     guard updated.region(id)?.offset != region.offset else { return [] }
     self.layout = updated
-    overlay.findMatches = overlay.findMatches.map { FindMatch(range: $0.range, rects: updated.rects(for: $0.range)) }
-    return [.layoutChanged, .redraw(region.rect)]
+    if let span = regionRanges[id] {
+      for index in overlay.findMatches.indices where overlay.findMatches[index].range.overlaps(span) {
+        let range = overlay.findMatches[index].range
+        if updated.hiddenRanges.contains(where: { $0.overlaps(range) }) { continue }
+        overlay.findMatches[index].rects = updated.rects(for: range)
+      }
+    }
+    return [.regionScrolled(id, offset: updated.region(id)?.offset ?? 0), .redraw(region.rect)]
   }
 
   mutating func revealHorizontally(_ range: Range<Int>, in id: BlockID) -> [InteractionEffect] {

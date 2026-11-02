@@ -320,10 +320,12 @@ public struct InputParser {
     default: break
     }
     guard code >= 0x20, !(0xe000...0xf8ff).contains(code), let scalar = UnicodeScalar(code) else { return nil }
+    guard bits & 2 == 0 else { return nil }
     let character = Character(scalar)
-    if command { return .command(Character(character.lowercased())) }
-    if control { return .ctrl(Character(character.lowercased())) }
-    return .char(shift ? Character(character.uppercased()) : character)
+    func single(_ text: String) -> Character { text.count == 1 ? Character(text) : character }
+    if command { return .command(single(character.lowercased())) }
+    if control { return .ctrl(single(character.lowercased())) }
+    return .char(shift ? single(character.uppercased()) : character)
   }
 
   private func decodeMouse(_ params: String, final: UInt8) -> InputEvent? {

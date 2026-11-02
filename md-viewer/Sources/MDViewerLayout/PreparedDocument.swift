@@ -63,6 +63,10 @@ public final class PreparedDocument: @unchecked Sendable {
 
   public var anchorNames: Set<String> { Set(anchorAncestors.keys) }
 
+  public var detailsBlocks: [BlockID] { detailsBodies.keys.sorted() }
+
+  public func detailsBody(_ id: BlockID) -> Range<Int>? { detailsBodies[id] }
+
   static func lines(_ source: String) -> [String] {
     var lines: [String] = []
     var current = String.UnicodeScalarView()

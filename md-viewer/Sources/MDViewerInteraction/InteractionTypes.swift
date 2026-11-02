@@ -9,6 +9,7 @@ public enum InteractionEffect: Equatable {
   case redrawAll
   case scroll(to: CGFloat)
   case layoutChanged
+  case regionScrolled(BlockID, offset: CGFloat)
   case requestLayout(LayoutRequest)
   case writeClipboard(String)
   case loadDocument(URL)

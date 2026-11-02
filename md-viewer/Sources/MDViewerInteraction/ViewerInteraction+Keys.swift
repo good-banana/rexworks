@@ -16,11 +16,15 @@ extension ViewerInteraction {
   var lineStep: CGFloat { CGFloat(Self.lineRows) * max(geometry.rowHeight, 1) }
 
   var focusedRegion: BlockID? {
+    let id: BlockID
     switch focus {
-    case .codeBlock(let id): layout?.region(id).flatMap { $0.maxOffset > 0 ? id : nil }
-    case .table(let id): id
-    default: nil
+    case .codeBlock(let block), .table(let block): id = block
+    default: return nil
     }
+    guard let region = layout?.region(id), region.maxOffset > 0,
+      region.rect.maxY > offset, region.rect.minY < offset + geometry.contentHeight
+    else { return nil }
+    return id
   }
 
   mutating func handle(key: Key, at now: UInt64) -> [InteractionEffect] {
@@ -58,6 +62,7 @@ extension ViewerInteraction {
     case .char("n"): return stepMatch(forward: true, at: now)
     case .char("N"): return stepMatch(forward: false, at: now)
     case .char("y"), .command("c"): return copySelection(markdown: false, at: now)
+    case .command("a"): return selectAll()
     case .char("Y"): return copySelection(markdown: true, at: now)
     case .char("c"):
       guard case .codeBlock(let id) = focus else { return [] }
@@ -80,7 +85,8 @@ extension ViewerInteraction {
   mutating func setZoom(_ level: CGFloat, at now: UInt64) -> [InteractionEffect] {
     let clamped = min(max(level, ZoomSteps.levels[0]), ZoomSteps.levels[ZoomSteps.levels.count - 1])
     guard clamped != zoom, layout != nil else { return [] }
-    let ratio = clamped / zoom
+    let shown = layout?.prepared.typography.zoom ?? zoom
+    let ratio = clamped / shown
     let anchor = topAnchor(ratio: ratio)
     zoom = clamped
     let offsets = (layout?.scrollOffsets ?? [:]).mapValues { $0 * ratio }
@@ -93,7 +99,9 @@ extension ViewerInteraction {
   func focusables(in page: PageLayout) -> [Focusable] {
     var items: [(CGRect, Focusable)] = []
     for link in page.prepared.links where !page.hiddenRanges.contains(where: { $0.overlaps(link.range) }) {
-      if let rect = page.rects(for: link.range).first?.rect { items.append((rect, .link(link.range, href: link.href))) }
+      if let first = page.rects(for: link.range, scrolled: false).first {
+        items.append((first.rect, .link(link.range, href: link.href)))
+      }
     }
     for area in page.targets {
       switch area.target {
@@ -122,7 +130,8 @@ extension ViewerInteraction {
   func rect(for item: Focusable, in page: PageLayout) -> CGRect? {
     switch item {
     case .link(let range, _):
-      return page.rects(for: range).map(\.rect).reduce(nil) { $0?.union($1) ?? $1 }
+      return page.rects(for: range, scrolled: false).map { page.displayRect($0.rect, region: $0.region) }
+        .reduce(nil) { $0?.union($1) ?? $1 }
     case .details(let id):
       return page.targets.first { $0.target == .detailsToggle(id) }?.rect
     case .codeBlock(let id):
@@ -138,25 +147,27 @@ extension ViewerInteraction {
     return rect.insetBy(dx: -pad, dy: -pad)
   }
 
-  mutating func setFocus(_ item: Focusable?) -> [InteractionEffect] {
-    guard item != focus, let layout else { return [] }
-    var effects = [focusRedrawRect(focus, in: layout), focusRedrawRect(item, in: layout)].compactMap { $0 }.map {
-      InteractionEffect.redraw($0)
-    }
+  mutating func setFocus(_ item: Focusable?, fromPointer: Bool = false) -> [InteractionEffect] {
+    guard let layout else { return [] }
+    let ring = fromPointer ? nil : item.map(ring(for:))
+    guard item != focus || ring != overlay.focus else { return [] }
+    var effects: [InteractionEffect] = []
+    if overlay.focus != nil, let rect = focusRedrawRect(focus, in: layout) { effects.append(.redraw(rect)) }
+    if ring != nil, let rect = focusRedrawRect(item, in: layout) { effects.append(.redraw(rect)) }
     focus = item
-    overlay.focus = item.map(ring(for:))
-    if let item, let rect = rect(for: item, in: layout) {
-      if case .link(let range, _) = item, let region = layout.rects(for: range).first?.region ?? regionOf(range) {
+    overlay.focus = ring
+    if !fromPointer, let item {
+      if case .link(let range, _) = item, let region = regionOf(range) {
         effects += revealHorizontally(range, in: region)
       }
-      effects += reveal(rect)
+      if let rect = rect(for: item, in: self.layout ?? layout) { effects += reveal(rect) }
     }
     effects.append(.redrawStatusBar)
     return effects
   }
 
   func regionOf(_ range: Range<Int>) -> BlockID? {
-    layout?.fragments.first { $0.range.overlaps(range) && $0.region != nil }?.region
+    regionRanges.first { $0.value.overlaps(range) }?.key
   }
 
   mutating func moveFocus(forward: Bool) -> [InteractionEffect] {
@@ -235,7 +246,30 @@ extension ViewerInteraction {
     let rects = matchRects(overlay.findMatches)
     overlay.findMatches = []
     overlay.currentMatch = nil
-    return rects.map { .redraw($0) } + [.redrawStatusBar]
+    return redraws(rects) + [.redrawStatusBar]
+  }
+
+  static let findLimit = 5000
+  static let maximumBandRedraws = 24
+
+  func redraws(_ bands: [CGRect]) -> [InteractionEffect] {
+    let visible = CGRect(x: 0, y: offset, width: geometry.width, height: geometry.contentHeight)
+    let shown = bands.filter { $0.intersects(visible) }
+    if shown.count > Self.maximumBandRedraws { return [.redrawAll] }
+    return shown.map { .redraw($0) }
+  }
+
+  func runFind(_ query: String, in layout: PageLayout) -> [FindMatch] {
+    layout.find(query, caseSensitive: Self.isCaseSensitive(query), includeHidden: true, limit: Self.findLimit)
+  }
+
+  func matchTop(_ range: Range<Int>, in layout: PageLayout) -> CGFloat {
+    layout.rects(for: range, scrolled: false).first?.rect.minY ?? lineTop(near: range.lowerBound, in: layout) ?? 0
+  }
+
+  var findCount: String {
+    let count = overlay.findMatches.count
+    return count >= Self.findLimit ? "\(count)+" : "\(count)"
   }
 
   func matchRects(_ matches: [FindMatch]) -> [CGRect] {
@@ -261,14 +295,13 @@ extension ViewerInteraction {
     findQuery = query
     overlay.findMatches = []
     overlay.currentMatch = nil
-    guard let layout, !query.isEmpty else { return old.map { .redraw($0) } + [.redrawStatusBar] }
-    overlay.findMatches = layout.find(query, caseSensitive: Self.isCaseSensitive(query))
+    guard let layout, !query.isEmpty else { return redraws(old) + [.redrawStatusBar] }
+    overlay.findMatches = runFind(query, in: layout)
     let top = findBefore?.offset ?? offset
     if !overlay.findMatches.isEmpty {
-      overlay.currentMatch =
-        overlay.findMatches.firstIndex { ($0.rects.first?.rect.minY ?? -1) >= top } ?? 0
+      overlay.currentMatch = overlay.findMatches.firstIndex { matchTop($0.range, in: layout) >= top } ?? 0
     }
-    var effects: [InteractionEffect] = (old + matchRects(overlay.findMatches)).map { .redraw($0) }
+    var effects = redraws(old + matchRects(overlay.findMatches))
     effects += revealCurrentMatch()
     effects.append(.redrawStatusBar)
     return effects
@@ -276,7 +309,7 @@ extension ViewerInteraction {
 
   mutating func refreshFind(keepingNear location: Int?) {
     guard let layout, let query = findQuery, !query.isEmpty else { return }
-    overlay.findMatches = layout.find(query, caseSensitive: Self.isCaseSensitive(query))
+    overlay.findMatches = runFind(query, in: layout)
     guard !overlay.findMatches.isEmpty else {
       overlay.currentMatch = nil
       return
@@ -296,9 +329,7 @@ extension ViewerInteraction {
     guard !overlay.findMatches.isEmpty else { return show("No matches", kind: .find, at: now) }
     let old = overlay.currentMatch
     overlay.currentMatch = cycle(from: overlay.currentMatch, count: overlay.findMatches.count, forward: forward)
-    var effects = matchRects([old, overlay.currentMatch].compactMap { $0 }.map { overlay.findMatches[$0] }).map {
-      InteractionEffect.redraw($0)
-    }
+    var effects = redraws(matchRects([old, overlay.currentMatch].compactMap { $0 }.map { overlay.findMatches[$0] }))
     effects += revealCurrentMatch()
     effects.append(.redrawStatusBar)
     return effects
@@ -307,6 +338,12 @@ extension ViewerInteraction {
   mutating func revealCurrentMatch() -> [InteractionEffect] {
     guard let index = overlay.currentMatch, overlay.findMatches.indices.contains(index) else { return [] }
     let range = overlay.findMatches[index].range
+    if let layout {
+      let collapsed = layout.collapsedDetails(containing: range.lowerBound)
+      if !collapsed.isEmpty {
+        return requestLayout(expanded: .some(layout.expandedDetails.union(collapsed)), anchor: .revealMatch)
+      }
+    }
     var effects: [InteractionEffect] = []
     if let region = regionOf(range) { effects += revealHorizontally(range, in: region) }
     if let rect = layout?.rects(for: range, scrolled: false).first?.rect { effects += reveal(rect, centered: true) }

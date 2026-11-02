@@ -13,6 +13,7 @@ public struct ViewerInteraction {
     case source(line: Int, text: String, delta: CGFloat)
     case fragment(String)
     case offset(CGFloat)
+    case revealMatch
   }
 
   enum Navigation {
@@ -58,6 +59,8 @@ public struct ViewerInteraction {
   struct ReloadState {
     var selectionText: String?
     var selection: Range<Int>?
+    var regionOffsets: [BlockIdentity: CGFloat] = [:]
+    var focus: BlockIdentity?
   }
 
   public var environment: InteractionEnvironment
@@ -95,6 +98,7 @@ public struct ViewerInteraction {
   var regionWheel = WheelAccelerator()
   var findBefore: (query: String?, offset: CGFloat)?
   var codeFrames: [BlockID: CGRect] = [:]
+  var regionRanges: [BlockID: Range<Int>] = [:]
 
   public init(geometry: ViewGeometry, typography: Typography, environment: InteractionEnvironment) {
     self.geometry = geometry
@@ -130,7 +134,7 @@ public struct ViewerInteraction {
       shown =
         overlay.findMatches.isEmpty
         ? StatusMessage("No matches", kind: .find)
-        : StatusMessage("\((overlay.currentMatch ?? 0) + 1)/\(overlay.findMatches.count)", kind: .find)
+        : StatusMessage("\((overlay.currentMatch ?? 0) + 1)/\(findCount)", kind: .find)
       if findQuery.isEmpty { shown = nil }
     }
     var hint: String?
@@ -182,9 +186,21 @@ public struct ViewerInteraction {
     guard file != nil else { return [] }
     self.source = source
     let selected = overlay.selection.flatMap { range in layout.map { $0.plainText(range) } }
-    reloadState = ReloadState(selectionText: selected, selection: overlay.selection)
+    var state = ReloadState(selectionText: selected, selection: overlay.selection)
+    var carried: CarriedDetails?
+    if let layout {
+      let details = BlockIdentity.details(in: layout.prepared)
+      carried = CarriedDetails(
+        expanded: Set(layout.expandedDetails.compactMap { details[$0] }), known: Set(details.values))
+      let regions = BlockIdentity.regions(in: layout)
+      for region in layout.regions where region.offset > 0 {
+        if let identity = regions[region.id] { state.regionOffsets[identity] = region.offset }
+      }
+      state.focus = focus.flatMap { identity(of: $0, in: layout) }
+    }
+    reloadState = state
     let anchor = sourceAnchor() ?? .offset(offset)
-    return requestLayout(source: source, anchor: anchor)
+    return requestLayout(source: source, offsets: [:], carried: carried, anchor: anchor)
   }
 
   public mutating func loadFailed(_ url: URL, reason: String, at now: UInt64 = 0) -> [InteractionEffect] {
@@ -215,7 +231,7 @@ public struct ViewerInteraction {
 
   mutating func requestLayout(
     source newSource: String? = nil, expanded: Set<BlockID>?? = nil, offsets: [BlockID: CGFloat]? = nil,
-    anchor: PendingAnchor, keepAnchor: Bool = false
+    carried: CarriedDetails? = nil, anchor: PendingAnchor, keepAnchor: Bool = false
   ) -> [InteractionEffect] {
     generation += 1
     if !(keepAnchor && pendingAnchor != nil) { pendingAnchor = anchor }
@@ -227,7 +243,8 @@ public struct ViewerInteraction {
       generation: generation, source: newSource ?? current?.source ?? (reuse == nil ? source : nil), reuse: reuse,
       typography: typography, width: geometry.width,
       expandedDetails: expanded ?? current?.expandedDetails ?? layout?.expandedDetails,
-      scrollOffsets: offsets ?? current?.scrollOffsets ?? layout?.scrollOffsets ?? [:])
+      scrollOffsets: offsets ?? current?.scrollOffsets ?? layout?.scrollOffsets ?? [:],
+      carriedDetails: carried ?? (newSource == nil ? current?.carriedDetails : nil))
     pendingRequest = request
     return [.requestLayout(request)]
   }
@@ -238,8 +255,24 @@ public struct ViewerInteraction {
     guard request.generation == generation else { return [] }
     pendingRequest = nil
     let previous = layout
+    var page = page
+    if let previous, previous.prepared === page.prepared {
+      for region in previous.regions where region.offset != (request.scrollOffsets[region.id] ?? 0) {
+        page = page.settingScrollOffset(region.offset, for: region.id)
+      }
+    }
+    if let state = reloadState, request.carriedDetails != nil {
+      let regions = BlockIdentity.regions(in: page)
+      for (id, identity) in regions {
+        if let value = state.regionOffsets[identity] { page = page.settingScrollOffset(value, for: id) }
+      }
+      let ringShown = overlay.focus != nil
+      focus = state.focus.flatMap { focusable(for: $0, in: page) }
+      overlay.focus = ringShown ? focus.map(ring(for:)) : nil
+    }
     layout = page
     codeFrames = Self.codeBlockFrames(in: page)
+    regionRanges = Self.regionRanges(in: page)
     var target = offset
     var effects: [InteractionEffect] = [.layoutChanged]
     switch pendingAnchor {
@@ -259,17 +292,63 @@ public struct ViewerInteraction {
       }
     case .offset(let value):
       target = value
-    case nil:
+    case .revealMatch, nil:
       break
     }
+    let revealing = pendingAnchor == .revealMatch
     pendingAnchor = nil
     restoreSelection(previous: previous, page: page)
     refreshFind(keepingNear: overlay.currentMatch.map { overlay.findMatches[$0].range.lowerBound })
     refreshFocus(page)
+    if revealing {
+      offset = snapped(target)
+      effects += revealCurrentMatch()
+      target = offset
+    }
     if let block = overlay.copyButton?.block, page.prepared.codeBlocks[block] == nil { overlay.copyButton = nil }
     effects += setOffset(target, force: true)
     effects.append(.redrawAll)
     return effects
+  }
+
+  static func regionRanges(in page: PageLayout) -> [BlockID: Range<Int>] {
+    var spans: [BlockID: Range<Int>] = [:]
+    for fragment in page.fragments {
+      guard let region = fragment.region else { continue }
+      let span = spans[region] ?? fragment.range
+      spans[region] = min(span.lowerBound, fragment.range.lowerBound)..<max(span.upperBound, fragment.range.upperBound)
+    }
+    return spans
+  }
+
+  func identity(of item: Focusable, in page: PageLayout) -> BlockIdentity? {
+    switch item {
+    case .details(let id): BlockIdentity.details(in: page.prepared)[id]
+    case .codeBlock(let id):
+      BlockIdentity.numbered(
+        page.prepared.codeBlocks.filter { !$0.value.isDiagram }.map { ($0.key, .code, $0.value.code) })[id]
+    case .table(let id): BlockIdentity.regions(in: page)[id]
+    case .link(let range, _): BlockIdentity.links(in: page)[range]
+    }
+  }
+
+  func focusable(for identity: BlockIdentity, in page: PageLayout) -> Focusable? {
+    switch identity.kind {
+    case .details:
+      return BlockIdentity.details(in: page.prepared).first { $0.value == identity }.map { .details($0.key) }
+    case .code:
+      let blocks = page.prepared.codeBlocks.filter { !$0.value.isDiagram }.map {
+        ($0.key, BlockIdentity.Kind.code, $0.value.code)
+      }
+      return BlockIdentity.numbered(blocks).first { $0.value == identity }.map { .codeBlock($0.key) }
+    case .table:
+      return BlockIdentity.regions(in: page).first { $0.value == identity }.map { .table($0.key) }
+    case .link:
+      guard let range = BlockIdentity.links(in: page).first(where: { $0.value == identity })?.key,
+        let link = page.prepared.links.first(where: { $0.range == range })
+      else { return nil }
+      return .link(range, href: link.href)
+    }
   }
 
   static func codeBlockFrames(in page: PageLayout) -> [BlockID: CGRect] {
@@ -322,7 +401,7 @@ public struct ViewerInteraction {
     if !focusables(in: page).contains(current) {
       focus = nil
       overlay.focus = nil
-    } else {
+    } else if overlay.focus != nil {
       overlay.focus = ring(for: current)
     }
   }

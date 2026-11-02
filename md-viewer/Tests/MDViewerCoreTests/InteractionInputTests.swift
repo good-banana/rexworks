@@ -26,6 +26,12 @@ final class InteractionInputTests: XCTestCase {
     XCTAssertEqual(events("\u{1b}[99:67;9u"), [.key(.command("c"))], "alternate key fields are ignored")
     XCTAssertEqual(events("\u{1b}[57399u"), [], "private-use functional keys are dropped")
     XCTAssertEqual(events("\u{1b}[?1u"), [], "a flags reply is not a key")
+    XCTAssertEqual(events("\u{1b}[113;5u"), [.key(.ctrl("q"))])
+    XCTAssertEqual(
+      events("\u{1b}[1;5A\u{1b}[1;2B\u{1b}[1;5C\u{1b}[1;3D"), [.key(.up), .key(.down), .key(.right), .key(.left)])
+    XCTAssertEqual(events("\u{1b}[5;5~"), [.key(.pageUp)])
+    XCTAssertEqual(events("\u{1b}[106;3u"), [], "Alt plus a key is not the bare key")
+    XCTAssertEqual(events("\u{1b}[223;2u"), [.key(.char("\u{df}"))], "multi-character uppercase keeps the key")
   }
 
   func testModifyOtherKeys() {
@@ -50,7 +56,11 @@ final class InteractionInputTests: XCTestCase {
   func testInteractionSequences() {
     XCTAssertEqual(TerminalSequences.enableMouseMotion, "\u{1b}[?1003h")
     XCTAssertEqual(TerminalSequences.enableKeyboardDisambiguation, "\u{1b}[>1u")
-    XCTAssertTrue(TerminalSequences.restore.hasPrefix("\u{1b}[?2031l\u{1b}[<u\u{1b}[?1003l"))
+    XCTAssertEqual(TerminalSequences.enableShiftCapture, "\u{1b}[>1s")
+    let restore = TerminalSequences.restore
+    let shiftReset = restore.range(of: "\u{1b}[>0s")!
+    XCTAssertLessThan(shiftReset.lowerBound, restore.range(of: "\u{1b}[?1049l")!.lowerBound)
+    XCTAssertTrue(TerminalSequences.restore.hasPrefix("\u{1b}[?2031l\u{1b}[<u\u{1b}[>0s\u{1b}[?1003l"))
   }
 }
 

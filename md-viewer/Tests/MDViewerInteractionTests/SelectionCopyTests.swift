@@ -45,7 +45,10 @@ final class SelectionTests: XCTestCase {
     XCTAssertEqual(h.model.selection.map { h.layout.plainText($0) }, "Second paragraph here.")
     h.mouse(.release, at: point)
     h.click(point, advance: 100_000_000)
-    XCTAssertNil(h.model.selection, "a fourth click starts over")
+    XCTAssertEqual(
+      h.model.selection.map { h.layout.plainText($0) }, "Second paragraph here.", "a fourth click stays at the block")
+    h.click(point, advance: second)
+    XCTAssertNil(h.model.selection, "a later click starts over")
   }
 
   func testShiftClickExtendsFromTheAnchor() {
@@ -105,10 +108,11 @@ final class SelectionTests: XCTestCase {
 
   func testEscapePriorityFindThenSelectionThenFocus() {
     var h = Harness("[link](#x) alpha beta alpha\n\n# X")
-    h.key(.tab)
     h.click(h.point(of: "beta"))
     h.click(h.point(of: "beta"), advance: 100_000_000)
     XCTAssertNotNil(h.model.selection)
+    h.key(.tab)
+    XCTAssertNotNil(h.model.focus)
     h.key(.char("/"))
     h.keys("alpha")
     XCTAssertEqual(h.model.overlay.findMatches.count, 2)
@@ -170,14 +174,13 @@ final class CopyTests: XCTestCase {
 
     h.system.copyOnSelect = false
     select(&h, from: "Next", to: "line")
-    XCTAssertEqual(h.clipboard.count, 2, "the preference is read at start and on r only")
-    h.key(.char("r"))
+    XCTAssertEqual(h.clipboard.count, 1, "the preference is re-read on each selection release")
     XCTAssertFalse(h.model.copyOnSelect)
-    select(&h, from: "Some", to: "words")
-    XCTAssertEqual(h.clipboard.count, 2)
     h.system.copyOnSelect = true
     h.key(.char("r"))
-    XCTAssertTrue(h.model.copyOnSelect)
+    XCTAssertTrue(h.model.copyOnSelect, "and on r")
+    select(&h, from: "Some", to: "words")
+    XCTAssertEqual(h.clipboard.count, 2)
   }
 
   func testReloadKeyAsksTheHostToReload() {

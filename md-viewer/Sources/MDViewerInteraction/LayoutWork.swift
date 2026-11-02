@@ -10,13 +10,14 @@ public struct LayoutRequest: Equatable, @unchecked Sendable {
   public var width: CGFloat
   public var expandedDetails: Set<BlockID>?
   public var scrollOffsets: [BlockID: CGFloat]
+  public var carriedDetails: CarriedDetails?
 
   public var preparesAgain: Bool { source != nil || reuse == nil }
 
   public static func == (lhs: LayoutRequest, rhs: LayoutRequest) -> Bool {
     lhs.generation == rhs.generation && lhs.source == rhs.source && lhs.reuse === rhs.reuse
       && lhs.typography == rhs.typography && lhs.width == rhs.width && lhs.expandedDetails == rhs.expandedDetails
-      && lhs.scrollOffsets == rhs.scrollOffsets
+      && lhs.scrollOffsets == rhs.scrollOffsets && lhs.carriedDetails == rhs.carriedDetails
   }
 
   public func perform(_ providers: LayoutProviders = LayoutProviders()) -> PageLayout {
@@ -30,7 +31,8 @@ public struct LayoutRequest: Equatable, @unchecked Sendable {
     }
     return prepared.layout(
       LayoutInput(
-        width: width, expandedDetails: expandedDetails ?? prepared.initiallyExpandedDetails,
+        width: width,
+        expandedDetails: carriedDetails?.resolve(prepared) ?? expandedDetails ?? prepared.initiallyExpandedDetails,
         prefersDark: providers.prefersDark, scrollOffsets: scrollOffsets, imageSize: providers.imageSize,
         diagramSize: providers.diagramSize))
   }
@@ -63,18 +65,25 @@ public final class LayoutWorker: @unchecked Sendable {
   private final class JobQueue: @unchecked Sendable {
     let condition = NSCondition()
     var jobs: [() -> Void] = []
+    var latest: (generation: Int, job: () -> Void)?
+    var newestGeneration = Int.min
     var stopped = false
 
     func run() {
       while true {
         condition.lock()
-        while jobs.isEmpty && !stopped { condition.wait() }
-        if jobs.isEmpty {
-          condition.unlock()
-          return
+        while jobs.isEmpty && latest == nil && !stopped { condition.wait() }
+        let job: (() -> Void)?
+        if !jobs.isEmpty {
+          job = jobs.removeFirst()
+        } else if let pending = latest {
+          latest = nil
+          job = pending.generation >= newestGeneration ? pending.job : {}
+        } else {
+          job = nil
         }
-        let job = jobs.removeFirst()
         condition.unlock()
+        guard let job else { return }
         job()
       }
     }
@@ -88,9 +97,25 @@ public final class LayoutWorker: @unchecked Sendable {
       return true
     }
 
+    func replaceLatest(generation: Int, _ job: @escaping () -> Void) {
+      condition.lock()
+      defer { condition.unlock() }
+      guard !stopped, generation >= newestGeneration else { return }
+      newestGeneration = generation
+      latest = (generation, job)
+      condition.signal()
+    }
+
+    func isCurrent(_ generation: Int) -> Bool {
+      condition.lock()
+      defer { condition.unlock() }
+      return generation >= newestGeneration
+    }
+
     func stop() {
       condition.lock()
       stopped = true
+      latest = nil
       condition.broadcast()
       condition.unlock()
     }
@@ -128,7 +153,13 @@ public final class LayoutWorker: @unchecked Sendable {
   public func layout(
     _ request: LayoutRequest, providers: LayoutProviders, completion: @escaping @Sendable (PageLayout) -> Void
   ) {
-    submit { completion(request.perform(providers)) }
+    let queue = self.queue
+    queue.replaceLatest(generation: request.generation) {
+      guard queue.isCurrent(request.generation) else { return }
+      let page = request.perform(providers)
+      guard queue.isCurrent(request.generation) else { return }
+      completion(page)
+    }
   }
 
   public func stop() { queue.stop() }
