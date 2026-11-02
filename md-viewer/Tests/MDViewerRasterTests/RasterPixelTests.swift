@@ -87,7 +87,7 @@ final class RasterPixelTests: XCTestCase {
     assertColor(bitmap.pixel(x: 400, y: 1), dark.progressFill, "thumb")
     assertColor(bitmap.pixel(x: 100, y: 1), dark.progressTrack, "track before")
     assertColor(bitmap.pixel(x: 700, y: 1), dark.progressTrack, "track after")
-    assertColor(bitmap.pixel(x: 600, y: 25), dark.statusBarBackground, "background")
+    assertColor(bitmap.pixel(x: 250, y: 25), dark.statusBarBackground, "background")
   }
 
   func testViewportPlacesStatusBarAtBottom() throws {

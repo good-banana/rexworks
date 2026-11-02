@@ -77,7 +77,42 @@ public struct StatusBar {
     return rows * cellPixelHeight
   }
 
+  public static let keyHints = "/ find   q quit   ? keys"
+
   private func points(_ value: CGFloat) -> CGFloat { value * backingScale }
+
+  struct Metrics {
+    var body: CGRect
+    var fontSize: CGFloat
+    var padding: CGFloat
+    var gap: CGFloat
+    var refresh: CGRect
+    var hintFont: CTFont
+    var hints: TextLine
+    var hintsX: CGFloat
+  }
+
+  func metrics(in rect: CGRect) -> Metrics {
+    let trackHeight = max(points(2).rounded(), 1)
+    let body = CGRect(x: rect.minX, y: rect.minY + trackHeight, width: rect.width, height: rect.height - trackHeight)
+    let fontSize = min(max(body.height * 0.5, points(11)), points(13))
+    let padding = points(10)
+    let size = max(min(body.height - points(4), fontSize * 1.6), 1)
+    let refresh = CGRect(
+      x: rect.maxX - padding - size, y: (body.midY - size / 2).rounded(), width: size, height: size)
+    let hintFont = NSFont.systemFont(ofSize: fontSize * 0.92, weight: .regular) as CTFont
+    let hints = TextLine(Self.keyHints, font: hintFont)
+    return Metrics(
+      body: body, fontSize: fontSize, padding: padding, gap: points(12), refresh: refresh, hintFont: hintFont,
+      hints: hints, hintsX: refresh.minX - points(8) - hints.width)
+  }
+
+  public func refreshButton(in rect: CGRect) -> CGRect { metrics(in: rect).refresh }
+
+  public func keyHintsRect(in rect: CGRect) -> CGRect {
+    let metrics = metrics(in: rect)
+    return CGRect(x: metrics.hintsX, y: metrics.body.minY, width: metrics.hints.width, height: metrics.body.height)
+  }
 
   public func draw(_ content: StatusBarContent, in rect: CGRect, bitmap: RasterBitmap) {
     let context = bitmap.context
@@ -106,17 +141,22 @@ public struct StatusBar {
       CGPath(roundedRect: thumb, cornerWidth: trackHeight / 2, cornerHeight: trackHeight / 2, transform: nil))
     context.fillPath()
 
-    let body = CGRect(x: rect.minX, y: rect.minY + trackHeight, width: rect.width, height: rect.height - trackHeight)
-    let fontSize = min(max(body.height * 0.5, points(11)), points(13))
-    let padding = points(10)
-    let gap = points(12)
+    let metrics = metrics(in: rect)
+    let body = metrics.body
+    let fontSize = metrics.fontSize
+    let padding = metrics.padding
+    let gap = metrics.gap
     let textColor = palette.statusBarText
     func baseline(_ line: TextLine) -> CGFloat { (body.midY + (line.ascent - line.descent) / 2).rounded() }
 
-    var right = rect.maxX - padding
+    drawRefresh(in: metrics.refresh, context: context)
+    context.setFillColor(palette.statusHintText.cgColor)
+    metrics.hints.draw(in: context, at: CGPoint(x: metrics.hintsX, y: baseline(metrics.hints)))
+    var right = metrics.hintsX - gap
     if let message = content.message {
       let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .medium) as CTFont
-      let line = TextLine(message.text, font: font, truncateTo: rect.width * 0.4)
+      let line = TextLine(
+        message.text, font: font, truncateTo: max(min(rect.width * 0.4, right - rect.minX - padding - points(40)), 0))
       let color: RGB =
         switch message.kind {
         case .info, .find: textColor
@@ -194,7 +234,7 @@ public struct StatusBar {
       let separator = TextLine(" \u{203A} ", font: folderFont)
       let folderRoom = available - name.width - separator.width
       if folderRoom >= points(24) {
-        let folderLine = TextLine(folder, font: folderFont, truncateTo: folderRoom, truncation: .start)
+        let folderLine = TextLine(folder, font: folderFont, truncateTo: folderRoom, truncation: .middle)
         context.setFillColor(palette.statusMutedText.cgColor)
         folderLine.draw(in: context, at: CGPoint(x: x, y: baseline(folderLine)))
         x += folderLine.width
@@ -208,12 +248,32 @@ public struct StatusBar {
     x += name.width
 
     if let hint = content.hint, !hint.isEmpty {
-      let hintFont = NSFont.systemFont(ofSize: fontSize * 0.92, weight: .regular) as CTFont
-      let line = TextLine(hint, font: hintFont)
+      let line = TextLine(hint, font: metrics.hintFont)
       if line.width <= right - x - gap {
         context.setFillColor(palette.statusHintText.cgColor)
         line.draw(in: context, at: CGPoint(x: right - line.width, y: baseline(line)))
       }
     }
+  }
+
+  private func drawRefresh(in rect: CGRect, context: CGContext) {
+    let radius = rect.width * 0.3
+    let center = CGPoint(x: rect.midX, y: rect.midY)
+    let width = max(points(1.4), 1)
+    context.saveGState()
+    context.setStrokeColor(palette.statusHintText.cgColor)
+    context.setLineWidth(width)
+    context.setLineCap(.round)
+    context.addArc(center: center, radius: radius, startAngle: -.pi * 0.25, endAngle: .pi * 1.45, clockwise: false)
+    context.strokePath()
+    let tip = CGPoint(x: center.x + radius * cos(-.pi * 0.25), y: center.y + radius * sin(-.pi * 0.25))
+    let head = radius * 0.6
+    context.setFillColor(palette.statusHintText.cgColor)
+    context.move(to: CGPoint(x: tip.x + head * 0.6, y: tip.y - head * 0.2))
+    context.addLine(to: CGPoint(x: tip.x - head * 0.5, y: tip.y - head * 0.7))
+    context.addLine(to: CGPoint(x: tip.x - head * 0.1, y: tip.y + head * 0.6))
+    context.closePath()
+    context.fillPath()
+    context.restoreGState()
   }
 }

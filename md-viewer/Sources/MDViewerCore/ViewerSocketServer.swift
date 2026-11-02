@@ -38,6 +38,7 @@ func removeViewerSocketFiles() {
 public final class ViewerSocketServer: @unchecked Sendable {
   private let socketURL: URL
   private let onOpen: (URL) -> Void
+  private let onTheme: () -> Void
   private let descriptor: Int32
   private let source: DispatchSourceRead
   private let queue = DispatchQueue(label: "md-viewer.socket")
@@ -46,9 +47,12 @@ public final class ViewerSocketServer: @unchecked Sendable {
     public let description: String
   }
 
-  public init(socket: URL, onOpen: @escaping (URL) -> Void) throws {
+  public var path: URL { socketURL }
+
+  public init(socket: URL, onOpen: @escaping (URL) -> Void, onTheme: @escaping () -> Void = {}) throws {
     socketURL = socket
     self.onOpen = onOpen
+    self.onTheme = onTheme
     try FileManager.default.createDirectory(
       at: socket.deletingLastPathComponent(), withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
@@ -98,9 +102,11 @@ public final class ViewerSocketServer: @unchecked Sendable {
       data += buffer[0..<count]
     }
     let first = data.prefix(maxOpenMessageBytes).prefix { $0 != 10 }
-    guard let url = validateOpenMessage(String(decoding: first, as: UTF8.self), fileExists: isRegularFile)
-    else { return }
-    onOpen(url)
+    switch parseViewerMessage(String(decoding: first, as: UTF8.self), fileExists: isRegularFile) {
+    case .open(let url): onOpen(url)
+    case .theme: onTheme()
+    case nil: break
+    }
   }
 }
 

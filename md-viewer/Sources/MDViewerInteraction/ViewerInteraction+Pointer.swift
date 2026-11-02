@@ -38,7 +38,7 @@ extension ViewerInteraction {
       return scrollRegion(region, by: CGFloat(direction) * step)
     case .press:
       guard mouse.button == 0 else { return [] }
-      return pressed(at: pane, extend: mouse.modifiers.contains(.shift), now: now)
+      return pressed(at: pane, now: now)
     case .motion:
       if mouse.button == 0, press != nil { return dragged(to: pane, now: now) }
       if mouse.button == 3, press != nil { return released(at: now) + hovered(at: pane) }
@@ -51,7 +51,7 @@ extension ViewerInteraction {
 
   // MARK: Press, drag, release
 
-  mutating func pressed(at pane: CGPoint, extend: Bool, now: UInt64) -> [InteractionEffect] {
+  mutating func pressed(at pane: CGPoint, now: UInt64) -> [InteractionEffect] {
     guard let layout, pane.y >= 0, pane.y < geometry.contentHeight else { return [] }
     let page = pagePoint(pane)
     for region in layout.regions where region.maxOffset > 0 {
@@ -78,7 +78,7 @@ extension ViewerInteraction {
     let focusEffects = setFocus(
       clickedFocusable(at: page, target: target, position: hit.position?.offset), fromPointer: true)
     guard let position = hit.position?.offset else { return focusEffects }
-    return focusEffects + selectionPress(at: position, count: count, extend: extend, in: layout)
+    return focusEffects + selectionPress(at: position, count: count, in: layout)
   }
 
   func clickedFocusable(at page: CGPoint, target: HitTarget?, position: Int?) -> Focusable? {
@@ -106,14 +106,7 @@ extension ViewerInteraction {
     return nil
   }
 
-  mutating func selectionPress(at position: Int, count: Int, extend: Bool, in layout: PageLayout)
-    -> [InteractionEffect]
-  {
-    if extend, let anchor = selectionAnchor {
-      press?.selecting = true
-      press?.moved = true
-      return setSelection(extended(anchor, to: position, in: layout))
-    }
+  mutating func selectionPress(at position: Int, count: Int, in layout: PageLayout) -> [InteractionEffect] {
     switch count {
     case 2:
       granularity = .word

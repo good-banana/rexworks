@@ -39,12 +39,14 @@ enum SetupCommand {
       fail("setup failed: \(error)", status: 1)
     }
     print("md-viewer is now the default Markdown handler. Run md-viewer doctor to verify.")
+    updateFindBinding(rex: rex, install: true)
     AgentsCommand.offerInstall()
     exit(0)
   }
 
   static func uninstall() async -> Never {
     AgentsCommand.removeQuietly()
+    updateFindBinding(rex: (try? ConfigStore.load(currentPaths()))?.rexPath ?? locateExecutable("rex"), install: false)
     do {
       let failures = try await systemInstaller().uninstall()
       for failure in failures { FileHandle.standardError.write(Data((failure + "\n").utf8)) }
@@ -57,6 +59,22 @@ enum SetupCommand {
       exit(1)
     } catch {
       fail("uninstall failed: \(error)", status: 1)
+    }
+  }
+
+  static func updateFindBinding(rex: String?, install: Bool) {
+    let config = RexFindBinding.configFile(
+      environment: ProcessInfo.processInfo.environment, home: FileManager.default.homeDirectoryForCurrentUser)
+    do {
+      let changed = install ? try RexFindBinding.install(at: config) : try RexFindBinding.remove(at: config)
+      guard changed else { return }
+      if let rex { _ = try? ProcessRunner().run(rex, ["config", "reload"]) }
+      print(
+        install
+          ? "Cmd-F in md-viewer panes now opens md-viewer's find (\(config.path))."
+          : "Removed the md-viewer Cmd-F binding from \(config.path).")
+    } catch {
+      FileHandle.standardError.write(Data("could not update \(config.path): \(error.localizedDescription)\n".utf8))
     }
   }
 }

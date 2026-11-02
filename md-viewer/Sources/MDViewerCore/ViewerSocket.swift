@@ -13,6 +13,18 @@ public func validateOpenMessage(_ line: String, fileExists: (String) -> Bool) ->
   return URL(fileURLWithPath: path)
 }
 
+public enum ViewerMessage: Equatable, Sendable {
+  public static let themeCommand = "theme"
+
+  case open(URL)
+  case theme
+}
+
+public func parseViewerMessage(_ line: String, fileExists: (String) -> Bool) -> ViewerMessage? {
+  if line == ViewerMessage.themeCommand { return .theme }
+  return validateOpenMessage(line, fileExists: fileExists).map(ViewerMessage.open)
+}
+
 public func socketAddress(path: String) -> sockaddr_un? {
   var address = sockaddr_un()
   address.sun_family = sa_family_t(AF_UNIX)
@@ -26,6 +38,10 @@ public func socketAddress(path: String) -> sockaddr_un? {
 }
 
 public enum ViewerSocketClient {
+  public static func sendTheme(to socket: URL) -> Bool {
+    send(path: ViewerMessage.themeCommand, to: socket)
+  }
+
   public static func send(path: String, to socket: URL) -> Bool {
     let message = path + "\n"
     guard !path.unicodeScalars.contains("\u{0}"), message.utf8.count <= maxOpenMessageBytes,

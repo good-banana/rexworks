@@ -14,6 +14,30 @@ final class ViewerSocketTests: XCTestCase {
     XCTAssertNil(validateOpenMessage("/" + String(repeating: "a", count: 4096) + ".md", fileExists: ok))
   }
 
+  func testThemeCommandIsStrictAndPathsStillWork() {
+    let ok: (String) -> Bool = { _ in true }
+    XCTAssertEqual(parseViewerMessage("theme", fileExists: ok), .theme)
+    for line in ["theme ", " theme", "THEME", "theme\u{0}", "themes", "theme;rm"] {
+      XCTAssertNil(parseViewerMessage(line, fileExists: ok), line.debugDescription)
+    }
+    XCTAssertEqual(parseViewerMessage("/tmp/a.md", fileExists: ok), .open(URL(fileURLWithPath: "/tmp/a.md")))
+    XCTAssertNil(parseViewerMessage("/tmp/theme", fileExists: ok))
+  }
+
+  func testThemeMessagesReachTheServer() throws {
+    let dir = URL(fileURLWithPath: "/tmp").appendingPathComponent(String(UUID().uuidString.prefix(8)))
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let sock = dir.appendingPathComponent("t.sock")
+    let got = expectation(description: "theme")
+    let server = try ViewerSocketServer(
+      socket: sock, onOpen: { _ in XCTFail("not an open message") }, onTheme: { got.fulfill() })
+    defer { server.close() }
+    XCTAssertEqual(server.path, sock)
+    XCTAssertTrue(ViewerSocketClient.sendTheme(to: sock))
+    wait(for: [got], timeout: 2)
+  }
+
   func testSendWithoutServerFails() {
     let missing = URL(fileURLWithPath: "/tmp/\(UUID().uuidString.prefix(8)).sock")
     XCTAssertFalse(ViewerSocketClient.send(path: "/tmp/x.md", to: missing))

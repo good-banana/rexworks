@@ -314,6 +314,35 @@ final class ViewerHostTests: XCTestCase {
     }
   }
 
+  func testRefreshButtonReloadsTheFileAndTheTheme() throws {
+    let fixture = try HostFixture(document)
+    _ = fixture.output.take()
+    try fixture.directory.write("main.md", document + "\n\nRefreshed text.")
+    let button = fixture.host.refreshButton
+    fixture.host.receive(Array("\u{1b}[<0;\(Int(button.midX) + 1);\(Int(button.midY) + 1)M".utf8))
+    spin(until: { fixture.output.joined.contains(TerminalColorQuery.primaryDeviceAttributes) }, timeout: 1)
+    XCTAssertTrue(fixture.output.joined.contains(TerminalColorQuery.primaryDeviceAttributes), "the theme is queried")
+    spin(until: { fixture.host.interaction.layout?.prepared.source.contains("Refreshed") == true })
+    XCTAssertTrue(fixture.host.interaction.source.contains("Refreshed text."))
+    XCTAssertGreaterThanOrEqual(button.minY, CGFloat(fixture.host.transport.viewport.statusBarRect.y))
+  }
+
+  func testHelpReachesTheFrameSource() throws {
+    let fixture = try HostFixture(document)
+    fixture.host.receive(Array("?".utf8))
+    XCTAssertTrue(fixture.host.source.showsHelp)
+    fixture.host.receive(Array("x".utf8))
+    XCTAssertFalse(fixture.host.source.showsHelp)
+  }
+
+  func testThemeMessagesReresolveTheTheme() throws {
+    let fixture = try HostFixture(document)
+    _ = fixture.output.take()
+    fixture.host.themeChanged()
+    spin(until: { fixture.output.joined.contains(TerminalColorQuery.primaryDeviceAttributes) }, timeout: 1)
+    XCTAssertTrue(fixture.output.joined.contains(TerminalColorQuery.primaryDeviceAttributes))
+  }
+
   func testStoppedDrawingIsReportedAsTextAndLogged() throws {
     let fixture = try HostFixture(document)
     _ = fixture.output.take()

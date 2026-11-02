@@ -168,6 +168,11 @@ public final class ViewerHost {
     settle()
   }
 
+  public func themeChanged() {
+    requestTheme(.reload)
+    settle()
+  }
+
   public func shutdown() {
     watcher?.stop()
     watcher = nil
@@ -193,6 +198,10 @@ public final class ViewerHost {
     switch event {
     case .key, .mouse:
       if transport.isStopped { transport.resume() }
+      if case .mouse(let mouse) = event, mouse.kind == .press, mouse.button == 0, isOnRefreshButton(mouse) {
+        perform(interaction.handle(.key(.char("r")), at: now))
+        return
+      }
       perform(interaction.handle(event, at: now))
     case .colorScheme:
       if !answeringThemeQuery { requestTheme(.colorScheme) }
@@ -207,6 +216,14 @@ public final class ViewerHost {
     case .graphics(let response):
       driver.handle(response)
     }
+  }
+
+  var refreshButton: CGRect {
+    StatusBar(palette: palette, backingScale: backingScale).refreshButton(in: transport.viewport.statusBarRect.cgRect)
+  }
+
+  func isOnRefreshButton(_ mouse: MouseEvent) -> Bool {
+    refreshButton.insetBy(dx: -4, dy: -4).contains(CGPoint(x: mouse.x, y: mouse.y))
   }
 
   func apply(_ actions: [PaneSizeTracker.Action]) {
@@ -273,6 +290,7 @@ public final class ViewerHost {
   }
 
   func syncFrameSource() {
+    source.showsHelp = interaction.helpVisible
     source.overlay = interaction.overlay
     source.status = interaction.status
   }

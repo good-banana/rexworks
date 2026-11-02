@@ -48,7 +48,12 @@ enum ViewCommand {
     host.start(file: url, windowSize: size)
     retained.append(startInput(host))
     retained.append(startResizeSignal(host))
-    if let server = startControlSocket(host, paths: paths) { retained.append(server) }
+    let server = startControlSocket(host, paths: paths)
+    if let server { retained.append(server) }
+    let themeWatch = ThemeWatchService(paths: paths, ownSocket: server?.path)
+    themeWatch.onLocalChange = { host.themeChanged() }
+    themeWatch.start()
+    retained.append(themeWatch)
 
     RunLoop.main.perform {
       MainActor.assumeIsolated {
@@ -62,6 +67,7 @@ enum ViewCommand {
 
   static func quit(_ host: ViewerHost) -> Never {
     for case let server as ViewerSocketServer in retained { server.close() }
+    for case let watch as ThemeWatchService in retained { watch.stop() }
     host.shutdown()
     Terminal.restore()
     exit(0)
@@ -107,10 +113,17 @@ enum ViewCommand {
 
   nonisolated private static func startControlSocket(_ host: ViewerHost, paths: SupportPaths) -> ViewerSocketServer? {
     guard let block = ProcessInfo.processInfo.environment["REX_BLOCK"], !block.isEmpty else { return nil }
-    return try? ViewerSocketServer(socket: paths.viewerSocket(block: block)) { url in
-      DispatchQueue.main.async {
-        MainActor.assumeIsolated { host.open(url) }
-      }
-    }
+    return try? ViewerSocketServer(
+      socket: paths.viewerSocket(block: block),
+      onOpen: { url in
+        DispatchQueue.main.async {
+          MainActor.assumeIsolated { host.open(url) }
+        }
+      },
+      onTheme: {
+        DispatchQueue.main.async {
+          MainActor.assumeIsolated { host.themeChanged() }
+        }
+      })
   }
 }

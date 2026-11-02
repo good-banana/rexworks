@@ -155,6 +155,27 @@ final class LinkTests: XCTestCase {
     XCTAssertEqual(h.model.offset, before)
   }
 
+  func testQuestionMarkShowsHelpAndAnyKeyClosesIt() {
+    var h = Harness(document())
+    XCTAssertEqual(h.key(.char("?")), [.redrawAll])
+    XCTAssertTrue(h.model.helpVisible)
+    let before = h.model.offset
+    XCTAssertEqual(h.key(.char("G")), [.redrawAll], "the closing key does nothing else")
+    XCTAssertFalse(h.model.helpVisible)
+    XCTAssertEqual(h.model.offset, before)
+  }
+
+  func testCommandFOpensFind() {
+    var h = Harness(document())
+    h.key(.command("f"))
+    XCTAssertEqual(h.model.findField, "")
+    h.keys("Web")
+    XCTAssertEqual(h.key(.command("f")), [], "Cmd-F inside the field changes nothing")
+    XCTAssertEqual(h.model.findField, "Web")
+    h.key(.char("?"))
+    XCTAssertEqual(h.model.findField, "Web?", "? types into the field")
+  }
+
   func testFailedLoadKeepsHistoryIntact() {
     var h = Harness(document(), files: ["/docs/other.md": "# Other"])
     h.click(h.point(of: "Other"))

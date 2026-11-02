@@ -6,6 +6,7 @@ public final class RasterFrameSource: FrameSource {
   public var rasterizer: Rasterizer
   public var overlay: RenderOverlay
   public var status: StatusBarContent?
+  public var showsHelp = false
 
   public init(rasterizer: Rasterizer, overlay: RenderOverlay = RenderOverlay(), status: StatusBarContent? = nil) {
     self.rasterizer = rasterizer
@@ -22,6 +23,10 @@ public final class RasterFrameSource: FrameSource {
       rasterizer.draw(
         viewport.pageRect(fromPane: content), into: bitmap,
         at: CGPoint(x: content.x - rect.x, y: content.y - rect.y), overlay: overlay)
+      if showsHelp {
+        HelpOverlay(palette: rasterizer.palette, backingScale: rasterizer.layout.prepared.typography.backingScale).draw(
+          in: viewport.contentRect.cgRect, clip: content.cgRect, origin: CGPoint(x: rect.x, y: rect.y), bitmap: bitmap)
+      }
     }
     guard rect.intersection(viewport.statusBarRect) != nil else { return }
     let bar = viewport.statusBarRect.cgRect.offsetBy(dx: CGFloat(-rect.x), dy: CGFloat(-rect.y))

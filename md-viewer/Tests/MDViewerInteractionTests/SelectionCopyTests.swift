@@ -51,13 +51,11 @@ final class SelectionTests: XCTestCase {
     XCTAssertNil(h.model.selection, "a later click starts over")
   }
 
-  func testShiftClickExtendsFromTheAnchor() {
+  func testShiftClickNoLongerExtends() {
     var h = Harness(text)
     h.click(h.point(of: "beta", at: 0))
     h.click(h.point(of: "paragraph", at: 1), modifiers: .shift)
-    XCTAssertEqual(h.model.selection.map { h.layout.plainText($0) }, "beta gamma delta.\n\nSecond paragraph")
-    h.click(h.point(of: "Alpha", at: 0), modifiers: .shift)
-    XCTAssertEqual(h.model.selection.map { h.layout.plainText($0) }, "Alpha ")
+    XCTAssertNil(h.model.selection, "Rex strips Shift from clicks, so a Shift-click is a plain click")
   }
 
   func testSelectionInsideARegion() {

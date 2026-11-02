@@ -28,7 +28,14 @@ extension ViewerInteraction {
   }
 
   mutating func handle(key: Key, at now: UInt64) -> [InteractionEffect] {
-    if findField != nil { return handleFindField(key, at: now) }
+    if helpVisible {
+      helpVisible = false
+      return [.redrawAll]
+    }
+    if findField != nil {
+      if key == .command("f") { return [] }
+      return handleFindField(key, at: now)
+    }
     let view = geometry.contentHeight
     switch key {
     case .char("j"), .down: return scroll(by: lineStep)
@@ -58,7 +65,10 @@ extension ViewerInteraction {
       guard let region = focusedRegion ?? pointerRegion else { return [] }
       return scrollRegion(region, by: key == .left ? -regionStep : regionStep)
     case .char("L"), .shiftBackspace: return goForward(at: now)
-    case .char("/"): return openFind()
+    case .char("/"), .command("f"): return openFind()
+    case .char("?"):
+      helpVisible = true
+      return [.redrawAll]
     case .char("n"): return stepMatch(forward: true, at: now)
     case .char("N"): return stepMatch(forward: false, at: now)
     case .char("y"), .command("c"): return copySelection(markdown: false, at: now)
