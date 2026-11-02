@@ -34,6 +34,8 @@ final class SolidSource: FrameSource {
 final class MemoryStager: FrameStager {
   var name: String
   var failNext = false
+  var failOnCall: Int?
+  private var calls = 0
   var staged: [(sequence: UInt64, bytes: Int, created: UInt64)] = []
   var acknowledged: UInt64 = 0
   var removed = false
@@ -46,7 +48,8 @@ final class MemoryStager: FrameStager {
   var outstanding: Int { staged.count }
 
   func stage(_ bytes: UnsafeRawBufferPointer, at now: UInt64) throws -> StagedFrame {
-    if failNext {
+    calls += 1
+    if failNext || failOnCall == calls {
       failNext = false
       throw StagingError.create(name, ENOSPC)
     }

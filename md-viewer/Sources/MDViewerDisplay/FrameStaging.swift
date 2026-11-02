@@ -133,7 +133,11 @@ public final class SharedMemoryStager: FrameStager {
   private let items = StagedItems()
   private var number = 0
 
-  public init(prefix: String = "/mdv\(getpid())-") {
+  public static func defaultPrefix() -> String {
+    "/mdv\(getpid())-\(String(arc4random() & 0xff_ffff, radix: 36))-"
+  }
+
+  public init(prefix: String = SharedMemoryStager.defaultPrefix()) {
     self.prefix = prefix
   }
 

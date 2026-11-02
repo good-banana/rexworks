@@ -24,6 +24,14 @@ final class TerminalColorsTests: XCTestCase {
     XCTAssertTrue(TerminalSequences.restore.contains(Kitty.deleteAll()))
   }
 
+  func testRestoreDeletesImagesBeforeLeavingTheAlternateScreen() {
+    XCTAssertEqual(
+      TerminalSequences.restore,
+      "\u{1b}[?2031l\u{1b}[?2048l\u{1b}[?1016l\u{1b}[?1006l\u{1b}[?1000l\u{1b}[?25h\u{1b}_Ga=d,d=A,q=2\u{1b}\\"
+        + "\u{1b}[?1049l")
+    XCTAssertEqual(TerminalSequences.queryCellSize, "\u{1b}[16t")
+  }
+
   func testEnterSequenceEnablesModes() {
     for mode in ["?1049h", "?25l", "?1000h", "?1006h", "?1016h"] {
       XCTAssertTrue(TerminalSequences.enter.contains(mode))

@@ -44,6 +44,10 @@ public enum DisplayEvent: Equatable, Sendable {
 public final class DisplayTransport {
   public static let staleStagingNanoseconds: UInt64 = 10_000_000_000
   public static let placement: UInt32 = 1
+  public static let maximumUnsettledFrames = 2
+  public static let retryBaseNanoseconds: UInt64 = 50_000_000
+  public static let retryCapNanoseconds: UInt64 = 2_000_000_000
+  public static let maximumConsecutiveFailures = 6
 
   public private(set) var viewport: DisplayViewport
   public private(set) var ledger: ImageLedger
@@ -51,16 +55,26 @@ public final class DisplayTransport {
   public private(set) var pacer: FramePacer
   public private(set) var debouncer: ResizeDebouncer
   public private(set) var stager: FrameStager
+  public private(set) var patchesEnabled = true
+  public private(set) var consecutiveFailures = 0
+  public private(set) var retryAfter: UInt64?
+  public private(set) var isStopped = false
   public var relayout: (PaneSize, DisplayViewport) -> DisplayViewport
   public var onEvent: (DisplayEvent) -> Void = { _ in }
   public var shiftScrolling = true
+
+  private struct Outstanding {
+    var record: FrameRecord
+    var stagedThrough: UInt64?
+  }
 
   private let output: TerminalOutput
   private let source: FrameSource
   private var fallback: FrameStager?
   private var fences = FenceIDs()
-  private var inFlightRecord: FrameRecord?
+  private var outstanding: [Outstanding] = []
   private var failures: [UInt32: String] = [:]
+  private var lastTimedOutSentAt: UInt64?
   private var frameBitmap: RasterBitmap?
   private var patchBitmaps: [PixelRect: RasterBitmap] = [:]
   private var patchBitmapOrder: [PixelRect] = []
@@ -87,6 +101,7 @@ public final class DisplayTransport {
   }
 
   public var isHolding: Bool { debouncer.isHolding }
+  public var outstandingFrames: Int { outstanding.count }
 
   public func invalidateAll() {
     damage.invalidateAll()
@@ -110,7 +125,7 @@ public final class DisplayTransport {
   public func scroll(to offset: CGFloat) -> Bool {
     let previous = viewport.offset
     guard viewport.scroll(to: offset) else { return false }
-    if shiftScrolling, ledger.displayed != nil {
+    if shiftScrolling, patchesEnabled, ledger.newest != nil {
       damage.scroll(
         by: Int((viewport.offset - previous).rounded()), content: viewport.contentRect,
         statusBar: viewport.statusBarRect)
@@ -135,6 +150,13 @@ public final class DisplayTransport {
     damage.invalidateAll()
   }
 
+  public func resume() {
+    isStopped = false
+    consecutiveFailures = 0
+    retryAfter = nil
+    damage.invalidateAll()
+  }
+
   public func observe(_ size: PaneSize, at now: UInt64) {
     guard !isShutDown, size.hasPixels else { return }
     guard !ledger.live.isEmpty else {
@@ -149,19 +171,27 @@ public final class DisplayTransport {
   }
 
   public func handle(_ response: GraphicsResponse, at now: UInt64) {
+    guard !isShutDown else { return }
     if response.id >= FenceIDs.base {
-      guard let completed = pacer.acknowledge(response.id) else { return }
-      complete(completed, at: now, timedOut: false)
-    } else if !response.isOK {
-      failures[response.id] = response.message
+      settle(through: response.id, at: now)
+      return
     }
+    guard !response.isOK, ledger.live.contains(response.id) else { return }
+    failures[response.id] = response.message
+    if ledger.unsettled.contains(response.id) {
+      ledger.discard(response.id)
+      output.write(Kitty.deleteImage(id: response.id))
+    }
+    damage.invalidateAll()
   }
 
   public func nextWake(after now: UInt64) -> UInt64? {
     var wakes: [UInt64] = []
     if let deadline = debouncer.deadline { wakes.append(deadline) }
     if let inFlight = pacer.inFlight { wakes.append(inFlight.sentAt + pacer.fenceTimeout) }
-    if !damage.isEmpty, !debouncer.isHolding, pacer.inFlight == nil { wakes.append(pacer.earliestSend(after: now)) }
+    if canSendSoon, let plan = nextPlan(), plan != .none, !isBlocked(plan) {
+      wakes.append(max(pacer.earliestSend(after: now), retryAfter ?? 0))
+    }
     return wakes.min()
   }
 
@@ -172,10 +202,12 @@ public final class DisplayTransport {
       damage.invalidateAll()
       onEvent(.settled(size))
     }
-    if let expired = pacer.expire(at: now) { complete(expired, at: now, timedOut: true) }
-    stager.reclaim(olderThan: now > Self.staleStagingNanoseconds ? now - Self.staleStagingNanoseconds : 0)
-    guard !debouncer.isHolding, !damage.isEmpty, viewport.isDrawable, pacer.canSend(at: now) else { return }
-    let plan = ledger.displayed == nil ? .full : damage.plan(in: viewport.frameRect)
+    if let expired = pacer.expire(at: now) { timedOut(expired, at: now) }
+    if let cutoff = lastTimedOutSentAt, now > Self.staleStagingNanoseconds {
+      stager.reclaim(olderThan: min(cutoff + 1, now - Self.staleStagingNanoseconds))
+    }
+    guard canSendSoon, pacer.canSend(at: now), now >= retryAfter ?? 0, let plan = nextPlan(), !isBlocked(plan)
+    else { return }
     damage.reset()
     switch plan {
     case .none: break
@@ -192,9 +224,28 @@ public final class DisplayTransport {
     if !ids.isEmpty { output.write(ids.map(Kitty.deleteImage).joined()) }
     stager.removeAll()
     fallback?.removeAll()
+    outstanding = []
+    failures = [:]
     frameBitmap = nil
     patchBitmaps = [:]
     patchBitmapOrder = []
+  }
+
+  private var canSendSoon: Bool {
+    !isStopped && !debouncer.isHolding && !damage.isEmpty && viewport.isDrawable && pacer.inFlight == nil
+  }
+
+  private func nextPlan() -> FramePlan? {
+    guard ledger.newest != nil else { return .full }
+    let plan = damage.plan(in: viewport.frameRect)
+    switch plan {
+    case .patches, .scroll: return patchesEnabled ? plan : .full
+    case .none, .full: return plan
+    }
+  }
+
+  private func isBlocked(_ plan: FramePlan) -> Bool {
+    plan == .full && ledger.unsettled.count >= Self.maximumUnsettledFrames
   }
 
   private func clock() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
@@ -205,7 +256,7 @@ public final class DisplayTransport {
     if frameBitmap?.width != width || frameBitmap?.height != height {
       frameBitmap = RasterBitmap(width: width, height: height)
     }
-    guard let bitmap = frameBitmap else { return fail("could not allocate a \(width)x\(height) frame") }
+    guard let bitmap = frameBitmap else { return fail("could not allocate a \(width)x\(height) frame", at: now) }
     let started = clock()
     source.drawFrame(viewport, into: bitmap)
     let rendered = clock()
@@ -215,7 +266,7 @@ public final class DisplayTransport {
     let fence = fences.allocate()
     output.write(
       Kitty.beginSynchronizedUpdate
-        + Kitty.transmitRGBA(id: id, width: width, height: height, medium: staged.medium, quiet: .errorsOnly)
+        + Kitty.transmitRGBA(id: id, width: width, height: height, medium: staged.frame.medium, quiet: .errorsOnly)
         + "\u{1b}[1;1H"
         + Kitty.place(
           id: id, placement: Self.placement, columns: viewport.size.columns, rows: viewport.size.rows,
@@ -226,7 +277,7 @@ public final class DisplayTransport {
       kind: .full, imageID: id, fence: fence, width: width, height: height, bytes: width * height * 4,
       renderNanoseconds: rendered - started, stageNanoseconds: stagedAt - rendered,
       writeNanoseconds: written - stagedAt, sentAt: now)
-    dispatched(record, stagedThrough: staged.sequence, at: now)
+    dispatched(record, stagedThrough: staged.frame.sequence, at: now)
   }
 
   private func shiftCommands(_ id: UInt32, by shift: Int) -> String {
@@ -249,55 +300,62 @@ public final class DisplayTransport {
   }
 
   private func sendPatches(_ rects: [PixelRect], shift: Int, at now: UInt64) {
-    guard let id = ledger.displayed else { return sendFullFrame(at: now) }
-    var commands = Kitty.beginSynchronizedUpdate
-    if shift != 0 { commands += shiftCommands(id, by: shift) }
-    var renderTime: UInt64 = 0
-    var stageTime: UInt64 = 0
-    var lastSequence: UInt64?
-    var bytes = 0
-    for rect in rects {
-      guard let bitmap = patchBitmap(for: rect) else { return fail("could not allocate a \(rect) patch") }
-      let started = clock()
-      source.drawPatch(rect, viewport: viewport, into: bitmap)
-      let rendered = clock()
-      guard let staged = stage(bitmap, at: now) else { return }
-      stageTime += clock() - rendered
-      renderTime += rendered - started
-      lastSequence = staged.sequence
-      bytes += rect.area * 4
-      commands += Kitty.editRootFrame(
-        id: id, x: rect.x, y: rect.y, width: rect.width, height: rect.height, medium: staged.medium,
-        quiet: .errorsOnly)
+    guard let id = ledger.newest else { return sendFullFrame(at: now) }
+    batch: while true {
+      var edits = ""
+      var renderTime: UInt64 = 0
+      var stageTime: UInt64 = 0
+      var lastSequence: UInt64?
+      var bytes = 0
+      for rect in rects {
+        guard let bitmap = patchBitmap(for: rect) else {
+          return fail("could not allocate a \(rect) patch", at: now)
+        }
+        let started = clock()
+        source.drawPatch(rect, viewport: viewport, into: bitmap)
+        let rendered = clock()
+        guard let staged = stage(bitmap, at: now) else { return }
+        if staged.switchedMedium, !edits.isEmpty { continue batch }
+        stageTime += clock() - rendered
+        renderTime += rendered - started
+        lastSequence = staged.frame.sequence
+        bytes += rect.area * 4
+        edits += Kitty.editRootFrame(
+          id: id, x: rect.x, y: rect.y, width: rect.width, height: rect.height, medium: staged.frame.medium,
+          quiet: .errorsOnly)
+      }
+      let fence = fences.allocate()
+      let writeStarted = clock()
+      output.write(
+        Kitty.beginSynchronizedUpdate + (shift == 0 ? "" : shiftCommands(id, by: shift)) + edits
+          + Kitty.endSynchronizedUpdate + Kitty.fence(id: fence))
+      let record = FrameRecord(
+        kind: shift == 0 ? .patch(rects) : .scroll(shift, rects), imageID: id, fence: fence,
+        width: rects.map(\.width).max() ?? 0,
+        height: rects.reduce(0) { $0 + $1.height }, bytes: bytes, renderNanoseconds: renderTime,
+        stageNanoseconds: stageTime, writeNanoseconds: clock() - writeStarted, sentAt: now)
+      return dispatched(record, stagedThrough: lastSequence, at: now)
     }
-    let fence = fences.allocate()
-    let writeStarted = clock()
-    output.write(commands + Kitty.endSynchronizedUpdate + Kitty.fence(id: fence))
-    let record = FrameRecord(
-      kind: shift == 0 ? .patch(rects) : .scroll(shift, rects), imageID: id, fence: fence,
-      width: rects.map(\.width).max() ?? 0,
-      height: rects.reduce(0) { $0 + $1.height }, bytes: bytes, renderNanoseconds: renderTime,
-      stageNanoseconds: stageTime, writeNanoseconds: clock() - writeStarted, sentAt: now)
-    dispatched(record, stagedThrough: lastSequence, at: now)
   }
 
   private func dispatched(_ record: FrameRecord, stagedThrough: UInt64?, at now: UInt64) {
     pacer.sent(fence: record.fence, stagedThrough: stagedThrough, at: now)
-    inFlightRecord = record
+    outstanding.append(Outstanding(record: record, stagedThrough: stagedThrough))
     onEvent(.sent(record))
   }
 
-  private func stage(_ bitmap: RasterBitmap, at now: UInt64) -> StagedFrame? {
+  private func stage(_ bitmap: RasterBitmap, at now: UInt64) -> (frame: StagedFrame, switchedMedium: Bool)? {
     do {
-      return try stager.stage(bitmap.bytes, at: now)
+      return (try stager.stage(bitmap.bytes, at: now), false)
     } catch {
       guard let replacement = fallback else {
-        fail(error.localizedDescription)
+        fail(error.localizedDescription, at: now)
         return nil
       }
       onEvent(.failed("\(stager.name) staging failed (\(error.localizedDescription)); using \(replacement.name)"))
       useFallback()
-      return stage(bitmap, at: now)
+      guard let staged = stage(bitmap, at: now) else { return nil }
+      return (staged.frame, true)
     }
   }
 
@@ -308,43 +366,97 @@ public final class DisplayTransport {
     fallback = nil
   }
 
-  private func complete(_ completed: FramePacer.InFlight, at now: UInt64, timedOut: Bool) {
-    if let sequence = completed.stagedThrough, !timedOut { stager.acknowledge(through: sequence) }
-    guard let record = inFlightRecord, record.fence == completed.fence else { return }
-    inFlightRecord = nil
-    onEvent(timedOut ? .timedOut(record) : .acknowledged(record, latency: now - record.sentAt))
-    let failure = failures.removeValue(forKey: record.imageID)
-    failures = [:]
+  private func timedOut(_ expired: FramePacer.InFlight, at now: UInt64) {
+    lastTimedOutSentAt = expired.sentAt
+    if let entry = outstanding.first(where: { $0.record.fence == expired.fence }) {
+      onEvent(.timedOut(entry.record))
+    }
+    registerFailure(at: now)
+    if ledger.unsettled.count >= Self.maximumUnsettledFrames, !isStopped {
+      isStopped = true
+      onEvent(.failed("stopped drawing: the terminal is not answering"))
+    }
+  }
+
+  private func settle(through fence: UInt32, at now: UInt64) {
+    guard let index = outstanding.firstIndex(where: { $0.record.fence == fence }) else { return }
+    if pacer.inFlight?.fence == fence { _ = pacer.acknowledge(fence) }
+    let settled = outstanding[...index]
+    outstanding.removeFirst(index + 1)
+    for entry in settled {
+      if let sequence = entry.stagedThrough { stager.acknowledge(through: sequence) }
+      onEvent(.acknowledged(entry.record, latency: now - entry.record.sentAt))
+      settle(entry.record, failure: failures.removeValue(forKey: entry.record.imageID), at: now)
+    }
+    failures = failures.filter { ledger.live.contains($0.key) }
+    if outstanding.isEmpty { lastTimedOutSentAt = nil }
+  }
+
+  private func settle(_ record: FrameRecord, failure: String?, at now: UInt64) {
     switch (record.kind, failure) {
-    case (.full, nil):
+    case (.full, nil) where ledger.live.contains(record.imageID):
       let retired = ledger.confirm(record.imageID)
       if !retired.isEmpty {
         output.write(retired.map(Kitty.deleteImage).joined())
         onEvent(.retired(retired))
       }
+      succeeded()
+    case (.full, nil):
+      break
     case (.full, let message?):
-      ledger.discard(record.imageID)
-      output.write(Kitty.deleteImage(id: record.imageID))
-      recover(from: message)
+      if ledger.unsettled.contains(record.imageID) {
+        ledger.discard(record.imageID)
+        output.write(Kitty.deleteImage(id: record.imageID))
+      }
+      rejected(message, at: now)
     case (.patch, let message?):
-      recover(from: message)
+      if !message.hasPrefix("ENOENT"), !Self.isLoadError(message) { patchesEnabled = false }
+      rejected(message, at: now)
     case (.scroll, let message?):
       shiftScrolling = false
-      recover(from: message)
+      rejected(message, at: now)
     case (.patch, nil), (.scroll, nil):
-      break
+      succeeded()
     }
   }
 
-  private func recover(from message: String) {
-    onEvent(.failed("terminal rejected a frame from \(stager.name): \(message)"))
-    if !message.hasPrefix("ENOENT") { useFallback() }
-    damage.invalidateAll()
+  static func isLoadError(_ message: String) -> Bool {
+    [
+      "EINVAL: invalid data", "EINVAL: unsupported medium", "ENODATA", "EINVAL: temporary file",
+      "EINVAL: file path too long",
+    ].contains { message.hasPrefix($0) }
   }
 
-  private func fail(_ message: String) {
+  private func rejected(_ message: String, at now: UInt64) {
+    onEvent(.failed("terminal rejected a frame from \(stager.name): \(message)"))
+    if Self.isLoadError(message) { useFallback() }
+    damage.invalidateAll()
+    registerFailure(at: now)
+  }
+
+  private func succeeded() {
+    consecutiveFailures = 0
+    retryAfter = nil
+    isStopped = false
+  }
+
+  private func fail(_ message: String, at now: UInt64) {
     damage.invalidateAll()
     onEvent(.failed(message))
+    registerFailure(at: now)
+  }
+
+  private func registerFailure(at now: UInt64) {
+    consecutiveFailures += 1
+    if consecutiveFailures >= Self.maximumConsecutiveFailures {
+      if !isStopped {
+        isStopped = true
+        onEvent(.failed("stopped drawing after \(consecutiveFailures) consecutive failures"))
+      }
+      return
+    }
+    let delay = Self.retryBaseNanoseconds << UInt64(consecutiveFailures - 1)
+    retryAfter = now + min(delay, Self.retryCapNanoseconds)
   }
 
   private func patchBitmap(for rect: PixelRect) -> RasterBitmap? {

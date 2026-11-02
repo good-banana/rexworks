@@ -78,4 +78,18 @@ final class ImageLedgerTests: XCTestCase {
     XCTAssertEqual(fences.allocate(), FenceIDs.base)
     XCTAssertEqual(fences.allocate(), FenceIDs.base + 1)
   }
+
+  func testConfirmingAnOlderFrameKeepsNewerUnsettledFrames() {
+    var ledger = ImageLedger(firstID: 1)
+    _ = ledger.confirm(ledger.allocate())
+    let older = ledger.allocate()
+    let newer = ledger.allocate()
+    XCTAssertEqual(ledger.unsettled, [older, newer])
+    XCTAssertEqual(ledger.newest, newer)
+    XCTAssertEqual(ledger.confirm(older), [1])
+    XCTAssertEqual(ledger.live, [older, newer])
+    XCTAssertEqual(ledger.unsettled, [newer])
+    XCTAssertEqual(ledger.confirm(newer), [older])
+    XCTAssertEqual(ledger.newest, newer)
+  }
 }

@@ -82,6 +82,7 @@ public enum InputEvent: Equatable {
   case colorScheme(ColorScheme)
   case deviceAttributes
   case paneSize(PaneSize)
+  case cellSize(width: Int, height: Int)
   case modeReport(ModeReport)
   case graphics(GraphicsResponse)
 
@@ -95,12 +96,34 @@ public enum InputEvent: Equatable {
 
 public struct InputParser {
   private static let maximumStringSequence = 4096
+  public static let escapeTimeout: UInt64 = 50_000_000
 
   private var pending: [UInt8] = []
+  private var holdsLoneEscape = false
+  public private(set) var escapeDeadline: UInt64?
 
   public init() {}
 
   public mutating func feed(_ bytes: [UInt8]) -> [InputEvent] {
+    holdsLoneEscape = false
+    return parse(bytes)
+  }
+
+  public mutating func feed(_ bytes: [UInt8], at now: UInt64) -> [InputEvent] {
+    holdsLoneEscape = true
+    let events = parse(bytes)
+    escapeDeadline = pending == [0x1b] ? now + Self.escapeTimeout : nil
+    return events
+  }
+
+  public mutating func flushEscape(at now: UInt64) -> [InputEvent] {
+    guard let deadline = escapeDeadline, now >= deadline, pending == [0x1b] else { return [] }
+    escapeDeadline = nil
+    pending = []
+    return [.key(.escape)]
+  }
+
+  private mutating func parse(_ bytes: [UInt8]) -> [InputEvent] {
     pending.append(contentsOf: bytes)
     var events: [InputEvent] = []
     while !pending.isEmpty {
@@ -123,7 +146,7 @@ public struct InputParser {
   private func parseOne() -> Parsed {
     let first = pending[0]
     if first == 0x1b {
-      if pending.count == 1 { return .event(.key(.escape), 1) }
+      if pending.count == 1 { return holdsLoneEscape ? .incomplete : .event(.key(.escape), 1) }
       if pending[1] == 0x5b { return parseCSI() }
       if pending[1] == 0x4f { return parseSS3() }
       if pending[1] == 0x5d { return skipOSC() }
@@ -235,6 +258,11 @@ public struct InputParser {
       let fields = params.split(separator: ";").compactMap { Int($0) }
       guard fields.count == 5 else { return nil }
       return .paneSize(PaneSize(columns: fields[2], rows: fields[1], pixelWidth: fields[4], pixelHeight: fields[3]))
+    }
+    if final == 0x74, params.hasPrefix("6;") {
+      let fields = params.split(separator: ";").compactMap { Int($0) }
+      guard fields.count == 3, fields[1] > 0, fields[2] > 0 else { return nil }
+      return .cellSize(width: fields[2], height: fields[1])
     }
     if final == 0x79, params.hasPrefix("?"), params.hasSuffix("$") {
       let fields = params.dropFirst().dropLast().split(separator: ";").compactMap { Int($0) }

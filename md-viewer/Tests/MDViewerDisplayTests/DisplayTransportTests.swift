@@ -108,10 +108,12 @@ final class DisplayTransportTests: XCTestCase {
     acknowledge(transport, at: 22 * ms)
     XCTAssertFalse(transport.shiftScrolling)
     transport.pump(at: 40 * ms)
+    XCTAssertEqual(source.frames.count, 1)
+    transport.pump(at: 80 * ms)
     XCTAssertEqual(source.frames.count, 2)
-    acknowledge(transport, at: 41 * ms)
+    acknowledge(transport, at: 81 * ms)
     transport.scroll(rows: 1)
-    transport.pump(at: 60 * ms)
+    transport.pump(at: 100 * ms)
     XCTAssertEqual(source.frames.count, 3)
   }
 
@@ -180,16 +182,107 @@ final class DisplayTransportTests: XCTestCase {
     XCTAssertEqual(source.patches.count, 2)
   }
 
-  func testFenceTimeoutPresumesTheFrameWasShown() {
+  func testTimedOutFrameStaysPendingAndALateErrorNeverBlanksThePane() {
+    let transport = makeTransport()
+    var placed: Set<UInt32> = []
+    func apply() {
+      for write in output.take() {
+        for match in write.matches(of: /a=p,i=(\d+)/) { placed.insert(UInt32(match.1)!) }
+        for match in write.matches(of: /a=d,d=I,i=(\d+)/) { placed.remove(UInt32(match.1)!) }
+        XCTAssertFalse(placed.isEmpty, "blank after \(write.debugDescription)")
+      }
+    }
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.scroll(to: 400)
+    transport.pump(at: 20 * ms)
+    apply()
+    let timeout = 20 * ms + FramePacer.defaultFenceTimeout
+    transport.pump(at: timeout)
+    XCTAssertTrue(events.contains { if case .timedOut = $0 { true } else { false } })
+    XCTAssertNil(transport.pacer.inFlight)
+    XCTAssertEqual(transport.ledger.displayed, 100)
+    XCTAssertEqual(transport.ledger.unsettled, [101])
+    XCTAssertEqual(transport.ledger.live, [100, 101])
+    apply()
+    transport.handle(GraphicsResponse(id: 101, message: "EINVAL: invalid data"), at: timeout + 1 * ms)
+    apply()
+    XCTAssertEqual(transport.ledger.live, [100])
+    XCTAssertTrue(transport.damage.needsFullFrame)
+    transport.pump(at: timeout + 200 * ms)
+    apply()
+    XCTAssertEqual(transport.ledger.unsettled, [102])
+    transport.handle(GraphicsResponse(id: FenceIDs.base + 1, message: "OK"), at: timeout + 201 * ms)
+    apply()
+    XCTAssertEqual(transport.ledger.displayed, 100)
+    acknowledge(transport, at: timeout + 202 * ms)
+    apply()
+    XCTAssertEqual(transport.ledger.displayed, 102)
+    XCTAssertEqual(transport.ledger.live, [102])
+  }
+
+  func testLateFenceSettlesATimedOutFrame() {
     let transport = makeTransport()
     transport.pump(at: 0)
-    transport.scroll(by: 40)
-    transport.pump(at: FramePacer.defaultFenceTimeout)
-    XCTAssertTrue(events.contains { if case .timedOut = $0 { true } else { false } })
-    XCTAssertEqual(transport.ledger.displayed, 100)
+    acknowledge(transport, at: 1 * ms)
+    transport.scroll(to: 400)
+    transport.pump(at: 20 * ms)
+    let timeout = 20 * ms + FramePacer.defaultFenceTimeout
+    transport.pump(at: timeout)
+    output.writes = []
+    XCTAssertEqual(transport.outstandingFrames, 1)
+    transport.handle(GraphicsResponse(id: FenceIDs.base + 1, message: "OK"), at: timeout + 5 * ms)
+    XCTAssertEqual(output.take(), [Kitty.deleteImage(id: 100)])
+    XCTAssertEqual(transport.ledger.displayed, 101)
+    XCTAssertEqual(transport.outstandingFrames, 0)
+    XCTAssertEqual(transport.consecutiveFailures, 0)
+    XCTAssertEqual(stager.outstanding, 0)
+  }
+
+  func testPatchesAfterATimeoutTargetTheNewestImage() {
+    let transport = makeTransport()
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.scroll(to: 400)
+    transport.pump(at: 20 * ms)
+    let timeout = 20 * ms + FramePacer.defaultFenceTimeout
+    transport.pump(at: timeout)
+    output.writes = []
+    transport.invalidateStatusBar()
+    transport.pump(at: timeout + 100 * ms)
+    XCTAssertTrue(output.writes.joined().contains("a=f,r=1,i=101,"))
+  }
+
+  func testTerminalThatNeverAnswersStopsAfterTwoUnsettledFrames() {
+    let transport = makeTransport()
+    var now: UInt64 = 0
+    for _ in 0..<20 {
+      transport.scroll(to: transport.viewport.offset == 0 ? 400 : 0)
+      transport.pump(at: now)
+      now += FramePacer.defaultFenceTimeout
+      transport.pump(at: now)
+      now += 200 * ms
+    }
     XCTAssertEqual(source.frames.count, 2)
-    transport.handle(GraphicsResponse(id: FenceIDs.base, message: "OK"), at: FramePacer.defaultFenceTimeout + 1)
-    XCTAssertNotNil(transport.pacer.inFlight)
+    XCTAssertLessThanOrEqual(transport.ledger.live.count, 2)
+    XCTAssertTrue(transport.isStopped)
+    XCTAssertTrue(events.contains(.failed("stopped drawing: the terminal is not answering")))
+    XCTAssertNil(transport.nextWake(after: now))
+    transport.handle(GraphicsResponse(id: FenceIDs.base + 1, message: "OK"), at: now)
+    XCTAssertFalse(transport.isStopped)
+    XCTAssertEqual(transport.ledger.displayed, 101)
+  }
+
+  func testErrorForTheDisplayedImageInvalidatesImmediately() {
+    let transport = makeTransport()
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.handle(GraphicsResponse(id: 100, message: "ENOENT: image not found"), at: 2 * ms)
+    XCTAssertTrue(transport.damage.needsFullFrame)
+    XCTAssertEqual(transport.ledger.displayed, 100)
+    transport.handle(GraphicsResponse(id: 999, message: "ENOENT: image not found"), at: 3 * ms)
+    transport.handle(GraphicsResponse(id: 100, message: "OK"), at: 3 * ms)
+    XCTAssertEqual(transport.ledger.live, [100])
   }
 
   func testResizeHoldsTheOldImageThenSwapsOnce() {
@@ -262,6 +355,8 @@ final class DisplayTransportTests: XCTestCase {
     XCTAssertEqual(transport.ledger.live, [100])
     XCTAssertTrue(stager.removed)
     transport.pump(at: 40 * ms)
+    XCTAssertEqual(fallback.staged.count, 0)
+    transport.pump(at: 80 * ms)
     XCTAssertEqual(fallback.staged.count, 1)
     XCTAssertTrue(output.writes.joined().contains(base64("/fallback-1")))
   }
@@ -275,9 +370,99 @@ final class DisplayTransportTests: XCTestCase {
     transport.pump(at: 20 * ms)
     transport.handle(GraphicsResponse(id: 100, message: "ENOENT: image not found"), at: 21 * ms)
     acknowledge(transport, at: 22 * ms)
-    transport.pump(at: 40 * ms)
+    transport.pump(at: 80 * ms)
     XCTAssertEqual(source.frames.count, 2)
     XCTAssertFalse(stager.removed)
+    XCTAssertEqual(fallback.staged.count, 0)
+    XCTAssertTrue(transport.patchesEnabled)
+  }
+
+  func testOnlyLoadErrorsSwitchTheMedium() {
+    XCTAssertTrue(DisplayTransport.isLoadError("EINVAL: invalid data"))
+    XCTAssertTrue(DisplayTransport.isLoadError("EINVAL: unsupported medium"))
+    XCTAssertTrue(DisplayTransport.isLoadError("ENODATA: insufficient data"))
+    XCTAssertTrue(DisplayTransport.isLoadError("EINVAL: temporary file not in temp dir"))
+    XCTAssertTrue(DisplayTransport.isLoadError("EINVAL: temporary file not named correctly"))
+    XCTAssertFalse(DisplayTransport.isLoadError("ENOMEM: out of memory"))
+    XCTAssertFalse(DisplayTransport.isLoadError("EINVAL: dimensions too large"))
+    XCTAssertFalse(DisplayTransport.isLoadError("ENOENT: image not found"))
+    let fallback = MemoryStager(name: "fallback")
+    let transport = makeTransport(fallback: fallback)
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.scroll(to: 400)
+    transport.pump(at: 20 * ms)
+    transport.handle(GraphicsResponse(id: 101, message: "ENOMEM: out of memory"), at: 21 * ms)
+    acknowledge(transport, at: 22 * ms)
+    XCTAssertFalse(stager.removed)
+    transport.pump(at: 80 * ms)
+    XCTAssertEqual(fallback.staged.count, 0)
+  }
+
+  func testRejectedPatchDisablesPatchesForTheSession() {
+    let transport = makeTransport()
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.invalidateStatusBar()
+    transport.pump(at: 20 * ms)
+    transport.handle(GraphicsResponse(id: 100, message: "EINVAL: frame dimensions exceed image"), at: 21 * ms)
+    acknowledge(transport, at: 22 * ms)
+    XCTAssertFalse(transport.patchesEnabled)
+    transport.pump(at: 80 * ms)
+    acknowledge(transport, at: 81 * ms)
+    XCTAssertEqual(source.frames.count, 2)
+    transport.invalidateStatusBar()
+    transport.scroll(rows: 1)
+    transport.pump(at: 100 * ms)
+    XCTAssertEqual(source.frames.count, 3)
+    XCTAssertEqual(source.patches.count, 1)
+  }
+
+  func testRepeatedRejectionsBackOffThenStop() {
+    let transport = makeTransport()
+    var now: UInt64 = 0
+    var sendTimes: [UInt64] = []
+    transport.onEvent = { [unowned self] event in
+      events.append(event)
+      if case .sent = event { sendTimes.append(now) }
+    }
+    while now < 20_000 * ms {
+      transport.pump(at: now)
+      if let inFlight = transport.pacer.inFlight, inFlight.sentAt == now {
+        let id = transport.ledger.unsettled.last ?? 0
+        transport.handle(GraphicsResponse(id: id, message: "EINVAL: dimensions too large"), at: now)
+        acknowledge(transport, at: now)
+      }
+      now += 10 * ms
+    }
+    XCTAssertEqual(sendTimes.count, DisplayTransport.maximumConsecutiveFailures)
+    let gaps = zip(sendTimes.dropFirst(), sendTimes).map { $0 - $1 }
+    XCTAssertEqual(gaps, [50, 100, 200, 400, 800].map { $0 * ms })
+    XCTAssertTrue(transport.isStopped)
+    XCTAssertTrue(events.contains(.failed("stopped drawing after 6 consecutive failures")))
+    XCTAssertNil(transport.nextWake(after: now))
+    XCTAssertEqual(transport.ledger.live, [])
+    transport.resume()
+    transport.pump(at: now)
+    XCTAssertEqual(sendTimes.count, DisplayTransport.maximumConsecutiveFailures + 1)
+  }
+
+  func testMidBatchFallbackRestartsTheBatchOnTheNewMedium() {
+    let fallback = MemoryStager(name: "fallback")
+    let transport = makeTransport(fallback: fallback)
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    output.writes = []
+    stager.failOnCall = 3
+    transport.invalidateStatusBar()
+    transport.invalidate(pane: PixelRect(x: 0, y: 0, width: 10, height: 10))
+    transport.pump(at: 20 * ms)
+    let batch = output.take().joined()
+    XCTAssertFalse(batch.contains(base64("/memory-2")))
+    XCTAssertTrue(batch.contains(base64("/fallback-2")))
+    XCTAssertTrue(batch.contains(base64("/fallback-3")))
+    XCTAssertEqual(batch.components(separatedBy: "a=f,r=1").count - 1, 2)
+    acknowledge(transport, at: 21 * ms)
     XCTAssertEqual(fallback.staged.count, 0)
   }
 
@@ -297,7 +482,10 @@ final class DisplayTransportTests: XCTestCase {
     XCTAssertEqual(output.writes, [])
     XCTAssertTrue(events.contains { if case .failed = $0 { true } else { false } })
     XCTAssertTrue(transport.ledger.live.isEmpty)
+    XCTAssertEqual(transport.nextWake(after: 1 * ms), DisplayTransport.retryBaseNanoseconds)
     transport.pump(at: 20 * ms)
+    XCTAssertEqual(output.writes, [])
+    transport.pump(at: DisplayTransport.retryBaseNanoseconds)
     XCTAssertEqual(output.writes.count, 1)
   }
 
@@ -325,6 +513,7 @@ final class DisplayTransportTests: XCTestCase {
     let transport = makeTransport(size: PaneSize(columns: 10, rows: 5, pixelWidth: 0, pixelHeight: 0))
     transport.pump(at: 0)
     XCTAssertEqual(output.writes, [])
+    XCTAssertNil(transport.nextWake(after: 0))
     transport.observe(PaneSize(columns: 10, rows: 5, pixelWidth: 0, pixelHeight: 0), at: 0)
     XCTAssertFalse(transport.isHolding)
   }
@@ -360,16 +549,20 @@ final class DisplayTransportTests: XCTestCase {
     XCTAssertGreaterThan(source.patches.count, 2_000)
   }
 
-  func testStaleStagedFramesAreReclaimedWhenFencesNeverReturn() {
+  func testOnlyFramesUpToTheLastTimeoutAreReclaimed() {
     let transport = makeTransport()
-    var now: UInt64 = 0
-    for _ in 0..<40 {
-      transport.scroll(by: 20)
-      transport.pump(at: now)
-      now += FramePacer.defaultFenceTimeout
-    }
-    transport.pump(at: now)
-    XCTAssertLessThanOrEqual(
-      stager.outstanding, Int(DisplayTransport.staleStagingNanoseconds / FramePacer.defaultFenceTimeout) + 1)
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.invalidateStatusBar()
+    transport.pump(at: 20 * ms)
+    let timeout = 20 * ms + FramePacer.defaultFenceTimeout
+    transport.pump(at: timeout)
+    transport.invalidateStatusBar()
+    transport.pump(at: timeout + 100 * ms)
+    XCTAssertEqual(stager.outstanding, 2)
+    transport.pump(at: timeout + DisplayTransport.staleStagingNanoseconds)
+    XCTAssertEqual(stager.staged.map(\.sequence), [3])
+    transport.handle(GraphicsResponse(id: FenceIDs.base + 2, message: "OK"), at: timeout + 101 * ms)
+    XCTAssertEqual(stager.outstanding, 0)
   }
 }

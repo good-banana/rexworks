@@ -167,6 +167,14 @@ final class FrameStagingTests: XCTestCase {
 }
 
 final class PreferredStagingTests: XCTestCase {
+  func testDefaultSharedMemoryNamesAreRandomizedAndShort() {
+    let first = SharedMemoryStager.defaultPrefix()
+    XCTAssertTrue(first.hasPrefix("/mdv\(getpid())-"))
+    XCTAssertLessThanOrEqual((first + "\(UInt32.max)").utf8.count, 31)
+    let prefixes = Set((0..<20).map { _ in SharedMemoryStager.defaultPrefix() })
+    XCTAssertGreaterThan(prefixes.count, 1)
+  }
+
   func testSharedMemoryFirstWithTemporaryFilesAsFallback() {
     let stagers = FrameStaging.preferred()
     XCTAssertEqual(stagers.primary.name, "shm")

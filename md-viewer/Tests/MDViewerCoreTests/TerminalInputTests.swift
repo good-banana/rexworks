@@ -174,4 +174,35 @@ final class TerminalInputTests: XCTestCase {
     XCTAssertTrue(PaneSize(columns: 80, rows: 24, pixelWidth: 800, pixelHeight: 480).hasPixels)
     XCTAssertFalse(PaneSize(columns: 80, rows: 24, pixelWidth: 0, pixelHeight: 0).hasPixels)
   }
+
+  func testCellSizeReports() {
+    var p = InputParser()
+    XCTAssertEqual(p.feed(Array("\u{1b}[6;33;14t".utf8)), [.cellSize(width: 14, height: 33)])
+    XCTAssertEqual(p.feed(Array("\u{1b}[6;0;14t".utf8)), [])
+  }
+
+  func testLoneTrailingEscapeIsHeldUntilTheTimeout() {
+    var p = InputParser()
+    XCTAssertEqual(p.feed(Array("j\u{1b}".utf8), at: 1_000), [.key(.char("j"))])
+    XCTAssertEqual(p.escapeDeadline, 1_000 + InputParser.escapeTimeout)
+    XCTAssertEqual(p.flushEscape(at: 1_000 + InputParser.escapeTimeout - 1), [])
+    XCTAssertEqual(p.flushEscape(at: 1_000 + InputParser.escapeTimeout), [.key(.escape)])
+    XCTAssertNil(p.escapeDeadline)
+    XCTAssertEqual(p.flushEscape(at: 10_000_000_000), [])
+  }
+
+  func testHeldEscapeJoinsALaterSequence() {
+    var p = InputParser()
+    XCTAssertEqual(p.feed([0x1b], at: 0), [])
+    XCTAssertEqual(p.feed(Array("[B".utf8), at: 1), [.key(.down)])
+    XCTAssertNil(p.escapeDeadline)
+    XCTAssertEqual(p.flushEscape(at: 1_000_000_000), [])
+    XCTAssertEqual(p.feed([0x1b], at: 2), [])
+    XCTAssertEqual(p.feed(Array("x".utf8), at: 3), [.key(.escape), .key(.char("x"))])
+  }
+
+  func testLegacyFeedStillReportsALoneEscapeAtOnce() {
+    var p = InputParser()
+    XCTAssertEqual(p.feed([0x1b]), [.key(.escape)])
+  }
 }
