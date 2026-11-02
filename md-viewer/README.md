@@ -1,11 +1,22 @@
 # md-viewer
 
-`md-viewer` lets you preview Markdown files in a dedicated pane in Rex. Click a Markdown path in any Rex pane and a rendered preview opens in a pane beside it. The preview is drawn in the terminal using the kitty graphics protocol.
+`md-viewer` lets you preview Markdown files in a dedicated pane in Rex. Click a Markdown path in any Rex pane and a rendered preview opens in a pane beside it. md-viewer lays out and draws each page itself, then shows it in the terminal using the kitty graphics protocol. Its colors follow your Rex theme automatically, including when you switch themes or between light and dark.
 
 <p>
   <img src="docs/preview-dark.png" alt="md-viewer preview in a dark terminal theme" width="49%">
   <img src="docs/preview-light.png" alt="md-viewer preview in a light terminal theme" width="49%">
 </p>
+
+## Features
+
+- **Click to preview.** Click any Markdown path in any Rex pane, from `ls`, `git status`, a build log or a coding agent's reply, and the rendered page opens beside it. Click another and the same preview pane switches to it.
+- **Real typography in the terminal.** Proportional fonts, true heading sizes, tables with header rows, syntax-highlighted code, task lists, footnotes, GitHub alerts like `[!NOTE]` and `[!WARNING]`, and frontmatter shown as a compact table.
+- **Everything GitHub renders.** GitHub Flavored Markdown, the same safe HTML GitHub allows (centered logos, `<details>` sections, light and dark `<picture>` variants, side-by-side images), Mermaid diagrams, animated GIFs and inline images.
+- **A document, not a picture.** Select and copy text, copy code blocks with one click, find with `/` or Cmd-F, follow links and anchors with back and forward history, scroll wide code and tables sideways, and zoom.
+- **Matches your Rex theme.** Every color comes from your current Rex theme and updates when you switch themes or between light and dark.
+- **Stays in sync.** The preview reloads when the file changes and keeps your place, so you can watch a plan or README update as you or an agent edits it.
+- **Works with coding agents.** One command teaches Claude Code, Codex, Pi, OpenCode, the Devin CLI and cursor-agent to open the Markdown they write for you in a preview.
+- **Leaves everything else alone.** Markdown files opened from Finder or any other app still open in your usual editor.
 
 ## Requirements
 
@@ -21,44 +32,14 @@ brew install good-banana/rexworks/md-viewer && md-viewer setup
 
 `md-viewer setup` installs the background handler app and makes it the default handler for Markdown files when you click them in Rex. Clicking a Markdown file in any other app will open it in your normal default Markdown app.
 
+`md-viewer setup` also adds a Cmd-F binding to your Rex config (`~/.config/rex/init.lua`, or the file `REX_CONFIG` names). It opens md-viewer's find in a preview pane and keeps Rex's normal Find everywhere else.
+
 `md-viewer setup` installs a copy of the handler app, so rerun `md-viewer setup` after `brew upgrade md-viewer`.
 
-## How routing works
+## How it works
 
 - A click on a Markdown path in a Rex pane opens the preview beside that pane.
 - Opens from any other app are forwarded to the Markdown app you used before running `md-viewer setup`.
-
-## Keys
-
-| Key | Action |
-| --- | --- |
-| j, Down | Scroll down |
-| k, Up | Scroll up |
-| d | Scroll down half a page |
-| u | Scroll up half a page |
-| Space, Page Down | Scroll down a page |
-| b, Page Up | Scroll up a page |
-| g, Home | Top |
-| G, End | Bottom |
-| r | Reload |
-| Tab, Shift-Tab | Focus next or previous link |
-| Enter | Follow the focused link |
-| Esc | Clear link focus |
-| Backspace, h | Go back |
-| / | Search |
-| n, N | Next or previous match |
-| q, Ctrl-Q, Ctrl-C | Quit |
-
-## Mouse
-
-- Wheel scrolls.
-- Click follows a link.
-
-## Links
-
-- Links to other Markdown files open in the preview. Backspace goes back.
-- Web and mailto links open in your browser or mail app.
-- Links to local files open only when the target is an image, audio or video, a PDF, or plain text. Scripts, apps, HTML, and SVG are blocked.
 
 ## Agents
 
@@ -110,8 +91,52 @@ md-viewer open <file>
 ```
 md-viewer uninstall && brew uninstall md-viewer
 ```
-`md-viewer uninstall` removes the handler app and restores the previous Markdown handler. macOS may ask you to confirm the change of default app for Markdown files.
+`md-viewer uninstall` removes the handler app, restores the previous Markdown handler and removes the Cmd-F binding from your Rex config. macOS may ask you to confirm the change of default app for Markdown files.
 
+## Mouse
+
+- Wheel scrolls. Shift+wheel or a sideways swipe scrolls a wide code block or table.
+- Click follows a link, opens or closes a details section, or copies a code block with its Copy button.
+- Drag selects text. Double-click selects a word, and triple-click selects a paragraph, list item or table cell.
+
+<p>
+  <img src="docs/copy-code-block.gif" alt="Clicking the Copy button on a code block in md-viewer copies the code" width="100%">
+</p>
+
+## Links
+
+- Links to other Markdown files open in the preview. Backspace goes back.
+- Web and mailto links open in your browser or mail app.
+- Links to local files open only when the target is an image, audio or video, a PDF, or plain text. Scripts, apps, HTML, and SVG are blocked.
+
+## Keys
+
+| Key | Action |
+| --- | --- |
+| j, Down | Scroll down |
+| k, Up | Scroll up |
+| d | Scroll down half a page |
+| u | Scroll up half a page |
+| Space, Page Down | Scroll down a page |
+| b, Page Up | Scroll up a page |
+| g, Home | Top |
+| G, End | Bottom |
+| Tab, Shift-Tab | Focus the next or previous link, details section, code block or wide table |
+| h, l, Left, Right | Scroll the focused code block or table sideways |
+| Enter | Follow the focused link, open or close the focused details section, or copy the focused code block |
+| c | Copy the focused code block |
+| Esc | Close find, then clear the selection, then clear focus |
+| Backspace, h | Go back |
+| L, Shift-Backspace | Go forward |
+| /, Cmd-F | Find (Cmd-F works through the Rex binding that `md-viewer setup` installs) |
+| n, N | Next or previous match |
+| y, Cmd-C | Copy the selection as plain text |
+| Y | Copy the selection as Markdown |
+| Cmd-A | Select everything |
+| +, -, 0 | Zoom in, zoom out, reset zoom |
+| r | Refresh: reload the file and re-read the theme |
+| ? | Show all keys and mouse actions |
+| q, Ctrl-Q, Ctrl-C | Quit |
 
 ## Credits
 
