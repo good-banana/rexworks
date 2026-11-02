@@ -54,12 +54,14 @@ public enum MermaidFailure: Equatable, Sendable {
   case syntax(String)
   case timedOut
   case unavailable(String)
+  case cancelled
 
   var message: String {
     switch self {
     case .syntax(let message): message
     case .timedOut: "Rendering the diagram timed out."
     case .unavailable(let reason): "Mermaid is unavailable: \(reason)"
+    case .cancelled: "Rendering was cancelled."
     }
   }
 }
@@ -70,6 +72,9 @@ public struct MermaidDiagram: @unchecked Sendable {
   public let failure: MermaidFailure?
 
   var byteCost: Int { image.bytesPerRow * image.height }
+
+  static let cancelled = MermaidDiagram(
+    size: .zero, image: MermaidErrorImage.makeContext(width: 1, height: 1)!.makeImage()!, failure: .cancelled)
 }
 
 struct MermaidImageCache {
@@ -92,6 +97,10 @@ struct MermaidImageCache {
   }
 
   var count: Int { entries.count }
+
+  var pinnedBytes: Int {
+    pinned.reduce(0) { $0 + (entries[$1]?.diagram.byteCost ?? 0) }
+  }
 
   mutating func value(for key: MermaidCacheKey, now: Date = Date()) -> MermaidDiagram? {
     guard var entry = entries[key] else { return nil }

@@ -156,29 +156,76 @@ final class MermaidPolicyTests: XCTestCase {
     XCTAssertEqual(renderer.engine.startCount, 2)
   }
 
-  func testUnwantedJobsAreDroppedAndTheNewestRunsFirst() async throws {
+  func testDroppedRequestsCompleteAsCancelledAndCanBeRequestedAgain() async throws {
     let renderer = MermaidRenderer()
-    let codes = ["A", "B", "C", "D"].map { "flowchart LR\n  \($0)1 --> \($0)2" }
-    let recordings = codes.map { _ in RenderRecording() }
-    let finished = expectation(description: "wanted diagrams")
+    let requests = ["A", "B", "C"].map { request("flowchart LR\n  \($0)1 --> \($0)2") }
+    let results = DiagramResults()
+    let recording = RenderRecording()
+    let finished = expectation(description: "all callbacks")
     finished.expectedFulfillmentCount = 3
-    for (code, recording) in zip(codes, recordings) {
+    for (index, current) in requests.enumerated() {
       renderer.render(
-        request(code), sizeReady: { recording.size($0) },
+        current, sizeReady: { size in if index == 1 { recording.size(size) } },
         completion: { diagram in
-          XCTAssertNil(diagram.failure)
-          recording.completed()
+          if index == 1 { recording.completed() }
+          results.set(index, diagram)
           finished.fulfill()
         })
     }
-    renderer.setCurrentDiagrams([codes[0], codes[2], codes[3]].map { request($0) })
+    renderer.setCurrentDiagrams([requests[0]])
     await fulfillment(of: [finished], timeout: 20)
-    try await pause(0.3)
 
-    XCTAssertEqual(renderer.engine.startedJobs, [codes[0], codes[3], codes[2]])
-    XCTAssertEqual(recordings[1].recordedEvents, [], "the dropped request never runs")
-    let again = await render(renderer, request(codes[1]))
-    XCTAssertNil(again.failure, "a dropped key can be requested again")
+    XCTAssertNil(results.get(0)?.failure)
+    XCTAssertEqual(results.get(1)?.failure, .cancelled)
+    XCTAssertEqual(results.get(2)?.failure, .cancelled)
+    XCTAssertEqual(recording.recordedEvents, ["image"], "no size for a cancelled request")
+    XCTAssertEqual(renderer.engine.startedJobs, [requests[0].code])
+    XCTAssertNil(renderer.cached(requests[1]), "cancellation is never cached")
+    XCTAssertNil(renderer.sizeProvider(theme: theme, width: 400, scale: 1)(requests[1].code))
+
+    let again = await render(renderer, requests[1])
+    XCTAssertNil(again.failure, "a dropped key renders when requested again")
+  }
+
+  func testCurrentDiagramsRunInDocumentOrder() async throws {
+    let renderer = MermaidRenderer()
+    let codes = (1...5).map { "flowchart LR\n  N\($0) --> M\($0)" }
+    let requests = codes.map { request($0) }
+    renderer.setCurrentDiagrams(requests)
+    let finished = expectation(description: "all diagrams")
+    finished.expectedFulfillmentCount = codes.count
+    for current in requests.reversed() {
+      renderer.render(current) { diagram in
+        XCTAssertNil(diagram.failure)
+        finished.fulfill()
+      }
+    }
+    await fulfillment(of: [finished], timeout: 20)
+    XCTAssertEqual(renderer.engine.startedJobs, codes)
+  }
+
+  func testConcurrentRequestsAndDropsNeverLoseACallback() async throws {
+    let renderer = MermaidRenderer()
+    let requests = (0..<5).map { request("flowchart LR\n  R\($0) --> S\($0)") }
+    let total = 40
+    let finished = expectation(description: "every request completes")
+    finished.expectedFulfillmentCount = total
+    let outcomes = RenderRecording()
+    DispatchQueue.global().async {
+      DispatchQueue.concurrentPerform(iterations: total) { index in
+        if index % 4 == 0 {
+          renderer.setCurrentDiagrams(Array(requests.shuffled().prefix(2)))
+        }
+        renderer.render(requests[index % requests.count], queue: .global()) { diagram in
+          XCTAssertTrue(
+            diagram.failure == nil || diagram.failure == .cancelled, "\(String(describing: diagram.failure))")
+          outcomes.completed()
+          finished.fulfill()
+        }
+      }
+    }
+    await fulfillment(of: [finished], timeout: 60)
+    XCTAssertEqual(outcomes.recordedEvents.count, total)
   }
 
   func testPinnedEntriesSurviveEviction() throws {
@@ -198,6 +245,8 @@ final class MermaidPolicyTests: XCTestCase {
     tight.pinned = [keys[0]]
     tight.insert(diagram, for: keys[0])
     XCTAssertEqual(tight.count, 1, "a pinned entry is kept even over the limit")
+    XCTAssertEqual(tight.pinnedBytes, diagram.byteCost)
+    XCTAssertGreaterThan(tight.pinnedBytes, tight.byteLimit)
     tight.pinned = []
     XCTAssertEqual(tight.count, 0, "unpinning trims")
   }

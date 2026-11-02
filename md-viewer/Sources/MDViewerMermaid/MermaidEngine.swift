@@ -11,9 +11,10 @@ enum MermaidOutcome: Sendable {
 
 struct MermaidJob: Sendable {
   var request: MermaidRequest
+  var sequence: Int
   var deadline: TimeInterval
-  var isWanted: @Sendable () -> Bool
-  var abandoned: @Sendable () -> Void
+  var dropIfUnwanted: @Sendable () -> Bool
+  var rank: @Sendable () -> Int?
   var sizeReady: @Sendable (CGSize) -> Void
   var finished: @Sendable (MermaidOutcome) -> Void
 }
@@ -30,6 +31,7 @@ final class MermaidEngine {
   let pageURL: URL?
   private var jobs: [MermaidJob] = []
   private var isBusy = false
+  private var isPumpScheduled = false
   private var page: MermaidPage?
   private var idleShutdown: DispatchWorkItem?
   private var startNotBefore: Date?
@@ -48,7 +50,7 @@ final class MermaidEngine {
     idleShutdown?.cancel()
     idleShutdown = nil
     jobs.append(job)
-    pump()
+    schedulePump()
   }
 
   func shutDown() {
@@ -71,24 +73,34 @@ final class MermaidEngine {
     page.webViewWebContentProcessDidTerminate(webView)
   }
 
-  private func pump() {
-    guard !isBusy else { return }
-    while let job = jobs.popLast() {
-      guard job.isWanted() else {
-        job.abandoned()
-        continue
-      }
-      isBusy = true
-      startedJobs.append(job.request.code)
-      Task { @MainActor in
-        let outcome = await self.run(job)
-        job.finished(outcome)
-        self.isBusy = false
+  private func schedulePump() {
+    guard !isPumpScheduled else { return }
+    isPumpScheduled = true
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated {
+        self.isPumpScheduled = false
         self.pump()
       }
+    }
+  }
+
+  private func pump() {
+    guard !isBusy else { return }
+    jobs.removeAll { $0.dropIfUnwanted() }
+    let order = jobs.enumerated().map { (index: $0.offset, rank: $0.element.rank() ?? .max, $0.element.sequence) }
+    guard let next = order.min(by: { ($0.rank, $0.2) < ($1.rank, $1.2) }) else {
+      scheduleIdleShutdown()
       return
     }
-    scheduleIdleShutdown()
+    let job = jobs.remove(at: next.index)
+    isBusy = true
+    startedJobs.append(job.request.code)
+    Task { @MainActor in
+      let outcome = await self.run(job)
+      job.finished(outcome)
+      self.isBusy = false
+      self.pump()
+    }
   }
 
   private func scheduleIdleShutdown() {
@@ -164,12 +176,8 @@ final class MermaidEngine {
   private func failQueuedJobs(_ reason: String) {
     let queued = jobs
     jobs = []
-    for job in queued {
-      if job.isWanted() {
-        job.finished(.failed(.unavailable(reason)))
-      } else {
-        job.abandoned()
-      }
+    for job in queued where !job.dropIfUnwanted() {
+      job.finished(.failed(.unavailable(reason)))
     }
   }
 

@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import os
 
 public final class MermaidRenderer: @unchecked Sendable {
   public struct Configuration: Sendable {
@@ -61,6 +62,10 @@ public final class MermaidRenderer: @unchecked Sendable {
   private var pending: [MermaidCacheKey: Pending] = [:]
   private var timeouts: [MermaidSourceKey: TimeoutRecord] = [:]
   private var wanted: Set<MermaidCacheKey>?
+  private var currentOrder: [MermaidCacheKey: Int] = [:]
+  private var nextSequence = 0
+  private var reportedPinnedOverflow = false
+  private static let log = Logger(subsystem: "md-viewer", category: "mermaid")
 
   public init(configuration: Configuration = Configuration(), pageURL: URL? = MermaidRenderer.locatePage()) {
     self.configuration = configuration
@@ -110,15 +115,25 @@ public final class MermaidRenderer: @unchecked Sendable {
     }
   }
 
+  /// Declares the diagrams the viewer still needs, most important first. Their cache entries are pinned and
+  /// queued requests run in this order. Queued requests for any other key complete with `.cancelled`; request
+  /// such a diagram again (for example on a provider miss) if it is needed later.
   public func setCurrentDiagrams(_ requests: [MermaidRequest]) {
-    let keys = Set(requests.map(\.key))
+    let keys = requests.map(\.key)
     lock.withLock {
-      wanted = keys
-      cache.pinned = keys
-      failures.pinned = keys
+      wanted = Set(keys)
+      currentOrder = [:]
+      for (index, key) in keys.enumerated() where currentOrder[key] == nil {
+        currentOrder[key] = index
+      }
+      cache.pinned = Set(keys)
+      failures.pinned = Set(keys)
+      checkPinnedBudget()
     }
   }
 
+  /// Renders a diagram, coalescing identical requests. `sizeReady` runs before `completion`, both on `queue`.
+  /// A request dropped by `setCurrentDiagrams` completes with `.cancelled`, which is never cached.
   public func render(
     _ request: MermaidRequest, queue: DispatchQueue = .main, sizeReady: (@Sendable (CGSize) -> Void)? = nil,
     completion: @escaping @Sendable (MermaidDiagram) -> Void
@@ -150,13 +165,16 @@ public final class MermaidRenderer: @unchecked Sendable {
       resolve(.timedOut, request: request, key: key, isRetry: false)
       return
     }
+    nextSequence += 1
+    let sequence = nextSequence
     lock.unlock()
 
     let isRetry = record != nil
     let job = MermaidJob(
-      request: request, deadline: isRetry ? configuration.retryTimeout : configuration.diagramTimeout,
-      isWanted: { [self] in isWanted(key) },
-      abandoned: { [self] in abandon(key) },
+      request: request, sequence: sequence,
+      deadline: isRetry ? configuration.retryTimeout : configuration.diagramTimeout,
+      dropIfUnwanted: { [self] in dropIfUnwanted(key) },
+      rank: { [self] in lock.withLock { currentOrder[key] } },
       sizeReady: { [self] size in reportSize(size, for: key) },
       finished: { [self] outcome in finish(outcome, request: request, key: key, isRetry: isRetry) })
     let engine = engine
@@ -181,12 +199,19 @@ public final class MermaidRenderer: @unchecked Sendable {
     cache.value(for: key) ?? failures.value(for: key)
   }
 
-  private func isWanted(_ key: MermaidCacheKey) -> Bool {
-    lock.withLock { wanted?.contains(key) ?? true }
+  private func dropIfUnwanted(_ key: MermaidCacheKey) -> Bool {
+    lock.withLock {
+      guard let wanted, !wanted.contains(key) else { return false }
+      complete(key, with: .cancelled)
+      return true
+    }
   }
 
-  private func abandon(_ key: MermaidCacheKey) {
-    lock.withLock { _ = pending.removeValue(forKey: key) }
+  private func checkPinnedBudget() {
+    guard !reportedPinnedOverflow, cache.pinnedBytes > cache.byteLimit else { return }
+    reportedPinnedOverflow = true
+    Self.log.notice(
+      "pinned Mermaid diagrams use \(self.cache.pinnedBytes) bytes, over the \(self.cache.byteLimit) byte cache limit")
   }
 
   private func reportSize(_ size: CGSize, for key: MermaidCacheKey) {
@@ -206,6 +231,7 @@ public final class MermaidRenderer: @unchecked Sendable {
       lock.withLock {
         timeouts[key.source] = nil
         cache.insert(diagram, for: key)
+        checkPinnedBudget()
         complete(key, with: diagram)
       }
     case .failed(let failure):
@@ -214,6 +240,9 @@ public final class MermaidRenderer: @unchecked Sendable {
   }
 
   private func resolve(_ failure: MermaidFailure, request: MermaidRequest, key: MermaidCacheKey, isRetry: Bool) {
+    if failure == .cancelled {
+      return lock.withLock { complete(key, with: .cancelled) }
+    }
     let configuration = configuration
     workQueue.async { [self] in
       let diagram = MermaidErrorImage.make(
@@ -223,6 +252,8 @@ public final class MermaidRenderer: @unchecked Sendable {
         switch failure {
         case .syntax:
           cache.insert(diagram, for: key)
+        case .cancelled:
+          break
         case .unavailable:
           failures.insert(diagram, for: key, expiry: now.addingTimeInterval(configuration.failureBackoff))
         case .timedOut:
@@ -253,7 +284,9 @@ public final class MermaidRenderer: @unchecked Sendable {
 
   private func deliver(_ diagram: MermaidDiagram, to waiters: [Waiter]) {
     for var waiter in waiters {
-      send(diagram.size, to: &waiter)
+      if diagram.failure != .cancelled {
+        send(diagram.size, to: &waiter)
+      }
       let completion = waiter.completion
       waiter.queue.async { completion(diagram) }
     }

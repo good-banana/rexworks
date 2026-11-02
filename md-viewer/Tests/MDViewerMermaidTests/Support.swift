@@ -102,3 +102,16 @@ func waitUntil(
 func pause(_ seconds: TimeInterval) async throws {
   try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
 }
+
+final class DiagramResults: @unchecked Sendable {
+  private let lock = NSLock()
+  private var results: [Int: MermaidDiagram] = [:]
+
+  func set(_ index: Int, _ diagram: MermaidDiagram) {
+    lock.withLock { results[index] = diagram }
+  }
+
+  func get(_ index: Int) -> MermaidDiagram? {
+    lock.withLock { results[index] }
+  }
+}
