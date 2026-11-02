@@ -22,6 +22,7 @@ public struct HostServices {
   public var trace: (@Sendable (String) -> Void)?
   public var screenScale: CGFloat?
   public var watchesFiles: Bool
+  public var reduceMotion: () -> Bool
 
   public init(
     output: TerminalOutput, pasteboard: PasteboardWriting = SystemPasteboard(),
@@ -33,7 +34,7 @@ public struct HostServices {
     },
     crossCheck: @escaping @Sendable (ResolvedTheme) -> String? = { _ in nil },
     log: @escaping @Sendable (String) -> Void = { _ in }, trace: (@Sendable (String) -> Void)? = nil,
-    screenScale: CGFloat? = nil, watchesFiles: Bool = true
+    screenScale: CGFloat? = nil, watchesFiles: Bool = true, reduceMotion: @escaping () -> Bool = { false }
   ) {
     self.output = output
     self.pasteboard = pasteboard
@@ -49,6 +50,7 @@ public struct HostServices {
     self.trace = trace
     self.screenScale = screenScale
     self.watchesFiles = watchesFiles
+    self.reduceMotion = reduceMotion
   }
 }
 
@@ -85,6 +87,10 @@ public final class ViewerHost {
   var synchronousLayout = false
   var watcher: FileWatcher?
   var tickTimer: DispatchSourceTimer?
+  var player = AnimationPlayer()
+  let animationFrames = AnimationFrames()
+  var animationTimer: DispatchSourceTimer?
+  var lastAnimationTick: UInt64 = 0
 
   public init(size: PaneSize, theme: ResolvedTheme, themeQueryTimedOut: Bool = false, services: HostServices) {
     self.services = services
@@ -178,6 +184,8 @@ public final class ViewerHost {
     watcher = nil
     tickTimer?.cancel()
     tickTimer = nil
+    animationTimer?.cancel()
+    animationTimer = nil
     worker.stop()
     services.mermaid?.shutDown()
     transport.shutdown()
@@ -185,6 +193,7 @@ public final class ViewerHost {
 
   func settle() {
     scheduleTick()
+    updateAnimations()
     driver.kick()
   }
 
@@ -416,8 +425,63 @@ public final class ViewerHost {
     }
     source.rasterizer = Rasterizer(
       layout: layout, palette: palette,
-      assets: RenderAssets(image: services.images.imageProvider(relativeTo: interaction.file), diagram: diagram),
+      assets: RenderAssets(image: animatedImageProvider(), diagram: diagram),
       highlights: highlights)
+  }
+
+  func animatedImageProvider() -> @Sendable (String) -> CGImage? {
+    let images = services.images
+    let document = interaction.file
+    let frames = animationFrames
+    return { source in images.image(for: source, relativeTo: document)?.frame(frames.index(for: source)) }
+  }
+
+  // MARK: Animation
+
+  func updateAnimations() {
+    var visible: [String: AnimationPlayer.Clip] = [:]
+    if !services.reduceMotion(), !interaction.helpVisible, !transport.isStopped, let layout = interaction.layout {
+      for box in layout.images {
+        guard case .image(let source) = box.content, visible[source] == nil,
+          layout.displayRect(box.rect, region: box.region).intersects(visibleRect),
+          let image = services.images.image(for: source, relativeTo: interaction.file), image.isAnimated
+        else { continue }
+        visible[source] = AnimationPlayer.Clip(delays: image.delays, loopCount: image.loopCount)
+      }
+    }
+    player.show(visible, at: Self.now())
+    scheduleAnimation()
+  }
+
+  func scheduleAnimation() {
+    guard let deadline = player.nextDeadline else { return }
+    if animationTimer == nil {
+      let timer = DispatchSource.makeTimerSource(queue: .main)
+      timer.setEventHandler { [weak self] in
+        MainActor.assumeIsolated { self?.animationTick() }
+      }
+      timer.schedule(deadline: .distantFuture)
+      timer.resume()
+      animationTimer = timer
+    }
+    let at = max(deadline, lastAnimationTick + AnimationPlayer.minimumTickInterval)
+    animationTimer?.schedule(deadline: DispatchTime(uptimeNanoseconds: at))
+  }
+
+  func animationTick() {
+    let now = Self.now()
+    lastAnimationTick = now
+    guard let layout = interaction.layout else { return }
+    for source in player.advance(at: now) {
+      let frame = player.frame(for: source)
+      animationFrames.set(frame, for: source)
+      trace("animate \(source) frame \(frame)")
+      for box in layout.images where box.content == .image(source: source) {
+        let rect = layout.displayRect(box.rect, region: box.region).intersection(visibleRect)
+        if !rect.isNull { invalidate(rect) }
+      }
+    }
+    settle()
   }
 
   // MARK: Highlighting

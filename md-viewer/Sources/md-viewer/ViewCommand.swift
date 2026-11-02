@@ -41,7 +41,8 @@ enum ViewCommand {
       crossCheck: { $0.note(for: Terminal.themeResolver().crossCheck($0, sourceBlock: source)) },
       log: { log.write($0) },
       trace: trace,
-      screenScale: NSScreen.main?.backingScaleFactor)
+      screenScale: NSScreen.main?.backingScaleFactor,
+      reduceMotion: { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion })
     let host = ViewerHost(
       size: size, theme: resolved.theme, themeQueryTimedOut: resolved.queryTimedOut, services: services)
     host.onQuit = { quit(host) }

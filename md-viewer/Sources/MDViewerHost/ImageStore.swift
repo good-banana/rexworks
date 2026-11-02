@@ -48,11 +48,23 @@ public enum ImageLocation: Hashable, Sendable {
 public struct LoadedImage: @unchecked Sendable {
   public let image: CGImage
   public let size: CGSize
+  public let frames: [CGImage]
+  public let delays: [TimeInterval]
+  public let loopCount: Int
 
-  public init(image: CGImage, size: CGSize) {
+  public init(image: CGImage, size: CGSize, frames: [CGImage] = [], delays: [TimeInterval] = [], loopCount: Int = 0) {
     self.image = image
     self.size = size
+    self.frames = frames.isEmpty ? [image] : frames
+    self.delays = delays.count == self.frames.count ? delays : Array(repeating: 0.1, count: self.frames.count)
+    self.loopCount = loopCount
   }
+
+  public var isAnimated: Bool { frames.count > 1 }
+
+  public var byteCost: Int { frames.reduce(0) { $0 + $1.bytesPerRow * $1.height } }
+
+  public func frame(_ index: Int) -> CGImage { frames.indices.contains(index) ? frames[index] : image }
 }
 
 public final class ImageStore: @unchecked Sendable {
@@ -65,19 +77,21 @@ public final class ImageStore: @unchecked Sendable {
     public var maximumPixels: Int
     public var maximumDimension: Int
     public var cacheBytes: Int
+    public var maximumAnimationBytes: Int
     public var timeout: TimeInterval
 
     public init(
       maximumBytes: Int = 16 << 20, maximumSourcePixels: Int = 100_000_000,
       maximumPixels: Int = ImageStore.maximumDisplayDimension * ImageStore.maximumDisplayDimension,
       maximumDimension: Int = ImageStore.maximumDisplayDimension, cacheBytes: Int = 128 << 20,
-      timeout: TimeInterval = 5
+      maximumAnimationBytes: Int = 32 << 20, timeout: TimeInterval = 5
     ) {
       self.maximumBytes = maximumBytes
       self.maximumSourcePixels = maximumSourcePixels
       self.maximumPixels = maximumPixels
       self.maximumDimension = maximumDimension
       self.cacheBytes = cacheBytes
+      self.maximumAnimationBytes = maximumAnimationBytes
       self.timeout = timeout
     }
   }
@@ -285,7 +299,7 @@ public final class ImageStore: @unchecked Sendable {
 
   private static func cost(_ entry: Entry) -> Int {
     switch entry.state {
-    case .loaded(let image), .loading(.some(let image)): image.image.bytesPerRow * image.image.height
+    case .loaded(let image), .loading(.some(let image)): image.byteCost
     default: 0
     }
   }
@@ -313,7 +327,49 @@ public final class ImageStore: @unchecked Sendable {
       kCGImageSourceThumbnailMaxPixelSize: longEdge,
     ]
     guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-    return LoadedImage(image: image, size: size)
+    let count = CGImageSourceGetCount(source)
+    let frameBytes = image.bytesPerRow * image.height
+    guard count > 1, frameBytes.multipliedReportingOverflow(by: count).partialValue <= limits.maximumAnimationBytes
+    else { return LoadedImage(image: image, size: size) }
+    var frames = [image]
+    var delays = [frameDelay(source, at: 0)]
+    for index in 1..<count {
+      guard let frame = CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary) else {
+        return LoadedImage(image: image, size: size)
+      }
+      frames.append(frame)
+      delays.append(frameDelay(source, at: index))
+    }
+    return LoadedImage(image: image, size: size, frames: frames, delays: delays, loopCount: loopCount(source))
+  }
+
+  public static func normalizedDelay(_ raw: Double?) -> TimeInterval {
+    guard let raw, raw.isFinite, raw > 0.010_5 else { return 0.1 }
+    return max(raw, 0.02)
+  }
+
+  static func frameDelay(_ source: CGImageSource, at index: Int) -> TimeInterval {
+    let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any] ?? [:]
+    if let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any] {
+      return normalizedDelay(
+        (gif[kCGImagePropertyGIFUnclampedDelayTime] as? Double) ?? (gif[kCGImagePropertyGIFDelayTime] as? Double))
+    }
+    if let png = properties[kCGImagePropertyPNGDictionary] as? [CFString: Any] {
+      return normalizedDelay(
+        (png[kCGImagePropertyAPNGUnclampedDelayTime] as? Double) ?? (png[kCGImagePropertyAPNGDelayTime] as? Double))
+    }
+    return 0.1
+  }
+
+  static func loopCount(_ source: CGImageSource) -> Int {
+    let properties = CGImageSourceCopyProperties(source, nil) as? [CFString: Any] ?? [:]
+    if let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any] {
+      return gif[kCGImagePropertyGIFLoopCount] as? Int ?? 1
+    }
+    if let png = properties[kCGImagePropertyPNGDictionary] as? [CFString: Any] {
+      return png[kCGImagePropertyAPNGLoopCount] as? Int ?? 0
+    }
+    return 0
   }
 }
 
