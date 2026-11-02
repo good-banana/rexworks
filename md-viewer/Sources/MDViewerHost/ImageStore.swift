@@ -57,6 +57,7 @@ public struct LoadedImage: @unchecked Sendable {
 
 public final class ImageStore: @unchecked Sendable {
   public static let maximumDisplayDimension = 4096
+  public static let minimumDisplayDimension = 256
 
   public struct Limits: Sendable {
     public var maximumBytes: Int
@@ -104,6 +105,7 @@ public final class ImageStore: @unchecked Sendable {
     var state: State
     var stamp: FileStamp?
     var lastUse: UInt64 = 0
+    var decodedFor = Int.max
   }
 
   public let limits: Limits
@@ -150,7 +152,8 @@ public final class ImageStore: @unchecked Sendable {
   }
 
   public func setDisplayWidth(_ pixels: Int) {
-    let dimension = min(max(pixels, 1), limits.maximumDimension)
+    guard pixels >= Self.minimumDisplayDimension else { return }
+    let dimension = min(pixels, limits.maximumDimension)
     lock.withLock { displayDimension = dimension }
   }
 
@@ -206,7 +209,7 @@ public final class ImageStore: @unchecked Sendable {
       guard let self else { return }
       let dimension = lock.withLock { displayDimension }
       let image = data.flatMap { ImageStore.decode($0, limits: self.limits, dimension: dimension) }
-      store(image, at: location, stamp: stamp)
+      store(image, at: location, stamp: stamp, decodedFor: dimension)
       queue.async { completion(image != nil) }
     }
     switch location {
@@ -246,7 +249,10 @@ public final class ImageStore: @unchecked Sendable {
         case .loading: return nil
         case .failed: guard stamp != nil, entry.stamp != stamp else { return nil }
         case .loaded(let image):
-          guard stamp != nil, entry.stamp != stamp else { return nil }
+          let changedOnDisk = stamp != nil && entry.stamp != stamp
+          let downscaled = CGFloat(image.image.width) < (image.size.width - 0.5).rounded(.down)
+          let sharper = downscaled && displayDimension > entry.decodedFor
+          guard changedOnDisk || sharper else { return nil }
           previous = image
         }
       }
@@ -255,10 +261,13 @@ public final class ImageStore: @unchecked Sendable {
     }
   }
 
-  private func store(_ image: LoadedImage?, at location: ImageLocation, stamp: FileStamp?) {
+  private func store(
+    _ image: LoadedImage?, at location: ImageLocation, stamp: FileStamp?, decodedFor: Int = .max
+  ) {
     lock.withLock {
       useCounter += 1
-      entries[location] = Entry(state: image.map(State.loaded) ?? .failed, stamp: stamp, lastUse: useCounter)
+      entries[location] = Entry(
+        state: image.map(State.loaded) ?? .failed, stamp: stamp, lastUse: useCounter, decodedFor: decodedFor)
       evict()
     }
   }
