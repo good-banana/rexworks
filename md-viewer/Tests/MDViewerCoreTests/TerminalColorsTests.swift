@@ -18,7 +18,7 @@ final class TerminalColorsTests: XCTestCase {
   }
 
   func testRestoreSequenceUndoesEverything() {
-    for mode in ["?2031l", "?1016l", "?1006l", "?1000l", "?25h", "?1049l"] {
+    for mode in ["?2031l", "?2048l", "?1016l", "?1006l", "?1000l", "?25h", "?1049l"] {
       XCTAssertTrue(TerminalSequences.restore.contains(mode))
     }
     XCTAssertTrue(TerminalSequences.restore.contains(Kitty.deleteAll()))

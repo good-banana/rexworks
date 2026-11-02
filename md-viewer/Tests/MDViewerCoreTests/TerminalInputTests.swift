@@ -139,4 +139,39 @@ final class TerminalInputTests: XCTestCase {
     XCTAssertEqual(p.feed(Array("\u{1b}[c\u{1b}[>1;10;0c".utf8)), [])
     XCTAssertFalse(InputEvent.deviceAttributes.requestsThemeResolve)
   }
+
+  func testInBandSizeReports() {
+    var p = InputParser()
+    XCTAssertEqual(
+      p.feed(Array("\u{1b}[48;61;70;2013;980tj".utf8)),
+      [.paneSize(PaneSize(columns: 70, rows: 61, pixelWidth: 980, pixelHeight: 2013)), .key(.char("j"))])
+    XCTAssertEqual(p.feed(Array("\u{1b}[48;61;70t".utf8)), [])
+    XCTAssertEqual(p.feed(Array("\u{1b}[?2048;2$y".utf8)), [.modeReport(ModeReport(mode: 2048, state: 2))])
+    XCTAssertFalse(ModeReport(mode: 2048, state: 0).isRecognized)
+  }
+
+  func testGraphicsResponses() {
+    var p = InputParser()
+    XCTAssertEqual(
+      p.feed(Array("\u{1b}_Gi=2147483648;OK\u{1b}\\k".utf8)),
+      [.graphics(GraphicsResponse(id: 2_147_483_648, message: "OK")), .key(.char("k"))])
+    XCTAssertEqual(p.feed(Array("\u{1b}_Gi=5,r=1;ENOENT: image".utf8)), [])
+    XCTAssertEqual(
+      p.feed(Array(" not found\u{1b}".utf8)), [])
+    XCTAssertEqual(
+      p.feed(Array("\\".utf8)), [.graphics(GraphicsResponse(id: 5, message: "ENOENT: image not found"))])
+  }
+
+  func testAltUnderscoreIsNotAGraphicsResponse() {
+    var p = InputParser()
+    XCTAssertEqual(p.feed(Array("\u{1b}_x".utf8)), [.key(.escape), .key(.char("_")), .key(.char("x"))])
+    XCTAssertEqual(
+      p.feed(Array("\u{1b}_G j".utf8)),
+      [.key(.escape), .key(.char("_")), .key(.char("G")), .key(.char(" ")), .key(.char("j"))])
+  }
+
+  func testPaneSizeHasPixels() {
+    XCTAssertTrue(PaneSize(columns: 80, rows: 24, pixelWidth: 800, pixelHeight: 480).hasPixels)
+    XCTAssertFalse(PaneSize(columns: 80, rows: 24, pixelWidth: 0, pixelHeight: 0).hasPixels)
+  }
 }

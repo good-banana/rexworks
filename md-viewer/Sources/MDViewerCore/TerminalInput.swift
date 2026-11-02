@@ -48,11 +48,42 @@ public enum ColorScheme: Equatable, Sendable {
   }
 }
 
+public struct PaneSize: Equatable, Hashable, Sendable {
+  public var columns: Int
+  public var rows: Int
+  public var pixelWidth: Int
+  public var pixelHeight: Int
+
+  public init(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) {
+    self.columns = columns
+    self.rows = rows
+    self.pixelWidth = pixelWidth
+    self.pixelHeight = pixelHeight
+  }
+
+  public var hasPixels: Bool { columns > 0 && rows > 0 && pixelWidth >= columns && pixelHeight >= rows }
+}
+
+public struct ModeReport: Equatable, Sendable {
+  public var mode: Int
+  public var state: Int
+
+  public init(mode: Int, state: Int) {
+    self.mode = mode
+    self.state = state
+  }
+
+  public var isRecognized: Bool { state != 0 }
+}
+
 public enum InputEvent: Equatable {
   case key(Key)
   case mouse(MouseEvent)
   case colorScheme(ColorScheme)
   case deviceAttributes
+  case paneSize(PaneSize)
+  case modeReport(ModeReport)
+  case graphics(GraphicsResponse)
 
   public var requestsThemeResolve: Bool {
     switch self {
@@ -96,6 +127,7 @@ public struct InputParser {
       if pending[1] == 0x5b { return parseCSI() }
       if pending[1] == 0x4f { return parseSS3() }
       if pending[1] == 0x5d { return skipOSC() }
+      if pending[1] == 0x5f { return parseGraphicsResponse() }
       return .event(.key(.escape), 1)
     }
     return parseSimple(first)
@@ -156,6 +188,28 @@ public struct InputParser {
     return pending.count > Self.maximumStringSequence ? .event(nil, pending.count) : .incomplete
   }
 
+  private func parseGraphicsResponse() -> Parsed {
+    guard pending.count > 2 else { return .incomplete }
+    guard pending[2] == 0x47 else { return .event(.key(.escape), 1) }
+    var index = 3
+    while index < pending.count, pending[index] != 0x3b {
+      let byte = pending[index]
+      let isKey = (0x30...0x39).contains(byte) || (0x41...0x5a).contains(byte) || (0x61...0x7a).contains(byte)
+      guard isKey || byte == 0x3d || byte == 0x2c else { return .event(.key(.escape), 1) }
+      index += 1
+    }
+    while index < pending.count {
+      if pending[index] == 0x1b {
+        guard index + 1 < pending.count else { return .incomplete }
+        guard pending[index + 1] == 0x5c else { return .event(nil, index) }
+        let payload = String(decoding: pending[2..<index], as: UTF8.self)
+        return .event(GraphicsResponse(payload: payload).map { .graphics($0) }, index + 2)
+      }
+      index += 1
+    }
+    return pending.count > Self.maximumStringSequence ? .event(nil, pending.count) : .incomplete
+  }
+
   private func parseCSI() -> Parsed {
     var index = 2
     while index < pending.count {
@@ -177,6 +231,16 @@ public struct InputParser {
       return .colorScheme(scheme)
     }
     if final == 0x63, params.hasPrefix("?") { return .deviceAttributes }
+    if final == 0x74, params.hasPrefix("48;") {
+      let fields = params.split(separator: ";").compactMap { Int($0) }
+      guard fields.count == 5 else { return nil }
+      return .paneSize(PaneSize(columns: fields[2], rows: fields[1], pixelWidth: fields[4], pixelHeight: fields[3]))
+    }
+    if final == 0x79, params.hasPrefix("?"), params.hasSuffix("$") {
+      let fields = params.dropFirst().dropLast().split(separator: ";").compactMap { Int($0) }
+      guard fields.count == 2 else { return nil }
+      return .modeReport(ModeReport(mode: fields[0], state: fields[1]))
+    }
     switch final {
     case 0x41: return .key(.up)
     case 0x42: return .key(.down)
