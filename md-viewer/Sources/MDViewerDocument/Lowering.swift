@@ -364,7 +364,15 @@ struct Lowering {
     guard URLSafety.isSafe(source) else { return nil }
     return Image(
       source: source, title: attributes["title"] ?? "", alt: attributes["alt"] ?? "",
-      width: pixels(attributes["width"]), height: pixels(attributes["height"]), sources: [])
+      width: pixels(attributes["width"]), height: pixels(attributes["height"]), sources: [],
+      widthPercent: percent(attributes["width"]), heightPercent: percent(attributes["height"]))
+  }
+
+  private func percent(_ value: String?) -> Double? {
+    guard let value = value?.trimmingWhitespace(), value.hasSuffix("%"),
+      let number = Double(String(value.dropLast()).trimmingWhitespace()), number.isFinite, number > 0
+    else { return nil }
+    return min(number, 100)
   }
 
   private func video(_ element: TreeElement) -> Image? {

@@ -29,7 +29,11 @@ final class HTMLTests: XCTestCase {
     XCTAssertEqual(
       paragraphShape("x <img src=\"a.png\" alt=\"An &amp; image\" width=\"100\" height=50px>"),
       "\"x \" img(a.png width=100 height=50: \"An & image\")")
-    XCTAssertEqual(paragraphShape("x <img src=\"a.png\" width=\"50%\">"), "\"x \" img(a.png: \"\")")
+    XCTAssertEqual(paragraphShape("x <img src=\"a.png\" width=\"50%\">"), "\"x \" img(a.png width=50.0%: \"\")")
+    XCTAssertEqual(
+      paragraphShape("x <img src=\"a.png\" width=\" 49.5 %\" height=\"250%\">"),
+      "\"x \" img(a.png width=49.5% height=100.0%: \"\")", "percentages are trimmed and capped at 100")
+    XCTAssertEqual(paragraphShape("x <img src=\"a.png\" width=\"-5%\">"), "\"x \" img(a.png: \"\")")
     XCTAssertEqual(paragraphShape("x <KBD>Up</KBD>"), "\"x \" kbd(\"Up\")")
   }
 

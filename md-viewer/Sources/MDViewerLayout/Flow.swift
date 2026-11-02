@@ -299,13 +299,21 @@ extension LayoutEngine {
     return image.source.isEmpty ? image.sources.first?.source ?? "" : image.source
   }
 
+  func percentOf(_ column: CGFloat?, _ percent: Double?) -> CGFloat? {
+    guard let column, let percent else { return nil }
+    return column * CGFloat(percent) / 100
+  }
+
   func imageSize(_ index: Int, maxWidth: CGFloat) -> (size: CGSize, intrinsic: Bool) {
     let image = prepared.images[index].image
     let chosen = chosenSource(image)
     let loaded = input.imageSize(chosen.isEmpty ? image.video ?? "" : chosen)
     let provided = loaded ?? (image.video == nil ? nil : typography.videoPlaceholderSize)
-    var width = image.width.map { CGFloat($0) }
-    var height = image.height.map { CGFloat($0) }
+    let column = maxWidth.isFinite ? maxWidth / typography.scale : nil
+    let explicitWidth = image.width.map { CGFloat($0) } ?? percentOf(column, image.widthPercent)
+    let explicitHeight = image.height.map { CGFloat($0) } ?? percentOf(column, image.heightPercent)
+    var width = explicitWidth
+    var height = explicitHeight
     if width == nil, height == nil, let provided {
       width = provided.width
       height = provided.height
@@ -314,8 +322,7 @@ extension LayoutEngine {
     } else if height == nil, let known = width, let provided, provided.width > 0 {
       height = known * provided.height / provided.width
     }
-    let intrinsic =
-      (image.width != nil && image.height != nil) || (loaded != nil && (width != nil || height != nil))
+    let intrinsic = (explicitWidth != nil && explicitHeight != nil) || loaded != nil
     var size: CGSize
     if let width, let height {
       size = CGSize(width: typography.pixels(cssPoints: width), height: typography.pixels(cssPoints: height))
