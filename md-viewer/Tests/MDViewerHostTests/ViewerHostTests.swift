@@ -298,6 +298,22 @@ final class ViewerHostTests: XCTestCase {
     XCTAssertEqual(fixture.host.interaction.layout?.images.first?.rect.width, first.rect.width * 2)
   }
 
+  func testFindCommitsWithEveryEnterEncodingThenNMovesToTheNextMatch() throws {
+    let text = (1...12).map { "Paragraph \($0) mentions the index once." }.joined(separator: "\n\n")
+    for enter in ["\r", "\u{1b}[13u", "\u{1b}[57414u", "\u{1b}OM"] {
+      let fixture = try HostFixture(text)
+      fixture.host.receive(Array("/".utf8))
+      for character in "index" { fixture.host.receive(Array(String(character).utf8)) }
+      fixture.host.receive(Array(enter.utf8))
+      XCTAssertNil(fixture.host.interaction.findField, "Enter \(enter.debugDescription) commits the field")
+      fixture.host.receive(Array("n".utf8))
+      XCTAssertEqual(fixture.host.interaction.findQuery, "index")
+      XCTAssertEqual(fixture.host.interaction.status.message?.text, "2/12", "Enter \(enter.debugDescription)")
+      XCTAssertEqual(fixture.host.source.overlay.currentMatch, 1)
+      XCTAssertEqual(fixture.host.source.overlay.findMatches.count, 12, "the highlights reach the frame source")
+    }
+  }
+
   func testStoppedDrawingIsReportedAsTextAndLogged() throws {
     let fixture = try HostFixture(document)
     _ = fixture.output.take()

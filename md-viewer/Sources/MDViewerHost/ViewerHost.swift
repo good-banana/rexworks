@@ -138,6 +138,9 @@ public final class ViewerHost {
 
   public func receive(_ bytes: [UInt8]) {
     let now = Self.now()
+    if services.trace != nil, bytes.count <= 64, !bytes.starts(with: Array("\u{1b}_G".utf8)) {
+      trace("input \(String(decoding: bytes, as: UTF8.self).debugDescription)")
+    }
     let collecting = themeReplies != nil
     themeReplies?.feed(bytes)
     for event in parser.feed(bytes, at: now) { handle(event, answeringThemeQuery: collecting, at: now) }
@@ -237,6 +240,10 @@ public final class ViewerHost {
       invalidate(rect)
     case .redrawStatusBar:
       source.status = interaction.status
+      if services.trace != nil {
+        let status = interaction.status
+        trace("status \(status.findField.map { "find [\($0)] " } ?? "")\(status.message?.text ?? "")")
+      }
       if !inRelayout { transport.invalidateStatusBar() }
     case .redrawAll:
       syncFrameSource()

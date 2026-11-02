@@ -24,7 +24,7 @@ final class InteractionInputTests: XCTestCase {
     XCTAssertEqual(events("\u{1b}[9;2u"), [.key(.backTab)])
     XCTAssertEqual(events("\u{1b}[108;2u"), [.key(.char("L"))])
     XCTAssertEqual(events("\u{1b}[99:67;9u"), [.key(.command("c"))], "alternate key fields are ignored")
-    XCTAssertEqual(events("\u{1b}[57399u"), [], "private-use functional keys are dropped")
+    XCTAssertEqual(events("\u{1b}[57441u"), [], "other private-use functional keys (left Shift) are dropped")
     XCTAssertEqual(events("\u{1b}[?1u"), [], "a flags reply is not a key")
     XCTAssertEqual(events("\u{1b}[113;5u"), [.key(.ctrl("q"))])
     XCTAssertEqual(
@@ -32,6 +32,18 @@ final class InteractionInputTests: XCTestCase {
     XCTAssertEqual(events("\u{1b}[5;5~"), [.key(.pageUp)])
     XCTAssertEqual(events("\u{1b}[106;3u"), [], "Alt plus a key is not the bare key")
     XCTAssertEqual(events("\u{1b}[223;2u"), [.key(.char("\u{df}"))], "multi-character uppercase keeps the key")
+  }
+
+  func testKeypadKeysUnderTheKittyProtocol() {
+    XCTAssertEqual(events("\u{1b}[57414u"), [.key(.enter)], "keypad Enter, also fn-Return on Mac laptops")
+    XCTAssertEqual(events("\u{1b}[57414;1u"), [.key(.enter)])
+    XCTAssertEqual(events("\u{1b}OM"), [.key(.enter)], "keypad Enter in application keypad mode")
+    XCTAssertEqual(
+      events("\u{1b}[57399u\u{1b}[57408u\u{1b}[57413u\u{1b}[57412u\u{1b}[57415u\u{1b}[57410u"),
+      [.key(.char("0")), .key(.char("9")), .key(.char("+")), .key(.char("-")), .key(.char("=")), .key(.char("/"))])
+    XCTAssertEqual(
+      events("\u{1b}[57419u\u{1b}[57420u\u{1b}[57421u\u{1b}[57422u\u{1b}[57423u\u{1b}[57424u"),
+      [.key(.up), .key(.down), .key(.pageUp), .key(.pageDown), .key(.home), .key(.end)])
   }
 
   func testModifyOtherKeys() {

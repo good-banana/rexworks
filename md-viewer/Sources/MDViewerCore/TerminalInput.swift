@@ -1,4 +1,4 @@
-public enum Key: Equatable {
+public enum Key: Equatable, Sendable {
   case char(Character)
   case up, down, left, right, pageUp, pageDown, home, end
   case enter, tab, backTab, backspace, shiftBackspace, escape
@@ -167,6 +167,7 @@ public struct InputParser {
       case 0x44: .left
       case 0x48: .home
       case 0x46: .end
+      case 0x4d: .enter
       default: nil
       }
     return .event(key.map { .key($0) }, 3)
@@ -307,7 +308,20 @@ public struct InputParser {
     return Self.modifiedKey(code: fields[2], modifiers: fields[1]).map { .key($0) }
   }
 
-  private static func modifiedKey(code: Int, modifiers: Int) -> Key? {
+  private static let keypadKeys: [Int: Key] = [
+    57414: .enter, 57417: .left, 57418: .right, 57419: .up, 57420: .down, 57421: .pageUp, 57422: .pageDown,
+    57423: .home, 57424: .end,
+  ]
+
+  private static let keypadText: [Int: Int] = [
+    57399: 0x30, 57400: 0x31, 57401: 0x32, 57402: 0x33, 57403: 0x34, 57404: 0x35, 57405: 0x36, 57406: 0x37,
+    57407: 0x38, 57408: 0x39, 57409: 0x2e, 57410: 0x2f, 57411: 0x2a, 57412: 0x2d, 57413: 0x2b, 57415: 0x3d,
+    57416: 0x2c,
+  ]
+
+  private static func modifiedKey(code rawCode: Int, modifiers: Int) -> Key? {
+    if let key = keypadKeys[rawCode] { return key }
+    let code = keypadText[rawCode] ?? rawCode
     let bits = max(modifiers - 1, 0)
     let shift = bits & 1 != 0
     let control = bits & 4 != 0
