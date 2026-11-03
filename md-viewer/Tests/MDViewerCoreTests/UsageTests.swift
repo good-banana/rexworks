@@ -13,4 +13,9 @@ final class UsageTests: XCTestCase {
     XCTAssertTrue(commandUsage.contains("--new always opens a\n"))
     XCTAssertTrue(commandUsage.contains("--replace updates the preview this pane opened last."))
   }
+
+  func testEditAndConfigAreDescribed() {
+    XCTAssertTrue(commandUsage.contains("edit [--here] [--line N] <file>"))
+    XCTAssertTrue(commandUsage.contains("config [get|set|unset <name> [value]]"))
+  }
 }

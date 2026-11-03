@@ -1,50 +1,69 @@
 import Foundation
 import MDViewerCore
 
+struct OpenFailure: Error, CustomStringConvertible {
+  let description: String
+}
+
 enum OpenCommand {
   static func run(_ arguments: OpenArguments) -> Never {
-    guard let file = validatedMarkdownFile(arguments.file) else {
-      fail("not a Markdown file: \(arguments.file)", status: 1)
-    }
-    let runner = ProcessRunner()
-    let paths = SupportPaths(home: FileManager.default.homeDirectoryForCurrentUser)
-    let config = try? ConfigStore.load(paths)
-    guard let rex = config?.rexPath ?? locateExecutable("rex") else { fail("rex not found", status: 1) }
-    let mdViewer = config?.mdViewerPath ?? ownExecutable().path
-    let viewerIsCurrent = isSameExecutable(mdViewer, ownExecutable().path)
-
     do {
-      let target = try openTarget(
-        environment: ProcessInfo.processInfo.environment,
-        inspectBlock: { try? rexJSON(runner, rex, ["block", "inspect", $0, "--json"]) },
-        focusedTarget: { try focusedTarget(runner, rex) })
-
-      let lock = OpenLock.acquire(paths.openLock)
-      var previews: [PreviewPane] = []
-      if let window = target.window {
-        let blocks = try rexJSON(runner, rex, ["block", "ls", "-s", target.session, "--json"])
-        previews = reachablePreviews(previewBlocks(blockListJSON: blocks, window: window)) {
-          ViewerSocketClient.query(paths.viewerSocket(block: $0))
-        }
-      }
-
-      let origin = viewerIsCurrent ? ViewerOrigin(themeSourceBlock: target.block, opener: target.block) : ViewerOrigin()
-      let outcome = resolveOpen(
-        target: target, file: file, previews: previews, policy: arguments.policy(config?.previewMode ?? .perFile)
-      ) { ViewerSocketClient.send(path: $1, to: paths.viewerSocket(block: $0)) }
-      switch outcome {
-      case .reused:
-        break
-      case .split(let placement):
-        _ = try rexJSON(
-          runner, rex, splitArguments(placement: placement, file: file, mdViewer: mdViewer, origin: origin))
-      case .newTab(let session):
-        _ = try rexJSON(runner, rex, tabArguments(session: session, file: file, mdViewer: mdViewer, origin: origin))
-      }
-      lock?.release()
+      _ = try open(arguments, requiresBlock: false)
       exit(0)
     } catch {
       fail("\(error)", status: 1)
+    }
+  }
+
+  static func open(_ arguments: OpenArguments, requiresBlock: Bool) throws -> String? {
+    guard let file = validatedMarkdownFile(arguments.file) else {
+      throw OpenFailure(description: "not a Markdown file: \(arguments.file)")
+    }
+    let runner = ProcessRunner()
+    let paths = currentPaths()
+    let config = try? ConfigStore.load(paths)
+    guard let rex = config?.rexPath ?? locateExecutable("rex") else { throw OpenFailure(description: "rex not found") }
+    let mdViewer = config?.mdViewerPath ?? ownExecutable().path
+    let viewerIsCurrent = isSameExecutable(mdViewer, ownExecutable().path)
+
+    let target = try openTarget(
+      environment: ProcessInfo.processInfo.environment,
+      inspectBlock: { try? rexJSON(runner, rex, ["block", "inspect", $0, "--json"]) },
+      focusedTarget: { try focusedTarget(runner, rex) })
+
+    let lock = OpenLock.acquire(paths.openLock)
+    defer { lock?.release() }
+    var previews: [PreviewPane] = []
+    if let window = target.window {
+      let blocks = try rexJSON(runner, rex, ["block", "ls", "-s", target.session, "--json"])
+      previews = reachablePreviews(previewBlocks(blockListJSON: blocks, window: window)) {
+        ViewerSocketClient.query(paths.viewerSocket(block: $0))
+      }
+    }
+    let knownPreviews =
+      requiresBlock
+      ? previewBlockIDs(
+        blockListJSON: (try? rexJSON(runner, rex, ["block", "ls", "-s", target.session, "--json"])) ?? Data())
+      : []
+
+    let origin = viewerIsCurrent ? ViewerOrigin(themeSourceBlock: target.block, opener: target.block) : ViewerOrigin()
+    let outcome = resolveOpen(
+      target: target, file: file, previews: previews, policy: arguments.policy(config?.previewMode ?? .perFile)
+    ) { ViewerSocketClient.send(path: $1, to: paths.viewerSocket(block: $0)) }
+    var runJSON: Data?
+    switch outcome {
+    case .reused:
+      break
+    case .split(let placement):
+      runJSON = try rexJSON(
+        runner, rex, splitArguments(placement: placement, file: file, mdViewer: mdViewer, origin: origin))
+    case .newTab(let session):
+      runJSON = try rexJSON(
+        runner, rex, tabArguments(session: session, file: file, mdViewer: mdViewer, origin: origin))
+    }
+    guard requiresBlock else { return nil }
+    return openedPreviewBlock(outcome: outcome, runJSON: runJSON, knownPreviews: knownPreviews) {
+      try? rexJSON(runner, rex, ["block", "ls", "-s", target.session, "--json"])
     }
   }
 

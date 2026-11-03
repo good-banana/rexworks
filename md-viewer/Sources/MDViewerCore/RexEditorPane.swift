@@ -54,9 +54,11 @@ public enum RexEditorPane {
     return result.blockIDs.first
   }
 
-  public static func fallbackBlockID(blockListJSON: Data, excluding known: Set<String>) -> String? {
+  public static func fallbackBlockID(
+    blockListJSON: Data, excluding known: Set<String>, label: String = editorPaneLabel
+  ) -> String? {
     guard let list = try? JSONDecoder().decode(BlockList.self, from: blockListJSON) else { return nil }
-    let candidates = list.blocks.filter { $0.label == editorPaneLabel && !known.contains($0.blockID) }
+    let candidates = list.blocks.filter { $0.label == label && !known.contains($0.blockID) }
     return candidates.count == 1 ? candidates.first?.blockID : nil
   }
 

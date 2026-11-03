@@ -323,4 +323,102 @@ final class OpenPlanTests: XCTestCase {
       planOpen(target: focused, file: b, previews: previews, policy: OpenArguments(file: b.path).policy(.perFile)),
       below("block:p"))
   }
+
+  private let runJSON = Data(#"{"block_ids":["block:new"]}"#.utf8)
+
+  func testAReusedPreviewIsTheBlockItself() {
+    let block = openedPreviewBlock(
+      outcome: .reused(block: "block:p", message: "/a.md"), runJSON: nil, knownPreviews: []
+    ) {
+      XCTFail("no block list is needed")
+      return nil
+    }
+    XCTAssertEqual(block, "block:p")
+  }
+
+  func testASplitOrNewTabPreviewIsParsedFromTheRunOutput() {
+    for outcome in [OpenOutcome.split(.beside(caller)), .newTab(session: "s")] {
+      XCTAssertEqual(
+        openedPreviewBlock(outcome: outcome, runJSON: runJSON, knownPreviews: []) { nil }, "block:new")
+    }
+  }
+
+  func testUnparseableRunOutputFallsBackToTheOneNewPreviewBlock() {
+    let list = Data(
+      """
+      {"blocks":[
+        {"block_id":"block:old","label":"md-viewer"},
+        {"block_id":"block:new","label":"md-viewer"},
+        {"block_id":"block:editor","label":"md-viewer-editor"}]}
+      """.utf8)
+    XCTAssertEqual(previewBlockIDs(blockListJSON: list), ["block:old", "block:new"])
+    let block = openedPreviewBlock(
+      outcome: .split(.beside(caller)), runJSON: Data("not json".utf8), knownPreviews: ["block:old"]
+    ) { list }
+    XCTAssertEqual(block, "block:new")
+    XCTAssertNil(
+      openedPreviewBlock(outcome: .newTab(session: "s"), runJSON: nil, knownPreviews: []) { list })
+    XCTAssertNil(openedPreviewBlock(outcome: .newTab(session: "s"), runJSON: nil, knownPreviews: []) { nil })
+  }
+
+  func testEditArgumentsParse() throws {
+    XCTAssertEqual(try EditArguments.parse(["a.md"]).get(), EditArguments(file: "a.md"))
+    XCTAssertEqual(
+      try EditArguments.parse(["--here", "--line", "12", "a.md"]).get(),
+      EditArguments(file: "a.md", here: true, line: 12))
+    XCTAssertEqual(
+      try EditArguments.parse(["a.md", "--line", "3"]).get(), EditArguments(file: "a.md", line: 3))
+    XCTAssertEqual(try EditArguments.parse(["--", "--here"]).get(), EditArguments(file: "--here"))
+  }
+
+  func testEditArgumentsRejectBadInput() {
+    for arguments in [
+      [], ["--here"], ["a.md", "b.md"], ["--line", "a.md"], ["--line", "0", "a.md"], ["--line", "x", "a.md"],
+      ["--bogus", "a.md"], ["a.md", "--line"],
+    ] {
+      XCTAssertThrowsError(try EditArguments.parse(arguments).get(), "\(arguments)")
+    }
+  }
+
+  func testHereSendsTheModeThatIsNotSplit() {
+    let plain = EditArguments(file: "a.md")
+    let here = EditArguments(file: "a.md", here: true)
+    XCTAssertEqual(plain.requestMode(editMode: .split), .configured)
+    XCTAssertEqual(plain.requestMode(editMode: .here), .configured)
+    XCTAssertEqual(here.requestMode(editMode: .split), .alternate)
+    XCTAssertEqual(here.requestMode(editMode: .here), .configured)
+  }
+
+  func testDeliveryRetriesEveryProbeIntervalUntilTheWindowEnds() {
+    var clock = Date(timeIntervalSince1970: 0)
+    var sleeps: [TimeInterval] = []
+    var attempts = 0
+    let delivered = deliverWithRetry(
+      window: 0.12, now: { clock },
+      sleep: {
+        sleeps.append($0)
+        clock = clock.addingTimeInterval($0)
+      },
+      attempt: {
+        attempts += 1
+        return false
+      })
+    XCTAssertFalse(delivered)
+    XCTAssertEqual(sleeps.count, 3)
+    XCTAssertEqual(sleeps[0], previewProbeInterval, accuracy: 0.0001)
+    XCTAssertEqual(sleeps[2], 0.02, accuracy: 0.0001)
+    XCTAssertEqual(attempts, 4)
+  }
+
+  func testDeliveryStopsAtTheFirstSuccess() {
+    var attempts = 0
+    let delivered = deliverWithRetry(
+      sleep: { _ in },
+      attempt: {
+        attempts += 1
+        return attempts == 3
+      })
+    XCTAssertTrue(delivered)
+    XCTAssertEqual(attempts, 3)
+  }
 }

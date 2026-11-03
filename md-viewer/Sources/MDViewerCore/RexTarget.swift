@@ -250,7 +250,7 @@ public struct ViewerOrigin: Equatable, Sendable {
 
 private func viewerCommand(file: URL, mdViewer: String, origin: ViewerOrigin) -> [String] {
   var command = [
-    "--focus=false", "--shell=none", "--label", previewBlockLabel,
+    "--json", "--focus=false", "--shell=none", "--label", previewBlockLabel,
     "--cwd", file.deletingLastPathComponent().path,
     "--", mdViewer, "view",
   ]
@@ -408,5 +408,86 @@ public struct OpenArguments: Equatable, Sendable {
     case .replace: .replace
     case .configured: mode == .single ? .replace : .perFile
     }
+  }
+}
+
+public func previewBlockIDs(blockListJSON: Data) -> Set<String> {
+  guard let list = try? JSONDecoder().decode(BlockList.self, from: blockListJSON) else { return [] }
+  return Set(list.blocks.filter { $0.label == previewBlockLabel }.map(\.blockID))
+}
+
+public func openedPreviewBlock(
+  outcome: OpenOutcome, runJSON: Data?, knownPreviews: Set<String>, blockListJSON: () -> Data?
+) -> String? {
+  switch outcome {
+  case .reused(let block, _):
+    return block
+  case .split, .newTab:
+    if let runJSON, let block = RexEditorPane.blockID(runJSON: runJSON) { return block }
+    return blockListJSON().flatMap {
+      RexEditorPane.fallbackBlockID(blockListJSON: $0, excluding: knownPreviews, label: previewBlockLabel)
+    }
+  }
+}
+
+public func deliverWithRetry(
+  window: TimeInterval = previewStartupWindow, now: () -> Date = Date.init,
+  sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }, attempt: () -> Bool
+) -> Bool {
+  let deadline = now().addingTimeInterval(window)
+  while true {
+    if attempt() { return true }
+    let remaining = deadline.timeIntervalSince(now())
+    guard remaining > 0 else { return false }
+    sleep(min(previewProbeInterval, remaining))
+  }
+}
+
+public let editUsage = "usage: md-viewer edit [--here] [--line N] <file>"
+
+public struct EditArguments: Equatable, Sendable {
+  public var file: String
+  public var here: Bool
+  public var line: Int
+
+  public init(file: String, here: Bool = false, line: Int = 1) {
+    self.file = file
+    self.here = here
+    self.line = line
+  }
+
+  public static func parse(_ arguments: [String]) -> Result<EditArguments, OpenArgumentsError> {
+    var file: String?
+    var here = false
+    var line = 1
+    var acceptsOptions = true
+    var index = 0
+    while index < arguments.count {
+      let argument = arguments[index]
+      index += 1
+      if acceptsOptions, argument == "--" {
+        acceptsOptions = false
+      } else if acceptsOptions, argument == "--here" {
+        here = true
+      } else if acceptsOptions, argument == "--line" {
+        guard index < arguments.count, let number = Int(arguments[index]), number >= 1 else {
+          return .failure(OpenArgumentsError(description: "--line needs a number of 1 or more\n\(editUsage)"))
+        }
+        line = number
+        index += 1
+      } else if acceptsOptions, argument.hasPrefix("-"), argument != "-" {
+        return .failure(OpenArgumentsError(description: "unknown option: \(argument)\n\(editUsage)"))
+      } else if file == nil {
+        file = argument
+      } else {
+        return .failure(OpenArgumentsError(description: editUsage))
+      }
+    }
+    guard let file else { return .failure(OpenArgumentsError(description: editUsage)) }
+    return .success(EditArguments(file: file, here: here, line: line))
+  }
+
+  public func requestMode(editMode: EditMode) -> EditRequestMode {
+    here && editMode == .split ? .alternate : .configured
   }
 }

@@ -19,6 +19,10 @@ case "open":
   case .success(let open): OpenCommand.run(open)
   case .failure(let error): fail(error.description, status: 64)
   }
+case "edit":
+  EditCommand.run(Array(arguments.dropFirst()))
+case "config":
+  ConfigCommand.run(Array(arguments.dropFirst()))
 case "setup":
   await SetupCommand.setup()
 case "uninstall":

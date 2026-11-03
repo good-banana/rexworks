@@ -155,7 +155,7 @@ final class RexTargetTests: XCTestCase {
       args,
       [
         "run", "--session", "session:1", "--block", "block:b", "--split", "right",
-        "--ratio", "45", "--focus=false", "--shell=none", "--label", "md-viewer",
+        "--ratio", "45", "--json", "--focus=false", "--shell=none", "--label", "md-viewer",
         "--cwd", "/tmp", "--", "/opt/homebrew/bin/md-viewer", "view", "--theme-source-block", "block:b",
         "--opener-block", "block:b", file.path,
       ])
@@ -174,7 +174,7 @@ final class RexTargetTests: XCTestCase {
     XCTAssertEqual(
       tabArguments(session: "session:1", file: file, mdViewer: "/bin/md-viewer"),
       [
-        "run", "--session", "session:1", "--focus=false", "--shell=none", "--label",
+        "run", "--session", "session:1", "--json", "--focus=false", "--shell=none", "--label",
         "md-viewer", "--cwd", "/tmp", "--", "/bin/md-viewer", "view", "/tmp/a.md",
       ])
     XCTAssertEqual(
