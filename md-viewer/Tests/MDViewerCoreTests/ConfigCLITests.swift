@@ -71,6 +71,21 @@ final class ConfigCLITests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: paths.configFile.path))
   }
 
+  func testSetEditorWithRelativePathIsNotFound() {
+    let output = runner().run(.set(.editor, "./bin/nvim"))
+    XCTAssertEqual(output.status, 1)
+    XCTAssertEqual(output.stderr, "not found: ./bin/nvim")
+  }
+
+  func testSetOnABrokenConfigExitsOneAndLeavesItUntouched() throws {
+    try FileManager.default.createDirectory(at: paths.root, withIntermediateDirectories: true)
+    try Data("{broken".utf8).write(to: paths.configFile)
+    let output = runner().run(.set(.editMode, "here"))
+    XCTAssertEqual(output.status, 1)
+    XCTAssertTrue(output.stderr.hasPrefix("config set failed: "), output.stderr)
+    XCTAssertEqual(try Data(contentsOf: paths.configFile), Data("{broken".utf8))
+  }
+
   func testSetEditorAcceptsCommandsOnPathAndAbsolutePaths() {
     XCTAssertEqual(runner().run(.set(.editor, "nvim -u NONE")).status, 0)
     XCTAssertEqual(SettingsStore.load(paths).editor, "nvim -u NONE")

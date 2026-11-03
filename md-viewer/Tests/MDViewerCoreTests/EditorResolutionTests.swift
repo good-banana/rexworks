@@ -137,6 +137,13 @@ final class EditorResolutionTests: XCTestCase {
     XCTAssertEqual(result.outcome, .stopped("editor setting: missing not found; , to choose"))
   }
 
+  func testRelativePathWithASlashDoesNotResolve() {
+    let relative = EditorResolver(
+      settings: settings(editor: "./bin/nvim"), ownEnvironment: [:],
+      loginEnvironment: { LoginEnvironment(variables: [:]) }, isExecutable: { _ in true })
+    XCTAssertEqual(relative.resolve().outcome, .stopped("editor setting: ./bin/nvim not found; , to choose"))
+  }
+
   func testVisualBeforeEditorInOwnEnvironment() throws {
     let result = resolver(
       own: ["EDITOR": "vim", "VISUAL": "nvim"], login: ["PATH": "/login/bin:/usr/bin"]

@@ -216,7 +216,7 @@ public struct EditorResolver {
   }
 
   private func locate(_ word: String, login: LoginEnvironment) -> String? {
-    if word.contains("/") { return isExecutable(word) ? word : nil }
+    if word.contains("/") { return word.hasPrefix("/") && isExecutable(word) ? word : nil }
     let directories =
       Self.pathDirectories(login.variables["PATH"]) + Self.pathDirectories(ownEnvironment["PATH"])
     return directories.map { "\($0)/\(word)" }.first(where: isExecutable)

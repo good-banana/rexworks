@@ -100,9 +100,22 @@ public final class ViewerControl {
   private func receive(_ event: ViewerControlEvent) {
     if host == nil || isHolding || !pending.isEmpty {
       if event == .theme, pending.last == .theme { return }
+      if isHolding, !enqueueWhileHolding(event) { return }
       pending.append(event)
     } else {
       deliver(event)
+    }
+  }
+
+  private func enqueueWhileHolding(_ event: ViewerControlEvent) -> Bool {
+    guard case .editor(let message) = event else { return true }
+    switch message {
+    case .edit: return true
+    case .cursor(let envelope, _, _, _):
+      guard envelope.token == holdToken else { return false }
+      pending.removeAll { if case .editor(.cursor) = $0 { true } else { false } }
+      return true
+    default: return false
     }
   }
 

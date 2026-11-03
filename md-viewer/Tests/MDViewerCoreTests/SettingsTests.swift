@@ -113,6 +113,23 @@ final class SettingsTests: XCTestCase {
     XCTAssertNotNil(object["editMode"])
   }
 
+  func testUnparseableConfigIsLeftUntouchedAndUpdateAndSaveThrow() throws {
+    for content in ["not json", #"["rexPath"]"#, ""] {
+      let paths = try paths()
+      try Data(content.utf8).write(to: paths.configFile)
+      XCTAssertThrowsError(try SettingsStore.update(paths, set: [.editMode: "here"]), content)
+      XCTAssertThrowsError(
+        try ConfigStore.save(Config(rexPath: "/r", mdViewerPath: "/m", previousHandlers: [:]), paths), content)
+      XCTAssertEqual(try Data(contentsOf: paths.configFile), Data(content.utf8))
+    }
+  }
+
+  func testSettingsOnlyConfigLoadsAsNotSetUp() throws {
+    let paths = try paths()
+    try SettingsStore.update(paths, set: [.editMode: "here"])
+    XCTAssertNil(try ConfigStore.load(paths))
+  }
+
   func testConfigSaveKeepsTheEditorKeys() throws {
     let paths = try paths()
     try SettingsStore.update(paths, set: [.editor: "hx", .editorKind: "helix", .editMode: "here", .previews: "single"])

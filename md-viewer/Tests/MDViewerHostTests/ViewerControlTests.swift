@@ -118,7 +118,21 @@ final class ViewerControlTests: XCTestCase {
     control.receive(editor: .clean(envelope("h", seq: 4)))
     XCTAssertEqual(follows, ["a|/docs/one.md", "h|/docs/two.md"])
     XCTAssertEqual(delivered, 1, "held messages are not delivered")
-    XCTAssertEqual(control.pending.count, 3)
+    XCTAssertEqual(control.pending.count, 1, "only the handoff cursor is kept")
+  }
+
+  func testManyCursorsDuringAHoldLeaveOneQueued() throws {
+    let control = ViewerControl()
+    control.beginHold(token: "h")
+    for seq in 1...200 {
+      control.receive(editor: .cursor(envelope("h", seq: seq), line: seq, top: 1, height: 10))
+      control.receive(editor: .cursor(envelope("stale", seq: seq), line: seq, top: 1, height: 10))
+    }
+    control.receive(editor: .buffer(envelope("h", seq: 9), text: URL(fileURLWithPath: "/tmp/b.md")))
+    control.receive(editor: .unlinked(envelope("h", seq: 10)))
+    XCTAssertEqual(control.pending.count, 1)
+    let last = EditorMessage.cursor(envelope("h", seq: 200), line: 200, top: 1, height: 10)
+    XCTAssertEqual(control.endHold(), last)
   }
 
   func testHoldQueuesEverythingAndReleaseReplaysInOrder() throws {

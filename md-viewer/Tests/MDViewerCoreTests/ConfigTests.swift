@@ -73,13 +73,13 @@ final class ConfigTests: XCTestCase {
     XCTAssertEqual(try ConfigStore.load(paths)?.previewMode, .perFile)
   }
 
-  func testSavingOverACorruptFileStartsFresh() throws {
+  func testSavingOverACorruptFileThrowsAndKeepsIt() throws {
     let paths = SupportPaths(home: temporaryHome())
     try FileManager.default.createDirectory(at: paths.root, withIntermediateDirectories: true)
     try Data("not json".utf8).write(to: paths.configFile)
     let config = Config(rexPath: "/r", mdViewerPath: "/m", previousHandlers: [:])
-    try ConfigStore.save(config, paths)
-    XCTAssertEqual(try ConfigStore.load(paths), config)
+    XCTAssertThrowsError(try ConfigStore.save(config, paths))
+    XCTAssertEqual(try Data(contentsOf: paths.configFile), Data("not json".utf8))
   }
 
   func testLoadMissingReturnsNil() throws {

@@ -107,7 +107,7 @@ public enum SettingsStore {
       throw SettingsError(message: "invalid value for \(key.rawValue): \(value)")
     }
     try ConfigStore.withLock(paths) {
-      var object = ConfigStore.readObject(paths)
+      var object = try ConfigStore.readObjectForUpdate(paths)
       for key in unset { object.removeValue(forKey: key.rawValue) }
       for (key, value) in set { object[key.rawValue] = value }
       try ConfigStore.write(object, paths)
@@ -118,13 +118,18 @@ public enum SettingsStore {
 public enum ConfigStore {
   public static func load(_ paths: SupportPaths) throws -> Config? {
     guard FileManager.default.fileExists(atPath: paths.configFile.path) else { return nil }
-    return try JSONDecoder().decode(Config.self, from: Data(contentsOf: paths.configFile))
+    let data = try Data(contentsOf: paths.configFile)
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      throw SettingsError(message: "\(paths.configFile.path) is not a JSON object")
+    }
+    guard object["rexPath"] != nil else { return nil }
+    return try JSONDecoder().decode(Config.self, from: data)
   }
 
   public static func save(_ config: Config, _ paths: SupportPaths) throws {
     let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any] ?? [:]
     try withLock(paths) {
-      try write(readObject(paths).merging(encoded) { _, new in new }, paths)
+      try write(readObjectForUpdate(paths).merging(encoded) { _, new in new }, paths)
     }
   }
 
@@ -140,6 +145,16 @@ public enum ConfigStore {
   static func readObject(_ paths: SupportPaths) -> [String: Any] {
     (try? Data(contentsOf: paths.configFile))
       .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+  }
+
+  static func readObjectForUpdate(_ paths: SupportPaths) throws -> [String: Any] {
+    guard FileManager.default.fileExists(atPath: paths.configFile.path) else { return [:] }
+    guard
+      let object = try? JSONSerialization.jsonObject(with: Data(contentsOf: paths.configFile)) as? [String: Any]
+    else {
+      throw SettingsError(message: "\(paths.configFile.path) is not a valid JSON object; fix or remove it")
+    }
+    return object
   }
 
   static func write(_ object: [String: Any], _ paths: SupportPaths) throws {

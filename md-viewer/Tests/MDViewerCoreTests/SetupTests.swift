@@ -206,6 +206,26 @@ final class SetupTests: XCTestCase {
     XCTAssertEqual(siblings, ["MD Viewer.app"])
   }
 
+  func testInstallAfterASettingWasWrittenKeepsTheSetting() async throws {
+    let env = try makeEnvironment()
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    let paths = SupportPaths(home: env.home)
+    try SettingsStore.update(paths, set: [.editMode: "here", .editor: "hx"])
+    let config = try await env.installer.install(bundledApp: env.bundle, rexPath: "/r", mdViewerPath: "/m")
+    XCTAssertEqual(try ConfigStore.load(paths), config)
+    let settings = SettingsStore.load(paths)
+    XCTAssertEqual(settings.editMode, .here)
+    XCTAssertEqual(settings.editor, "hx")
+  }
+
+  func testUninstallAfterASettingWasWrittenSucceeds() async throws {
+    let env = try makeEnvironment()
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    try SettingsStore.update(SupportPaths(home: env.home), set: [.editMode: "here"])
+    let failures = try await env.installer.uninstall()
+    XCTAssertEqual(failures, [])
+  }
+
   func testFailedDefaultSetKeepsConfigForRestore() async throws {
     let env = try makeEnvironment()
     defer { try? FileManager.default.removeItem(at: env.home) }

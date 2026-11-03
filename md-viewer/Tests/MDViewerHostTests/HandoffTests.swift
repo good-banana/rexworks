@@ -288,7 +288,7 @@ final class HandoffTests: XCTestCase {
     })
     XCTAssertEqual(
       fixture.editor.registry.entry(block: EditorFixture.previewBlock)?.files, [fixture.editor.file.path, other.path])
-    XCTAssertEqual(fixture.control.pending.count, 1)
+    XCTAssertEqual(fixture.control.pending.count, 0, "a held follow is dropped on arrival")
     XCTAssertEqual(fixture.host.interaction.file, fixture.editor.file)
   }
 
