@@ -63,6 +63,7 @@ public final class SyntaxHighlighter: @unchecked Sendable {
   private var engine: ScriptEngine?
   private var abandoned: ScriptEngine?
   private(set) var enginesCreated = 0
+  private(set) var scriptRuns = 0
   private(set) var mostAbandonedRunning = 0
   private var retired: [WeakEngine] = []
   private var slowInputs: [String: Int] = [:]
@@ -204,6 +205,7 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     let relevance = configuration.autoDetectMinimumRelevance
     let sample = configuration.autoDetectSampleLength
     engine.isBusy = true
+    scriptRuns += 1
     engine.queue.async {
       output.set(engine.evaluate(code: code, language: language, relevance: relevance, sample: sample))
       engine.isBusy = false

@@ -196,9 +196,10 @@ final class ReviewFixTests: XCTestCase {
     let highlighter = SyntaxHighlighter(configuration: configuration)
     let code = String(repeating: "value = compute(item) + 1\n", count: 400)
     XCTAssertEqual(highlight(code, language: nil, using: highlighter).outcome, .timedOut)
-    let start = DispatchTime.now().uptimeNanoseconds
+    XCTAssertEqual(highlighter.scriptRuns, 1)
     XCTAssertEqual(highlight(code + "more = 2\n", language: nil, using: highlighter).outcome, .timedOut)
-    XCTAssertLessThan(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6, 500)
+    XCTAssertEqual(highlighter.scriptRuns, 1)
+    XCTAssertEqual(highlighter.enginesCreated, 1)
   }
 
   func testCacheIsBoundedBySpanCount() {
