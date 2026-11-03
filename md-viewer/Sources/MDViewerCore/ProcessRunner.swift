@@ -47,18 +47,14 @@ public struct ProcessRunner: ProcessRunning {
       throw ProcessRunnerError(message: "cannot launch \(executable): \(error.localizedDescription)")
     }
 
+    let deadline = DispatchTime.now() + max(limit, 0)
     let group = DispatchGroup()
-    let stdoutBox = DataBox()
-    let stderrBox = DataBox()
-    for (pipe, box) in [(outPipe, stdoutBox), (errPipe, stderrBox)] {
-      group.enter()
-      DispatchQueue.global().async {
-        box.set(pipe.fileHandleForReading.readDataToEndOfFile())
-        group.leave()
-      }
-    }
+    let stdoutReader = PipeReader(outPipe.fileHandleForReading, group: group)
+    let stderrReader = PipeReader(errPipe.fileHandleForReading, group: group)
 
-    if finished.wait(timeout: .now() + max(limit, 0)) == .timedOut {
+    if finished.wait(timeout: deadline) == .timedOut {
+      stdoutReader.stop()
+      stderrReader.stop()
       process.terminate()
       if finished.wait(timeout: .now() + 0.1) == .timedOut {
         kill(process.processIdentifier, SIGKILL)
@@ -66,18 +62,53 @@ public struct ProcessRunner: ProcessRunning {
       }
       throw ProcessRunnerError(message: "\(executable) timed out after \(limit) seconds")
     }
-    group.wait()
-    return (process.terminationStatus, stdoutBox.value, stderrBox.value)
+    _ = group.wait(timeout: min(.now() + Self.outputGrace, deadline))
+    stdoutReader.stop()
+    stderrReader.stop()
+    return (process.terminationStatus, stdoutReader.data, stderrReader.data)
   }
+
+  static let outputGrace: TimeInterval = 0.2
 }
 
-private final class DataBox: @unchecked Sendable {
+private final class PipeReader: @unchecked Sendable {
   private let lock = NSLock()
-  private var data = Data()
+  private let handle: FileHandle
+  private let group: DispatchGroup
+  private var buffer = Data()
+  private var stopped = false
 
-  var value: Data { lock.withLock { data } }
+  init(_ handle: FileHandle, group: DispatchGroup) {
+    self.handle = handle
+    self.group = group
+    group.enter()
+    handle.readabilityHandler = { [weak self] _ in self?.drain() }
+  }
 
-  func set(_ newValue: Data) {
-    lock.withLock { data = newValue }
+  var data: Data { lock.withLock { buffer } }
+
+  func stop() {
+    lock.withLock {
+      guard !stopped else { return }
+      stopped = true
+      handle.readabilityHandler = nil
+      try? handle.close()
+      group.leave()
+    }
+  }
+
+  private func drain() {
+    lock.withLock {
+      guard !stopped else { return }
+      let chunk = handle.availableData
+      if chunk.isEmpty {
+        stopped = true
+        handle.readabilityHandler = nil
+        try? handle.close()
+        group.leave()
+      } else {
+        buffer.append(chunk)
+      }
+    }
   }
 }
