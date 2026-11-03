@@ -69,6 +69,8 @@ public final class ViewerSocketServer: @unchecked Sendable {
   private let status: ViewerStatus?
   private let onOpen: (URL) -> Void
   private let onTheme: () -> Void
+  private let onEditor: (EditorMessage) -> Void
+  private let buffersDirectory: URL?
   private let descriptor: Int32
   private let source: DispatchSourceRead
   private let queue = DispatchQueue(label: "md-viewer.socket")
@@ -80,12 +82,15 @@ public final class ViewerSocketServer: @unchecked Sendable {
   public var path: URL { socketURL }
 
   public init(
-    socket: URL, status: ViewerStatus? = nil, onOpen: @escaping (URL) -> Void, onTheme: @escaping () -> Void = {}
+    socket: URL, status: ViewerStatus? = nil, buffersDirectory: URL? = nil, onOpen: @escaping (URL) -> Void,
+    onTheme: @escaping () -> Void = {}, onEditor: @escaping (EditorMessage) -> Void = { _ in }
   ) throws {
     socketURL = socket
     self.status = status
     self.onOpen = onOpen
     self.onTheme = onTheme
+    self.onEditor = onEditor
+    self.buffersDirectory = buffersDirectory
     try FileManager.default.createDirectory(
       at: socket.deletingLastPathComponent(), withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
@@ -143,7 +148,12 @@ public final class ViewerSocketServer: @unchecked Sendable {
       data += buffer[0..<count]
     }
     let first = data.prefix(maxOpenMessageBytes).prefix { $0 != 10 }
-    switch parseViewerMessage(String(decoding: first, as: UTF8.self), fileExists: isRegularFile) {
+    let line = String(decoding: first, as: UTF8.self)
+    if line.hasPrefix("{") {
+      if let message = parseEditorMessage(line, buffersDirectory: buffersDirectory) { onEditor(message) }
+      return
+    }
+    switch parseViewerMessage(line, fileExists: isRegularFile) {
     case .open(let url): onOpen(url)
     case .theme: onTheme()
     case .state: reply(client)

@@ -1,33 +1,73 @@
 import Foundation
 import MDViewerCore
 
+public enum ViewerControlEvent: Equatable, Sendable {
+  case open(URL)
+  case theme
+  case editor(EditorMessage)
+}
+
 @MainActor
 public final class ViewerControl {
   private var host: ViewerHost?
-  private(set) var pendingOpens: [URL] = []
-  private(set) var pendingTheme = false
+  private var holdToken: String?
+  private(set) var pending: [ViewerControlEvent] = []
+  public var onEditorMessage: ((EditorMessage) -> Void)?
+  public var onLiveFollow: ((_ token: String, _ file: String) -> Void)?
 
   public init() {}
 
+  public var isHolding: Bool { holdToken != nil }
+
   public func attach(_ host: ViewerHost) {
     self.host = host
-    for url in pendingOpens { host.open(url) }
-    if pendingTheme { host.themeChanged() }
-    pendingOpens = []
-    pendingTheme = false
+    if !isHolding { flush() }
   }
 
   public func open(_ url: URL) {
-    if let host { host.open(url) } else { pendingOpens.append(url) }
+    receive(.open(url))
   }
 
   public func themeChanged() {
-    if let host { host.themeChanged() } else { pendingTheme = true }
+    receive(.theme)
   }
 
-  public nonisolated func listen(on socket: URL, status: ViewerStatus) throws -> ViewerSocketServer {
+  public func receive(editor message: EditorMessage) {
+    if case .follow(let envelope) = message { onLiveFollow?(envelope.token, envelope.file) }
+    receive(.editor(message))
+  }
+
+  public func beginHold(token: String) {
+    holdToken = token
+  }
+
+  public func endHold() {
+    guard let token = holdToken else { return }
+    holdToken = nil
+    pending = Self.replay(pending, handoffToken: token)
+    flush()
+  }
+
+  nonisolated static func replay(_ events: [ViewerControlEvent], handoffToken: String) -> [ViewerControlEvent] {
+    var lastCursor: Int?
+    for (index, event) in events.enumerated() {
+      if case .editor(.cursor(let envelope, _, _, _)) = event, envelope.token == handoffToken { lastCursor = index }
+    }
+    return events.enumerated().compactMap { index, event in
+      switch event {
+      case .editor(.edit): event
+      case .editor(.cursor): index == lastCursor ? event : nil
+      case .editor: nil
+      case .open, .theme: event
+      }
+    }
+  }
+
+  public nonisolated func listen(on socket: URL, status: ViewerStatus, buffersDirectory: URL? = nil) throws
+    -> ViewerSocketServer
+  {
     try ViewerSocketServer(
-      socket: socket, status: status,
+      socket: socket, status: status, buffersDirectory: buffersDirectory,
       onOpen: { url in
         DispatchQueue.main.async {
           MainActor.assumeIsolated { self.open(url) }
@@ -37,6 +77,35 @@ public final class ViewerControl {
         DispatchQueue.main.async {
           MainActor.assumeIsolated { self.themeChanged() }
         }
+      },
+      onEditor: { message in
+        DispatchQueue.main.async {
+          MainActor.assumeIsolated { self.receive(editor: message) }
+        }
       })
+  }
+
+  private func receive(_ event: ViewerControlEvent) {
+    if host == nil || isHolding {
+      if event == .theme, pending.last == .theme { return }
+      pending.append(event)
+    } else {
+      deliver(event)
+    }
+  }
+
+  private func flush() {
+    guard host != nil else { return }
+    let events = pending
+    pending = []
+    for event in events { deliver(event) }
+  }
+
+  private func deliver(_ event: ViewerControlEvent) {
+    switch event {
+    case .open(let url): host?.open(url)
+    case .theme: host?.themeChanged()
+    case .editor(let message): onEditorMessage?(message)
+    }
   }
 }
