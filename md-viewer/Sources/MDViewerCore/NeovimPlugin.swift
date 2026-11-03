@@ -490,7 +490,12 @@ public enum NeovimPlugin {
         if not is_markdown(args.buf) then return end
         setup_buffer(args.buf)
         write_sidecar()
-        schedule_text(args.buf)
+        if args.event == 'BufWritePost' then
+          buffers[args.buf].text_timer:stop()
+          send_text(args.buf)
+        else
+          schedule_text(args.buf)
+        end
       end)
       on({ 'TextChanged', 'TextChangedI', 'TextChangedP', 'FileChangedShellPost' }, function(args)
         if is_markdown(args.buf) then schedule_text(args.buf) end

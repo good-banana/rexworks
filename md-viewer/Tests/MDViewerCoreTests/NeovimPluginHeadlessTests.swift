@@ -4,7 +4,11 @@ import XCTest
 @testable import MDViewerCore
 
 final class NeovimPluginHeadlessTests: XCTestCase {
-  private static let nvim = "/opt/homebrew/bin/nvim"
+  private static let nvim: String? = {
+    let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+    let directories = path.split(separator: ":").map(String.init) + ["/opt/homebrew/bin", "/usr/local/bin"]
+    return directories.map { "\($0)/nvim" }.first { FileManager.default.isExecutableFile(atPath: $0) }
+  }()
   private static let timeout: TimeInterval = 10
 
   private final class Inbox: @unchecked Sendable {
@@ -37,7 +41,7 @@ final class NeovimPluginHeadlessTests: XCTestCase {
   }
 
   private func start() throws -> Session {
-    try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: Self.nvim), "nvim is not installed")
+    guard let nvim = Self.nvim else { throw XCTSkip("nvim is not installed") }
     let directory = URL(fileURLWithPath: "/tmp").appendingPathComponent("mdv-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let paths = SupportPaths(home: directory.appendingPathComponent("home"))
@@ -48,7 +52,9 @@ final class NeovimPluginHeadlessTests: XCTestCase {
     try Data("other\n".utf8).write(to: other)
     let preview = directory.appendingPathComponent("p.sock")
     let inbox = Inbox()
-    let server = try ViewerSocketServer(socket: preview, onOpen: { _ in }, onEditor: { inbox.add($0) })
+    let buffers = directory.appendingPathComponent("buffers")
+    let server = try ViewerSocketServer(
+      socket: preview, buffersDirectory: buffers, onOpen: { _ in }, onEditor: { inbox.add($0) })
     let control = directory.appendingPathComponent("c.sock")
     let listen = directory.appendingPathComponent("l.sock")
     let marker = directory.appendingPathComponent("go")
@@ -56,7 +62,7 @@ final class NeovimPluginHeadlessTests: XCTestCase {
       "lua vim.wait(\(Int(Self.timeout * 1000)), function() return vim.uv.fs_stat('\(marker.path)') ~= nil end, 10)"
       + " vim.wait(300)"
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: Self.nvim)
+    process.executableURL = URL(fileURLWithPath: nvim)
     process.arguments = [
       "--headless", "-u", "NONE", "-i", "NONE", "-n", "--listen", listen.path,
       "--cmd", "lua dofile(os.getenv('MD_VIEWER_PLUGIN'))", "-c", "lua MdViewer.ensure()", "-c", gate, file.path,
@@ -64,7 +70,7 @@ final class NeovimPluginHeadlessTests: XCTestCase {
     process.environment = ProcessInfo.processInfo.environment.merging([
       "MD_VIEWER_SOCKET": preview.path, "MD_VIEWER_TOKEN": "A", "MD_VIEWER_CONTROL": control.path,
       "MD_VIEWER_FILES": directory.appendingPathComponent("files").path,
-      "MD_VIEWER_BUFFERS": directory.appendingPathComponent("buffers").path,
+      "MD_VIEWER_BUFFERS": buffers.path,
       "MD_VIEWER_PLUGIN": paths.neovimPlugin.path,
     ]) { $1 }
     process.standardInput = FileHandle.nullDevice
@@ -91,13 +97,18 @@ final class NeovimPluginHeadlessTests: XCTestCase {
   @discardableResult
   private func remote(_ arguments: [String], _ session: Session) throws -> String {
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: Self.nvim)
+    process.executableURL = URL(fileURLWithPath: try XCTUnwrap(Self.nvim))
     process.arguments = ["--server", session.listen.path] + arguments
     let output = Pipe()
     process.standardOutput = output
     process.standardError = FileHandle.nullDevice
     try process.run()
     wait("nvim --server") { !process.isRunning }
+    if process.isRunning {
+      kill(process.processIdentifier, SIGKILL)
+      process.waitUntilExit()
+      return ""
+    }
     let data = output.fileHandleForReading.readDataToEndOfFile()
     return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
   }
@@ -146,5 +157,21 @@ final class NeovimPluginHeadlessTests: XCTestCase {
     let afterQuit = summary(session.inbox.messages)
     XCTAssertFalse(afterQuit.contains { $0.hasPrefix("C ") }, "\(afterQuit)")
     XCTAssertEqual(afterQuit.last, "B exit a.md")
+  }
+
+  func testASaveSendsCleanBeforeLaterCommands() throws {
+    let session = try start()
+    FileManager.default.createFile(atPath: session.marker.path, contents: nil)
+    wait("the VimEnter snapshot") { summary(session.inbox.messages).filter { $0 == "A follow a.md" }.count == 2 }
+    try remote(["--remote-expr", "execute('call setline(1, \"changed\")')"], session)
+    wait("the unsaved buffer") { summary(session.inbox.messages).contains("A buffer a.md") }
+    try remote(["--remote-expr", "execute('write')"], session)
+    send(.link(socket: session.preview.path, token: "B", file: session.file.path, line: 1), session)
+    wait("the relink") { summary(session.inbox.messages).contains("B follow a.md") }
+    let received = summary(session.inbox.messages)
+    let saved = try XCTUnwrap(received.lastIndex(of: "A clean a.md"), "\(received)")
+    let relinked = try XCTUnwrap(received.firstIndex(of: "B follow a.md"))
+    XCTAssertLessThan(saved, relinked, "clean goes out on BufWritePost, not after a debounce: \(received)")
+    XCTAssertGreaterThan(saved, try XCTUnwrap(received.lastIndex(of: "A buffer a.md")))
   }
 }

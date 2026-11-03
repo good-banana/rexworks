@@ -99,6 +99,8 @@ public final class ViewerHost {
   var tickTimerDeadline: UInt64?
   var lastAnimationTick: UInt64 = 0
   var liveBufferNoticeShown = false
+  var liveBufferSession = 0
+  var diskChangePending = false
   var displaySuspended = false
   var drainCompletion: (() -> Void)?
   var drainID = 0
@@ -187,13 +189,28 @@ public final class ViewerHost {
 
   public func fileChanged() {
     if interaction.liveBuffer {
-      if !liveBufferNoticeShown {
-        liveBufferNoticeShown = true
-        perform(interaction.show(Self.liveBufferNotice, kind: .info, at: Self.now()))
-      }
+      scheduleDiskChangeNotice()
     } else {
       reloadFile()
     }
+    settle()
+  }
+
+  func scheduleDiskChangeNotice() {
+    guard !liveBufferNoticeShown, !diskChangePending else { return }
+    diskChangePending = true
+    let session = liveBufferSession
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.editorSaveGrace) { [weak self] in
+      MainActor.assumeIsolated { self?.noticeDiskChange(session: session) }
+    }
+  }
+
+  func noticeDiskChange(session: Int) {
+    diskChangePending = false
+    guard interaction.liveBuffer, session == liveBufferSession, !liveBufferNoticeShown else { return }
+    if let url = interaction.file, (try? read(url)) == interaction.source { return }
+    liveBufferNoticeShown = true
+    perform(interaction.show(Self.liveBufferNotice, kind: .info, at: Self.now()))
     settle()
   }
 
@@ -387,6 +404,7 @@ public final class ViewerHost {
   // MARK: Editor
 
   public static let liveBufferNotice = "File changed on disk; showing the editor's unsaved text"
+  static let editorSaveGrace: TimeInterval = 0.5
 
   public func attachEditor(_ editor: EditorCoordinator) {
     self.editor = editor
@@ -444,6 +462,7 @@ public final class ViewerHost {
   }
 
   func leaveLiveBuffer() {
+    if interaction.liveBuffer { liveBufferSession += 1 }
     perform(interaction.setLiveBuffer(false))
   }
 

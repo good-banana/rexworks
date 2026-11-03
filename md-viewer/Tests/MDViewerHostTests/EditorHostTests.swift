@@ -50,11 +50,47 @@ final class EditorHostTests: XCTestCase {
     settled(fixture)
     try fixture.hostFixture.directory.write("main.md", "# Saved by someone else\n")
     fixture.host.fileChanged()
+    fixture.host.fileChanged()
+    XCTAssertNotEqual(fixture.status, ViewerHost.liveBufferNotice, "the editor's own save gets a grace period")
+    spin(until: { fixture.status == ViewerHost.liveBufferNotice })
     XCTAssertEqual(fixture.host.interaction.source, "# Unsaved\n")
     XCTAssertEqual(fixture.status, "File changed on disk; showing the editor's unsaved text")
     fixture.host.showEditorStatus("Something else", kind: .info)
     fixture.host.fileChanged()
+    spin(ViewerHost.editorSaveGrace + 0.2)
     XCTAssertEqual(fixture.status, "Something else")
+    XCTAssertEqual(fixture.host.interaction.source, "# Unsaved\n")
+  }
+
+  func testTheEditorsOwnSaveFollowedByCleanShowsNoDiskChangeNotice() throws {
+    let fixture = try EditorFixture()
+    let token = fixture.launchNeovim()
+    fixture.host.receiveEditor(.buffer(fixture.envelope(token, 1), text: try fixture.writeBuffer("# Unsaved\n")))
+    settled(fixture)
+    try fixture.hostFixture.directory.write("main.md", "# Unsaved and more\n")
+    fixture.host.fileChanged()
+    fixture.host.receiveEditor(.clean(fixture.envelope(token, 2)))
+    fixture.host.receiveEditor(.buffer(fixture.envelope(token, 3), text: try fixture.writeBuffer("# Typing again\n")))
+    spin(ViewerHost.editorSaveGrace + 0.2)
+    XCTAssertNotEqual(fixture.status, ViewerHost.liveBufferNotice)
+    XCTAssertEqual(fixture.host.interaction.source, "# Typing again\n")
+  }
+
+  func testADiskChangeMatchingTheLiveTextShowsNoNoticeEvenBeforeClean() throws {
+    let fixture = try EditorFixture()
+    let token = fixture.launchNeovim()
+    fixture.host.receiveEditor(.buffer(fixture.envelope(token, 1), text: try fixture.writeBuffer("# Unsaved\n")))
+    settled(fixture)
+    try fixture.hostFixture.directory.write("main.md", "# Unsaved\n")
+    fixture.host.fileChanged()
+    spin(ViewerHost.editorSaveGrace + 0.2)
+    XCTAssertNotEqual(fixture.status, ViewerHost.liveBufferNotice)
+    XCTAssertTrue(fixture.host.interaction.liveBuffer)
+
+    try fixture.hostFixture.directory.write("main.md", "# An agent's edit\n")
+    fixture.host.fileChanged()
+    spin(until: { fixture.status == ViewerHost.liveBufferNotice })
+    XCTAssertEqual(fixture.status, ViewerHost.liveBufferNotice)
     XCTAssertEqual(fixture.host.interaction.source, "# Unsaved\n")
   }
 
@@ -397,6 +433,24 @@ final class EditorHostTests: XCTestCase {
     XCTAssertNotEqual(fixture.status, "Editor closed")
     spin(until: { fixture.registry.entry(block: "block:nvim2") == nil })
     XCTAssertNil(fixture.registry.entry(block: "block:nvim2"))
+  }
+
+  func testExitUnderAPendingTokenOnTheSameBlockEndsTheLink() throws {
+    let fixture = try EditorFixture()
+    fixture.launchNeovim()
+    fixture.press()
+    fixture.waitIdle()
+    let second = try XCTUnwrap(fixture.coordinator.link.pending?.token)
+    XCTAssertEqual(fixture.coordinator.link.pending?.block, EditorFixture.launchedBlock)
+
+    fixture.host.receiveEditor(.exit(fixture.envelope(second, 1)))
+    XCTAssertNil(fixture.coordinator.link.block)
+    XCTAssertNil(fixture.coordinator.link.token)
+    XCTAssertNil(fixture.coordinator.link.pending)
+    XCTAssertEqual(fixture.status, "Editor closed")
+    XCTAssertNil(fixture.waits.running(EditorFixture.launchedBlock))
+    spin(until: { fixture.registry.entry(block: EditorFixture.launchedBlock) == nil })
+    XCTAssertNil(fixture.registry.entry(block: EditorFixture.launchedBlock))
   }
 
   func testAnEarlierRelinkThatSucceedsIsAdoptedWhenALaterOneFails() throws {
