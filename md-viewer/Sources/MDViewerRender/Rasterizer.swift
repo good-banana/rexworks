@@ -41,10 +41,11 @@ public struct RenderOverlay: Sendable {
   public var focus: FocusRing?
   public var copyButton: CopyButtonOverlay?
   public var hoverLink: Range<Int>?
+  public var sourceCursor: CGRect?
 
   public init(
     selection: Range<Int>? = nil, findMatches: [FindMatch] = [], currentMatch: Int? = nil, focus: FocusRing? = nil,
-    copyButton: CopyButtonOverlay? = nil, hoverLink: Range<Int>? = nil
+    copyButton: CopyButtonOverlay? = nil, hoverLink: Range<Int>? = nil, sourceCursor: CGRect? = nil
   ) {
     self.selection = selection
     self.findMatches = findMatches
@@ -52,6 +53,7 @@ public struct RenderOverlay: Sendable {
     self.focus = focus
     self.copyButton = copyButton
     self.hoverLink = hoverLink
+    self.sourceCursor = sourceCursor
   }
 }
 

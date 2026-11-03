@@ -62,6 +62,7 @@ struct Painter {
     }
     paintCopyButton()
     paintFocus()
+    paintSourceCursor()
   }
 
   func isVisible(_ rect: CGRect, region: BlockID?) -> Bool {
@@ -417,6 +418,11 @@ struct Painter {
         rect.insetBy(dx: -width * 1.5, dy: -width * 1.5), colors(\.focusOutline), width: width,
         radius: em(typography.cornerRadius) + width)
     }
+  }
+
+  private func paintSourceCursor() {
+    guard let bar = overlay.sourceCursor, visible.intersects(bar) else { return }
+    fill(bar, colors(\.focusOutline), radius: bar.width / 2)
   }
 }
 

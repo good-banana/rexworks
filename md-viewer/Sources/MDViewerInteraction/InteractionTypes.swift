@@ -16,6 +16,44 @@ public enum InteractionEffect: Equatable {
   case loadDocument(URL)
   case reload
   case quit
+  case edit(EditRequest)
+  case openEditorPicker
+  case chooseEditor(EditorCandidate, mode: EditMode, pending: EditRequest?)
+  case jumpEditor(line: Int)
+}
+
+public struct EditRequest: Equatable, Sendable {
+  public var mode: EditRequestMode
+  public var line: Int
+
+  public init(mode: EditRequestMode, line: Int) {
+    self.mode = mode
+    self.line = line
+  }
+}
+
+public struct EditorLink: Equatable, Sendable {
+  public var name: String
+  public var syncsLive: Bool
+  public var followsShownFile: Bool
+
+  public init(name: String, syncsLive: Bool, followsShownFile: Bool) {
+    self.name = name
+    self.syncsLive = syncsLive
+    self.followsShownFile = followsShownFile
+  }
+}
+
+public struct EditorCursor: Equatable, Sendable {
+  public var line: Int
+  public var top: Int
+  public var height: Int
+
+  public init(line: Int, top: Int, height: Int) {
+    self.line = line
+    self.top = top
+    self.height = height
+  }
 }
 
 public struct ViewGeometry: Equatable, Sendable {

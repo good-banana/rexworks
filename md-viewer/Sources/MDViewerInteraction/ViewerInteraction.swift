@@ -43,6 +43,7 @@ public struct ViewerInteraction {
     var moved = false
     var selecting = false
     var selectionBefore: Range<Int>?
+    var textOffset: Int?
   }
 
   struct ClickRecord {
@@ -81,6 +82,11 @@ public struct ViewerInteraction {
   public internal(set) var pointerShape = PointerShape.default
   public internal(set) var history = History()
   public internal(set) var pendingRequest: LayoutRequest?
+  public var editMode = EditMode.split
+  public internal(set) var editorLink: EditorLink?
+  public internal(set) var liveBuffer = false
+  public internal(set) var editorCursor: EditorCursor?
+  public internal(set) var editorPicker: EditorPickerContent?
 
   var generation = 0
   var pendingAnchor: PendingAnchor?
@@ -103,6 +109,8 @@ public struct ViewerInteraction {
   var findWindowed = false
   var focusFromPointer = false
   var regionRanges: [BlockID: Range<Int>] = [:]
+  var pickerPending: EditRequest?
+  var reapplyEditorCursor = false
 
   public init(geometry: ViewGeometry, typography: Typography, environment: InteractionEnvironment) {
     self.geometry = geometry
@@ -150,7 +158,13 @@ public struct ViewerInteraction {
     return StatusBarContent(
       fileName: name, folder: folder,
       progress: ScrollProgress(offset: offset, viewport: geometry.contentHeight, content: pageHeight),
-      message: shown, hint: hint, findField: findField)
+      message: shown, hint: hint, findField: findField, editor: editorBadge)
+  }
+
+  public var editorBadge: String? {
+    guard let editorLink else { return nil }
+    guard editorLink.syncsLive else { return "\(editorLink.name): on save" }
+    return "\(editorLink.name): \(liveBuffer ? "unsaved" : "live")"
   }
 
   // MARK: Documents and layout
@@ -182,6 +196,9 @@ public struct ViewerInteraction {
     autoScrollDeadline = nil
     copiedUntil = nil
     reloadState = nil
+    liveBuffer = false
+    editorCursor = nil
+    reapplyEditorCursor = false
     var effects = requestLayout(source: source, expanded: .some(nil), offsets: [:], fresh: true, anchor: anchor)
     effects.append(.redrawStatusBar)
     return effects
@@ -205,6 +222,7 @@ public struct ViewerInteraction {
       state.focus = focus.flatMap { identity(of: $0, in: layout) }
     }
     reloadState = state
+    reapplyEditorCursor = editorCursor != nil
     let anchor = sourceAnchor() ?? .offset(offset)
     return requestLayout(source: source, offsets: [:], carried: carried, anchor: anchor)
   }
@@ -321,6 +339,11 @@ public struct ViewerInteraction {
     case .revealMatch, nil:
       break
     }
+    if let cursor = editorCursor {
+      overlay.sourceCursor = sourceCursorBar(for: cursor, in: page)
+      if reapplyEditorCursor, let value = editorCursorOffset(cursor, in: page) { target = value }
+    }
+    reapplyEditorCursor = false
     let revealing = pendingAnchor == .revealMatch
     pendingAnchor = nil
     restoreSelection(previous: previous, page: page)
@@ -493,6 +516,158 @@ public struct ViewerInteraction {
     }
     let unit = same ?? after ?? page.prepared.units.last
     return unit.flatMap { lineTop(near: $0.range.lowerBound, in: page) }
+  }
+
+  // MARK: Editor
+
+  public mutating func setEditorLink(_ link: EditorLink?) -> [InteractionEffect] {
+    guard link != editorLink else { return [] }
+    editorLink = link
+    return [.redrawStatusBar]
+  }
+
+  public mutating func setLiveBuffer(_ live: Bool) -> [InteractionEffect] {
+    guard live != liveBuffer else { return [] }
+    liveBuffer = live
+    return [.redrawStatusBar]
+  }
+
+  public mutating func showEditorPicker(
+    candidates: [EditorCandidate], mode: EditMode, pending: EditRequest?
+  ) -> [InteractionEffect] {
+    editorPicker = EditorPickerContent(candidates: candidates, mode: mode)
+    pickerPending = pending
+    helpVisible = false
+    overlay.hoverLink = nil
+    return setPointerShape(.default) + [.redrawAll]
+  }
+
+  public mutating func applyEditorCursor(_ cursor: EditorCursor) -> [InteractionEffect] {
+    editorCursor = cursor
+    guard let layout else { return [] }
+    var effects = setSourceCursorBar(sourceCursorBar(for: cursor, in: layout))
+    if let target = editorCursorOffset(cursor, in: layout) { effects += setOffset(target) }
+    return effects
+  }
+
+  public mutating func clearEditorCursor() -> [InteractionEffect] {
+    editorCursor = nil
+    reapplyEditorCursor = false
+    return setSourceCursorBar(nil)
+  }
+
+  public func y(forSourceLine line: Int) -> CGFloat? {
+    guard let layout else { return nil }
+    return sourceLineBand(line, in: layout)?.top
+  }
+
+  public var editLine: Int {
+    guard let layout else { return 1 }
+    if let selection = overlay.selection, !selection.isEmpty,
+      let line = codeSourceLine(atText: selection.lowerBound, in: layout)
+        ?? layout.sourceRange(for: selection)?.start.line, line >= 1
+    {
+      return line
+    }
+    let units = layout.prepared.units
+    if let fragment = topLine(in: layout),
+      let index = units.lastIndex(where: { $0.range.lowerBound <= fragment.range.lowerBound })
+        ?? (units.isEmpty ? nil : 0)
+    {
+      let line = codeSourceLine(ofUnit: index, in: layout) ?? units[index].source.start.line
+      if line >= 1 { return line }
+    }
+    return 1
+  }
+
+  func clickLine(atText offset: Int, in layout: PageLayout) -> Int? {
+    if let line = codeSourceLine(atText: offset, in: layout) { return line }
+    let source = layout.sourceRange(for: offset..<offset) ?? layout.sourceRange(for: max(offset - 1, 0)..<offset)
+    if let line = source?.start.line, line >= 1 { return line }
+    let units = layout.prepared.units
+    guard let unit = units.last(where: { $0.range.lowerBound <= offset }), unit.source.start.line >= 1 else {
+      return nil
+    }
+    return unit.source.start.line
+  }
+
+  func codeSourceLine(atText offset: Int, in layout: PageLayout) -> Int? {
+    guard let index = layout.prepared.units.lastIndex(where: { $0.range.lowerBound <= offset }) else { return nil }
+    return codeSourceLine(ofUnit: index, in: layout)
+  }
+
+  func codeSourceLine(ofUnit index: Int, in layout: PageLayout) -> Int? {
+    let units = layout.prepared.units
+    let unit = units[index]
+    guard unit.kind == .codeLine else { return nil }
+    let lines = units.indices.filter { units[$0].kind == .codeLine && units[$0].block == unit.block }
+    guard let position = lines.firstIndex(of: index) else { return nil }
+    return unit.source.start.line + Self.codeLead(unit.source, lines: lines.count) + position
+  }
+
+  static func codeLead(_ source: SourceRange, lines: Int) -> Int {
+    source.end.line - source.start.line + 1 > lines ? 1 : 0
+  }
+
+  func sourceLineBand(_ line: Int, in page: PageLayout) -> (top: CGFloat, bottom: CGFloat)? {
+    let units = page.prepared.units
+    var spans: [SourceRange] = []
+    for unit in units
+    where !unit.source.isEmpty && unit.source.start.line <= line && line <= unit.source.end.line
+      && !spans.contains(unit.source)
+    {
+      spans.append(unit.source)
+    }
+    spans.sort { $0.end.line - $0.start.line < $1.end.line - $1.start.line }
+    for span in spans {
+      let group = units.filter { $0.source == span }
+      let lines: [TextUnit]
+      var fraction: CGFloat = 0
+      if group.allSatisfy({ $0.kind == .codeLine }) {
+        let index = line - span.start.line - Self.codeLead(span, lines: group.count)
+        lines = [group[min(max(index, 0), group.count - 1)]]
+      } else {
+        lines = group
+        fraction = CGFloat(line - span.start.line) / CGFloat(span.end.line - span.start.line + 1)
+      }
+      let covered = lines[0].range.lowerBound..<lines[lines.count - 1].range.upperBound
+      let fragments = page.fragments.filter { fragment in
+        fragment.range.overlaps(covered) || (fragment.range.isEmpty && covered.contains(fragment.range.lowerBound))
+      }
+      guard let top = fragments.map(\.lineTop).min(), let bottom = fragments.map(\.lineBottom).max() else {
+        continue
+      }
+      let y = top + fraction * (bottom - top)
+      let row =
+        fragments.filter { $0.lineTop <= y }.max { $0.lineTop < $1.lineTop }
+        ?? fragments.min { $0.lineTop < $1.lineTop }
+      if let row { return (row.lineTop, row.lineBottom) }
+    }
+    guard let top = lineTop(ofSourceLine: line, text: "", in: page) else { return nil }
+    let bottom = page.fragments.filter { $0.lineTop == top }.map(\.lineBottom).max() ?? top + geometry.rowHeight
+    return (top, bottom)
+  }
+
+  func editorCursorOffset(_ cursor: EditorCursor, in page: PageLayout) -> CGFloat? {
+    guard let band = sourceLineBand(cursor.line, in: page) else { return nil }
+    let fraction =
+      cursor.height > 0 ? min(max(CGFloat(cursor.line - cursor.top) / CGFloat(cursor.height), 0), 1) : 0
+    return band.top - fraction * geometry.contentHeight
+  }
+
+  func sourceCursorBar(for cursor: EditorCursor, in page: PageLayout) -> CGRect? {
+    guard let band = sourceLineBand(cursor.line, in: page) else { return nil }
+    let typography = page.prepared.typography
+    let width = max(typography.pixels(em: 0.2).rounded(), 2)
+    return CGRect(
+      x: typography.pixels(em: 0.9).rounded(), y: band.top, width: width, height: max(band.bottom - band.top, 1))
+  }
+
+  mutating func setSourceCursorBar(_ bar: CGRect?) -> [InteractionEffect] {
+    let old = overlay.sourceCursor
+    guard bar != old else { return [] }
+    overlay.sourceCursor = bar
+    return [old, bar].compactMap { $0 }.map { .redraw($0.insetBy(dx: -2, dy: -2)) }
   }
 
   // MARK: Vertical scrolling

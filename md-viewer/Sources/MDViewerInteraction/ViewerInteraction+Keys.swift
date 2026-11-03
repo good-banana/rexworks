@@ -11,6 +11,10 @@ extension ViewerInteraction {
       helpVisible = false
       return [.redrawAll]
     }
+    if editorPicker != nil, case .mouse(let mouse) = event {
+      guard mouse.kind == .press, mouse.button == 0 else { return [] }
+      return pickerPressed(at: CGPoint(x: CGFloat(mouse.x), y: CGFloat(mouse.y)))
+    }
     switch event {
     case .key(let key): return handle(key: key, at: now)
     case .mouse(let mouse): return handle(mouse: mouse, at: now)
@@ -37,6 +41,7 @@ extension ViewerInteraction {
       helpVisible = false
       return [.redrawAll]
     }
+    if editorPicker != nil { return handlePicker(key) }
     if findField != nil {
       if key == .command("f") { return [] }
       return handleFindField(key, at: now)
@@ -87,8 +92,58 @@ extension ViewerInteraction {
     case .char("-"): return setZoom(ZoomSteps.previous(before: zoom), at: now)
     case .char("0"): return setZoom(1, at: now)
     case .char("q"), .ctrl("q"), .ctrl("c"): return [.quit]
+    case .char("e"): return file == nil ? [] : [.edit(EditRequest(mode: .configured, line: editLine))]
+    case .char("E"): return file == nil ? [] : [.edit(EditRequest(mode: .alternate, line: editLine))]
+    case .char(","): return [.openEditorPicker]
     default: return []
     }
+  }
+
+  // MARK: Editor picker
+
+  mutating func handlePicker(_ key: Key) -> [InteractionEffect] {
+    guard var picker = editorPicker else { return [] }
+    if key == .ctrl("c") || key == .ctrl("q") { return [.quit] }
+    let count = picker.candidates.count
+    guard count > 0 else { return closePicker() }
+    switch key {
+    case .char(let digit) where ("1"..."9").contains(digit):
+      guard let number = digit.wholeNumberValue, number <= count else { return [] }
+      return choosePicker(number - 1)
+    case .char("j"), .down, .char("k"), .up:
+      let forward = key == .char("j") || key == .down
+      picker.selected = cycle(from: picker.selected, count: count, forward: forward) ?? 0
+    case .tab, .backTab:
+      picker.mode = picker.mode == .split ? .here : .split
+    case .enter:
+      return choosePicker(picker.selected)
+    case .escape, .char("q"):
+      return closePicker()
+    default:
+      return []
+    }
+    editorPicker = picker
+    return [.redrawAll]
+  }
+
+  mutating func pickerPressed(at point: CGPoint) -> [InteractionEffect] {
+    guard let picker = editorPicker else { return [] }
+    let view = EditorPicker(content: picker, backingScale: typography.backingScale)
+    let area = CGRect(x: 0, y: 0, width: geometry.width, height: geometry.contentHeight)
+    if let row = view.row(at: point, in: area) { return choosePicker(row) }
+    return view.panel(in: area).contains(point) ? [] : closePicker()
+  }
+
+  mutating func choosePicker(_ index: Int) -> [InteractionEffect] {
+    guard let picker = editorPicker, picker.candidates.indices.contains(index) else { return [] }
+    let pending = pickerPending
+    return closePicker() + [.chooseEditor(picker.candidates[index], mode: picker.mode, pending: pending)]
+  }
+
+  mutating func closePicker() -> [InteractionEffect] {
+    editorPicker = nil
+    pickerPending = nil
+    return [.redrawAll]
   }
 
   mutating func escape() -> [InteractionEffect] {

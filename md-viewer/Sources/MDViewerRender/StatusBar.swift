@@ -42,10 +42,11 @@ public struct StatusBarContent: Hashable, Sendable {
   public var message: StatusMessage?
   public var hint: String?
   public var findField: String?
+  public var editor: String?
 
   public init(
     fileName: String, folder: String? = nil, progress: ScrollProgress, message: StatusMessage? = nil,
-    hint: String? = nil, findField: String? = nil
+    hint: String? = nil, findField: String? = nil, editor: String? = nil
   ) {
     self.fileName = fileName
     self.folder = folder
@@ -53,6 +54,7 @@ public struct StatusBarContent: Hashable, Sendable {
     self.message = message
     self.hint = hint
     self.findField = findField
+    self.editor = editor
   }
 }
 
@@ -77,7 +79,8 @@ public struct StatusBar {
     return rows * cellPixelHeight
   }
 
-  public static let keyHints = "/ find   r refresh   q quit   ? help"
+  public static let keyHintTiers = ["/ find   e edit   r refresh   q quit   ? help", "e edit   ? help"]
+  public static var keyHints: String { keyHintTiers[0] }
 
   private func points(_ value: CGFloat) -> CGFloat { value * backingScale }
 
@@ -98,10 +101,12 @@ public struct StatusBar {
     let fontSize = min(max(body.height * 0.5, points(11)), points(13))
     let padding = points(10)
     let hintFont = NSFont.systemFont(ofSize: fontSize * 0.92, weight: .regular) as CTFont
-    let hints = TextLine(Self.keyHints, font: hintFont)
+    let tiers = Self.keyHintTiers.map { TextLine($0, font: hintFont) }
+    let fitting = tiers.first { $0.width <= rect.width - padding * 2 }
+    let hints = fitting ?? tiers[tiers.count - 1]
     return Metrics(
       body: body, fontSize: fontSize, padding: padding, gap: points(12), hintFont: hintFont, hints: hints,
-      hintsX: rect.maxX - padding - hints.width, showsHints: hints.width <= rect.width - padding * 2)
+      hintsX: rect.maxX - padding - hints.width, showsHints: fitting != nil)
   }
 
   public func keyHintsRect(in rect: CGRect) -> CGRect {
@@ -211,7 +216,15 @@ public struct StatusBar {
 
     let nameFont = NSFont.systemFont(ofSize: fontSize, weight: .semibold) as CTFont
     let folderFont = NSFont.systemFont(ofSize: fontSize, weight: .regular) as CTFont
-    let available = max(right - (rect.minX + padding), 0)
+    var available = max(right - (rect.minX + padding), 0)
+    var badge: TextLine?
+    if let editor = content.editor, !editor.isEmpty {
+      let line = TextLine(editor, font: folderFont)
+      if available - line.width - gap >= points(40) {
+        badge = line
+        available -= line.width + gap
+      }
+    }
     let name = TextLine(content.fileName, font: nameFont, truncateTo: available, truncation: .middle)
     var x = rect.minX + padding
     if let folder = content.folder, !folder.isEmpty {
@@ -230,6 +243,12 @@ public struct StatusBar {
     context.setFillColor(textColor.cgColor)
     name.draw(in: context, at: CGPoint(x: x, y: baseline(name)))
     x += name.width
+    if let badge {
+      x += gap
+      context.setFillColor(palette.statusMutedText.cgColor)
+      badge.draw(in: context, at: CGPoint(x: x, y: baseline(badge)))
+      x += badge.width
+    }
 
     if let hint = content.hint, !hint.isEmpty {
       let line = TextLine(hint, font: metrics.hintFont)

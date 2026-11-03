@@ -140,6 +140,16 @@ final class TerminalInputTests: XCTestCase {
     XCTAssertFalse(InputEvent.deviceAttributes.requestsThemeResolve)
   }
 
+  func testEditKeysParse() {
+    var p = InputParser()
+    XCTAssertEqual(p.feed([0x45]), [.key(.char("E"))])
+    XCTAssertEqual(p.feed([0x05]), [.key(.ctrl("e"))])
+    XCTAssertEqual(p.feed(Array("\u{1b}[101;5u".utf8)), [.key(.ctrl("e"))])
+    XCTAssertEqual(p.feed(Array("\u{1b}[101;3u".utf8)), [], "Alt-E is dropped")
+    XCTAssertEqual(p.feed(Array("\u{1b}[?62;22c".utf8)), [.deviceAttributes])
+    XCTAssertEqual(p.feed(Array(",".utf8)), [.key(.char(","))])
+  }
+
   func testInBandSizeReports() {
     var p = InputParser()
     XCTAssertEqual(

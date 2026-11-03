@@ -1,9 +1,9 @@
 import CoreGraphics
-import MDViewerCore
 import MDViewerLayout
 import MDViewerRender
 import XCTest
 
+@testable import MDViewerCore
 @testable import MDViewerDisplay
 
 final class RasterFrameSourceTests: XCTestCase {
@@ -63,5 +63,29 @@ final class RasterFrameSourceTests: XCTestCase {
     source.drawFrame(viewport, into: frame)
     XCTAssertEqual(
       frame.pixel(x: 400, y: viewport.contentHeight + 5), RenderPalette.fallback(dark: true).statusBarBackground.pixel)
+  }
+
+  func testTheEditorPickerIsDrawnOverTheContentAndPatchesMatch() throws {
+    let size = paneSize(columns: 50, rows: 20, cellWidth: 16, cellHeight: 34)
+    let (source, page) = try makeSource(width: 800)
+    let candidates = [EditorCandidate(name: "nvim", executable: "/opt/homebrew/bin/nvim", kind: .neovim)]
+    source.editorPicker = EditorPickerContent(candidates: candidates, mode: .here)
+    let viewport = DisplayViewport(size: size, statusRows: 1, pageHeight: page.height)
+    let full = try XCTUnwrap(RasterBitmap(width: viewport.frameWidth, height: viewport.frameHeight))
+    source.drawFrame(viewport, into: full)
+    let picker = EditorPicker(content: try XCTUnwrap(source.editorPicker), backingScale: 2)
+    let panel = picker.panel(in: viewport.contentRect.cgRect)
+    let palette = RenderPalette.fallback(dark: true)
+    XCTAssertEqual(full.pixel(x: Int(panel.maxX) - 20, y: Int(panel.maxY) - 12), palette.statusBarBackground.pixel)
+    let rect = PixelRect(x: Int(panel.minX) - 10, y: Int(panel.minY) + 20, width: 200, height: 120)
+    let patch = try XCTUnwrap(RasterBitmap(width: rect.width, height: rect.height))
+    source.drawPatch(rect, viewport: viewport, into: patch)
+    for (x, y) in [(4, 4), (60, 50), (190, 110)] {
+      XCTAssertEqual(patch.pixel(x: x, y: y), full.pixel(x: rect.x + x, y: rect.y + y))
+    }
+    source.editorPicker = nil
+    let plain = try XCTUnwrap(RasterBitmap(width: viewport.frameWidth, height: viewport.frameHeight))
+    source.drawFrame(viewport, into: plain)
+    XCTAssertNotEqual(plain.pixel(x: Int(panel.maxX) - 20, y: Int(panel.maxY) - 12), palette.statusBarBackground.pixel)
   }
 }

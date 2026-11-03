@@ -89,7 +89,9 @@ extension ViewerInteraction {
     var target = hit.target
     if case .task = target { target = nil }
     let before = overlay.selection
-    press = Press(kind: .content(target: target, region: hit.region), start: pane, selectionBefore: before)
+    press = Press(
+      kind: .content(target: target, region: hit.region), start: pane, selectionBefore: before,
+      textOffset: layout.isOverText(page) ? hit.position?.offset : nil)
     let focusEffects = setFocus(
       clickedFocusable(at: page, target: target, position: hit.position?.offset), fromPointer: true)
     guard let position = hit.position?.offset else { return focusEffects }
@@ -228,8 +230,13 @@ extension ViewerInteraction {
     press = nil
     autoScrollDeadline = nil
     guard case .content(let target, _) = current.kind else { return [] }
-    if !current.moved, let target, clicks?.count == 1 {
-      return activate(target, at: now)
+    if !current.moved, clicks?.count == 1 {
+      if let target { return activate(target, at: now) }
+      if let offset = current.textOffset, let link = editorLink, link.syncsLive, link.followsShownFile,
+        let layout, let line = clickLine(atText: offset, in: layout)
+      {
+        return [.jumpEditor(line: line)]
+      }
     }
     if current.selecting, let selection = overlay.selection, !selection.isEmpty,
       selection != current.selectionBefore

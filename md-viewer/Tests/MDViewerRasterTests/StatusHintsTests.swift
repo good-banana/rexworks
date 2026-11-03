@@ -19,7 +19,7 @@ final class StatusHintsTests: XCTestCase {
   }
 
   func testHintsAlwaysFitAndThePathYields() throws {
-    XCTAssertEqual(StatusBar.keyHints, "/ find   r refresh   q quit   ? help")
+    XCTAssertEqual(StatusBar.keyHints, "/ find   e edit   r refresh   q quit   ? help")
     let content = StatusBarContent(
       fileName: "a-very-long-file-name-that-would-never-fit-in-a-narrow-pane.md",
       folder: "~/Documents/projects/team-notes/drafts/screenshots/visual-check",
@@ -38,15 +38,59 @@ final class StatusHintsTests: XCTestCase {
     }
   }
 
+  func testHintsPickTheWidestTierThatFits() throws {
+    XCTAssertEqual(StatusBar.keyHintTiers, ["/ find   e edit   r refresh   q quit   ? help", "e edit   ? help"])
+    let bar = StatusBar(palette: palette, backingScale: 2)
+    let wide = bar.keyHintsRect(in: CGRect(x: 0, y: 0, width: 1600, height: 44))
+    let narrow = bar.keyHintsRect(in: CGRect(x: 0, y: 0, width: 300, height: 44))
+    XCTAssertFalse(wide.isNull)
+    XCTAssertFalse(narrow.isNull, "the narrow tier fits where the full one does not")
+    XCTAssertLessThan(narrow.width, wide.width / 2)
+    XCTAssertGreaterThan(wide.width, 300 - 40, "the full tier would not fit at 300 px")
+    XCTAssertGreaterThanOrEqual(narrow.minX, 0)
+  }
+
   func testTooNarrowForTheHintsDropsThem() throws {
     let bar = StatusBar(palette: palette, backingScale: 2)
-    let rect = CGRect(x: 0, y: 0, width: 300, height: 44)
-    let bitmap = try XCTUnwrap(RasterBitmap(width: 300, height: 44))
+    let rect = CGRect(x: 0, y: 0, width: 150, height: 44)
+    let bitmap = try XCTUnwrap(RasterBitmap(width: 150, height: 44))
     bar.draw(
       StatusBarContent(fileName: "x.md", folder: "~/a", progress: ScrollProgress(start: 0, fraction: 1)), in: rect,
       bitmap: bitmap)
     XCTAssertTrue(bar.keyHintsRect(in: rect).isNull)
     XCTAssertGreaterThan(inkedPixels(bitmap, in: CGRect(x: 0, y: 6, width: 120, height: 34)), 20, "the path draws")
+  }
+
+  func testTheEditorBadgeIsDrawnAfterTheFileName() throws {
+    let bar = StatusBar(palette: palette, backingScale: 2)
+    let rect = CGRect(x: 0, y: 0, width: 1600, height: 44)
+    let content = StatusBarContent(fileName: "a.md", folder: "~/a", progress: ScrollProgress(start: 0, fraction: 1))
+    let plain = try XCTUnwrap(RasterBitmap(width: 1600, height: 44))
+    bar.draw(content, in: rect, bitmap: plain)
+    var badged = content
+    badged.editor = "Neovim: live"
+    let withBadge = try XCTUnwrap(RasterBitmap(width: 1600, height: 44))
+    bar.draw(badged, in: rect, bitmap: withBadge)
+    let middle = CGRect(x: 200, y: 4, width: 400, height: 36)
+    XCTAssertEqual(inkedPixels(plain, in: middle), 0)
+    XCTAssertGreaterThan(inkedPixels(withBadge, in: middle), 40)
+    let path = CGRect(x: 0, y: 4, width: 100, height: 36)
+    XCTAssertEqual(inkedPixels(withBadge, in: path), inkedPixels(plain, in: path), "the path is unchanged")
+  }
+
+  func testTheEditorBadgeYieldsToTheFileName() throws {
+    let bar = StatusBar(palette: palette, backingScale: 2)
+    let rect = CGRect(x: 0, y: 0, width: 260, height: 44)
+    let content = StatusBarContent(fileName: "a.md", progress: ScrollProgress(start: 0, fraction: 1))
+    let plain = try XCTUnwrap(RasterBitmap(width: 260, height: 44))
+    bar.draw(content, in: rect, bitmap: plain)
+    var badged = content
+    badged.editor = "Sublime Text: on save, with a very long name"
+    let withBadge = try XCTUnwrap(RasterBitmap(width: 260, height: 44))
+    bar.draw(badged, in: rect, bitmap: withBadge)
+    XCTAssertEqual(
+      inkedPixels(withBadge, in: CGRect(x: 0, y: 4, width: 260, height: 36)),
+      inkedPixels(plain, in: CGRect(x: 0, y: 4, width: 260, height: 36)), "a badge that does not fit is left out")
   }
 
   func testHelpOverlayDrawsAPanelOverTheContent() throws {
@@ -60,8 +104,37 @@ final class StatusHintsTests: XCTestCase {
     XCTAssertTrue(area.contains(panel))
     let inside = try XCTUnwrap(bitmap.pixel(x: Int(panel.maxX) - 12, y: Int(panel.maxY) - 12))
     XCTAssertLessThanOrEqual(inside.distance(to: palette.statusBarBackground.pixel), 3)
-    XCTAssertGreaterThan(HelpOverlay.entries.count, 15)
-    XCTAssertTrue(HelpOverlay.entries.contains { $0.keys.contains("?") })
+    XCTAssertGreaterThan(HelpOverlay.entries(editMode: .split).count, 15)
+    XCTAssertTrue(HelpOverlay.entries(editMode: .split).contains { $0.keys.contains("?") })
+  }
+
+  func testHelpEntriesFollowTheEditMode() {
+    func action(_ keys: String, _ mode: EditMode) -> String? {
+      HelpOverlay.entries(editMode: mode).first { $0.keys == keys }?.action
+    }
+    XCTAssertEqual(action("e", .split), "Edit beside the preview")
+    XCTAssertEqual(action("E", .split), "Edit in this pane")
+    XCTAssertEqual(action("e", .here), "Edit in this pane")
+    XCTAssertEqual(action("E", .here), "Edit beside the preview")
+    XCTAssertEqual(action(",", .split), "Choose the editor")
+    XCTAssertEqual(
+      action("Click", .here),
+      "Follow links, toggle details, press Copy, open videos; with Neovim beside, jump the editor")
+    XCTAssertEqual(
+      HelpOverlay(palette: palette, backingScale: 2, editMode: .here).entries.map(\.action),
+      HelpOverlay.entries(editMode: .here).map(\.action))
+  }
+
+  func testLongHelpActionsWrapInsteadOfTruncating() {
+    let overlay = HelpOverlay(palette: palette, backingScale: 2)
+    let width = overlay.panel(in: CGRect(x: 0, y: 0, width: 1400, height: 3000)).width
+    let rows = overlay.rows(width: width)
+    let click = rows.first { $0.keys == "Click" }
+    XCTAssertEqual(click?.lines.count, 2)
+    XCTAssertEqual(
+      click?.lines.joined(separator: " "),
+      "Follow links, toggle details, press Copy, open videos; with Neovim beside, jump the editor")
+    XCTAssertEqual(rows.first { $0.keys == "e" }?.lines, ["Edit beside the preview"])
   }
 
   func testHelpOverlayPatchMatchesTheFullDraw() throws {

@@ -290,11 +290,15 @@ public final class ViewerHost {
       requestTheme(.reload)
     case .quit:
       onQuit()
+    case .edit, .openEditorPicker, .chooseEditor, .jumpEditor:
+      trace("editor intent \(effect)")
     }
   }
 
   func syncFrameSource() {
     source.showsHelp = interaction.helpVisible
+    source.editMode = interaction.editMode
+    source.editorPicker = interaction.editorPicker
     source.overlay = interaction.overlay
     source.status = interaction.status
   }
@@ -445,7 +449,9 @@ public final class ViewerHost {
 
   func updateAnimations() {
     var visible: [String: AnimationPlayer.Clip] = [:]
-    if !services.reduceMotion(), !interaction.helpVisible, !transport.isStopped, let layout = interaction.layout {
+    if !services.reduceMotion(), !interaction.helpVisible, interaction.editorPicker == nil, !transport.isStopped,
+      let layout = interaction.layout
+    {
       for box in layout.images {
         guard case .image(let source) = box.content, visible[source] == nil,
           layout.displayRect(box.rect, region: box.region).intersects(visibleRect),
