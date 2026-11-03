@@ -112,13 +112,7 @@ public struct ConfigRunner {
     }
   }
 
-  private func describe(_ source: EditorSource) -> String {
-    switch source {
-    case .setting: "setting"
-    case .ownEnvironment(let name): "$\(name)"
-    case .loginEnvironment(let name): "$\(name) from your login shell"
-    }
-  }
+  private func describe(_ source: EditorSource) -> String { source.label }
 
   private func get(_ key: SettingKey) -> ConfigOutput {
     let settings = SettingsStore.load(paths)
@@ -151,10 +145,8 @@ public struct ConfigRunner {
   private func resolutionLine(_ settings: Settings, _ resolution: EditorResolution) -> String {
     switch resolution.outcome {
     case .resolved(let editor):
-      let behavior =
-        !editor.profile.runsInTerminal
-        ? "opens outside Rex" : editor.profile.syncsLive ? "live sync" : "refresh on save"
-      return "\(editor.executable) (\(describe(editor.source))), \(editor.kind.rawValue), \(behavior)"
+      return
+        "\(editor.executable) (\(describe(editor.source))), \(editor.kind.rawValue), \(editor.profile.syncDescription)"
     case .stopped:
       let value = settings.editor ?? ""
       return "editor setting: \((ShellWords.split(value)?.first ?? value)) not found"

@@ -51,6 +51,18 @@ enum DoctorCommand {
       "\(MermaidRenderer.bundleName) \(mermaid.map { "at \($0.deletingLastPathComponent().deletingLastPathComponent().path)" } ?? "not found")"
     )
 
+    let settings = SettingsStore.load(paths)
+    let editorLines = EditorDoctor.lines(
+      settings: settings, resolution: systemEditorResolver(settings: settings).resolve(),
+      neovimVersion: { NeovimVersion.probe(executable: $0, runner: ProcessRunner()) })
+    for line in editorLines {
+      switch line.level {
+      case .ok: report(true, line.text)
+      case .fail: report(false, line.text)
+      case .info: print("info \(line.text)")
+      }
+    }
+
     for line in agentStatusLines(AgentSkills(home: paths.home).status()) {
       print("info \(line)")
     }

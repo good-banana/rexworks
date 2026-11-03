@@ -37,6 +37,11 @@ public let agentGuide = """
   - When unsure, use no flag.
   - Always also print the file path in your reply.
 
+  Editing:
+  - Settings: when the user asks to change the editor md-viewer opens or how it opens, run `md-viewer config set editor <command>` (for example `nvim`, `hx`, `code`) or `md-viewer config set edit-mode split|here`. Run `md-viewer config` to show the current values. Do not edit config.json.
+  - Do not open editor panes or run `md-viewer edit` unless the user asks.
+  - The user may be editing a file in an editor beside its preview. If a write is refused because the file changed, re-read it and never overwrite the user's saved changes.
+
   If the command fails, or md-viewer or Rex is unavailable, mention the file path and continue. Do not retry, use another viewer, or install anything.
 
   """

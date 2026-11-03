@@ -15,25 +15,6 @@ public struct EditorPickerContent: Equatable, Sendable {
   }
 }
 
-extension EditorKind {
-  public var displayName: String {
-    switch self {
-    case .neovim: "Neovim"
-    case .vim: "Vim"
-    case .helix: "Helix"
-    case .emacs: "Emacs"
-    case .nano: "nano"
-    case .micro: "micro"
-    case .kakoune: "Kakoune"
-    case .vscode: "VS Code"
-    case .cursor: "Cursor"
-    case .zed: "Zed"
-    case .sublime: "Sublime Text"
-    case .terminal: "Editor"
-    }
-  }
-}
-
 public struct EditorPicker {
   public static let title = "Choose an editor"
   public static let footer =

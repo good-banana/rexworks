@@ -146,6 +146,27 @@ final class SetupTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: paths.root.path))
   }
 
+  func testUninstallRemovesEditorSupportDirectories() async throws {
+    let env = try makeEnvironment()
+    defer { try? FileManager.default.removeItem(at: env.home) }
+    try await env.installer.install(bundledApp: env.bundle, rexPath: "/r", mdViewerPath: "/m")
+    let paths = SupportPaths(home: env.home)
+    try NeovimPlugin.install(paths)
+    let directories = [paths.neovimSocketsDirectory, paths.buffersDirectory, paths.editorsDirectory]
+    for directory in directories {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      try Data("x".utf8).write(to: directory.appendingPathComponent("entry"))
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: paths.neovimPlugin.path))
+
+    let failures = try await env.installer.uninstall()
+
+    XCTAssertEqual(failures, [])
+    for url in directories + [paths.neovimPlugin.deletingLastPathComponent()] {
+      XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), url.path)
+    }
+  }
+
   func testUninstallWithFailedRestoreKeepsConfigAndApp() async throws {
     let env = try makeEnvironment()
     defer { try? FileManager.default.removeItem(at: env.home) }

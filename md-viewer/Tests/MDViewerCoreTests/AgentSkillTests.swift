@@ -54,6 +54,18 @@ final class AgentSkillTests: XCTestCase {
     XCTAssertTrue(agentGuide.contains("When unsure, use no flag."))
   }
 
+  func testGuideCoversSettingsAndEditing() {
+    XCTAssertTrue(
+      agentGuide.contains(
+        "run `md-viewer config set editor <command>` (for example `nvim`, `hx`, `code`) or `md-viewer config set edit-mode split|here`. Run `md-viewer config` to show the current values. Do not edit config.json."
+      ))
+    XCTAssertTrue(agentGuide.contains("Do not open editor panes or run `md-viewer edit` unless the user asks."))
+    XCTAssertTrue(
+      agentGuide.contains(
+        "If a write is refused because the file changed, re-read it and never overwrite the user's saved changes."))
+    XCTAssertEqual(agentStubVersion, "1")
+  }
+
   func testStubVersionRejectsForeignContent() {
     XCTAssertNil(stubVersion(of: "---\nname: md-viewer\n---\nbody"))
     XCTAssertNil(stubVersion(of: "no frontmatter"))

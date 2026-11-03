@@ -40,6 +40,10 @@ enum SetupCommand {
     }
     print("md-viewer is now the default Markdown handler. Run md-viewer doctor to verify.")
     updateFindBinding(rex: rex, install: true)
+    print(
+      EditorSetup.apply(
+        paths: currentPaths(), ownEnvironment: ProcessInfo.processInfo.environment,
+        isExecutable: { FileManager.default.isExecutableFile(atPath: $0) }))
     AgentsCommand.offerInstall()
     exit(0)
   }

@@ -92,6 +92,16 @@ public enum EditorSource: Equatable, Sendable {
   case loginEnvironment(String)
 }
 
+extension EditorSource {
+  public var label: String {
+    switch self {
+    case .setting: "setting"
+    case .ownEnvironment(let name): "$\(name)"
+    case .loginEnvironment(let name): "$\(name) from your login shell"
+    }
+  }
+}
+
 public struct ResolvedEditor: Equatable, Sendable {
   public let executable: String
   public let words: [String]
