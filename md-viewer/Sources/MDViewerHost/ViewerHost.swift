@@ -100,7 +100,7 @@ public final class ViewerHost {
   var lastAnimationTick: UInt64 = 0
   var liveBufferNoticeShown = false
   var liveBufferSession = 0
-  var diskChangePending = false
+  var diskCheckSession: Int?
   var displaySuspended = false
   var drainCompletion: (() -> Void)?
   var drainID = 0
@@ -197,17 +197,18 @@ public final class ViewerHost {
   }
 
   func scheduleDiskChangeNotice() {
-    guard !liveBufferNoticeShown, !diskChangePending else { return }
-    diskChangePending = true
+    guard !liveBufferNoticeShown, diskCheckSession != liveBufferSession else { return }
     let session = liveBufferSession
+    diskCheckSession = session
     DispatchQueue.main.asyncAfter(deadline: .now() + Self.editorSaveGrace) { [weak self] in
       MainActor.assumeIsolated { self?.noticeDiskChange(session: session) }
     }
   }
 
   func noticeDiskChange(session: Int) {
-    diskChangePending = false
-    guard interaction.liveBuffer, session == liveBufferSession, !liveBufferNoticeShown else { return }
+    guard session == liveBufferSession else { return }
+    diskCheckSession = nil
+    guard interaction.liveBuffer, !liveBufferNoticeShown else { return }
     if let url = interaction.file, (try? read(url)) == interaction.source { return }
     liveBufferNoticeShown = true
     perform(interaction.show(Self.liveBufferNotice, kind: .info, at: Self.now()))

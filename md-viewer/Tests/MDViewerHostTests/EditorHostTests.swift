@@ -76,6 +76,34 @@ final class EditorHostTests: XCTestCase {
     XCTAssertEqual(fixture.host.interaction.source, "# Typing again\n")
   }
 
+  func testAnExternalChangeInANewLiveSessionWarnsWhileTheOldSessionsCheckIsPending() throws {
+    let fixture = try EditorFixture()
+    let token = fixture.launchNeovim()
+    fixture.host.receiveEditor(.buffer(fixture.envelope(token, 1), text: try fixture.writeBuffer("# Unsaved\n")))
+    settled(fixture)
+    try fixture.hostFixture.directory.write("main.md", "# Unsaved and saved\n")
+    fixture.host.fileChanged()
+    fixture.host.receiveEditor(.clean(fixture.envelope(token, 2)))
+    fixture.host.receiveEditor(.buffer(fixture.envelope(token, 3), text: try fixture.writeBuffer("# Typing again\n")))
+    settled(fixture)
+    try fixture.hostFixture.directory.write("main.md", "# An agent's edit\n")
+    fixture.host.fileChanged()
+
+    var notices = 0
+    var last = fixture.status
+    let deadline = Date().addingTimeInterval(2 * ViewerHost.editorSaveGrace + 0.5)
+    while Date() < deadline {
+      spin(0.02)
+      if fixture.status != last {
+        if fixture.status == ViewerHost.liveBufferNotice { notices += 1 }
+        last = fixture.status
+      }
+    }
+    XCTAssertEqual(notices, 1)
+    XCTAssertEqual(fixture.status, ViewerHost.liveBufferNotice)
+    XCTAssertEqual(fixture.host.interaction.source, "# Typing again\n")
+  }
+
   func testADiskChangeMatchingTheLiveTextShowsNoNoticeEvenBeforeClean() throws {
     let fixture = try EditorFixture()
     let token = fixture.launchNeovim()
