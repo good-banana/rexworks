@@ -76,25 +76,38 @@ final class RexEditorPaneTests: XCTestCase {
   }
 
   func testInspectOfAnExistingBlockIsFound() {
-    XCTAssertEqual(RexEditorPane.classifyInspect(status: 0, stderr: Data()), .found)
+    XCTAssertEqual(RexEditorPane.classifyInspect(block: missingBlock, status: 0, stderr: Data()), .found)
   }
+
+  private let missingBlock = "block:01a1a2b8-248d-7733-a80b-e2c571e5779e"
 
   func testInspectOfAMissingBlockIsNotFoundOnlyForTheRealFailure() throws {
     let stderr = try fixture("rex-block-inspect-missing", "stderr")
     let status = try XCTUnwrap(
       Int32(
-        String(decoding: try fixture("rex-block-inspect-missing", "exit"), as: UTF8.self).trimmingCharacters(
-          in: .whitespacesAndNewlines)))
-    XCTAssertEqual(RexEditorPane.classifyInspect(status: status, stderr: stderr), .notFound)
+        String(decoding: try fixture("rex-block-inspect-missing", "exit"), as: UTF8.self)
+          .trimmingCharacters(in: .whitespacesAndNewlines)))
+    XCTAssertEqual(RexEditorPane.classifyInspect(block: missingBlock, status: status, stderr: stderr), .notFound)
   }
 
-  func testOtherInspectFailuresAreUnknown() {
-    let notFound = Data(#"Error: block target "block:x" not found"#.utf8)
-    XCTAssertEqual(RexEditorPane.classifyInspect(status: 1, stderr: notFound), .unknown)
-    XCTAssertEqual(RexEditorPane.classifyInspect(status: 3, stderr: Data("Error: timeout".utf8)), .unknown)
+  func testInspectWithABadSessionOrMalformedIDIsNotAMissingBlock() throws {
+    let badSession = try fixture("rex-block-inspect-bad-session", "stderr")
+    let badID = try fixture("rex-block-inspect-bad-id", "stderr")
+    XCTAssertEqual(RexEditorPane.classifyInspect(block: missingBlock, status: 3, stderr: badSession), .unknown)
+    XCTAssertEqual(RexEditorPane.classifyInspect(block: "block:nope", status: 3, stderr: badID), .unknown)
+  }
+
+  func testNotFoundMustNameTheQueriedBlock() throws {
+    let stderr = try fixture("rex-block-inspect-missing", "stderr")
+    XCTAssertEqual(RexEditorPane.classifyInspect(block: "block:other", status: 3, stderr: stderr), .unknown)
+  }
+
+  func testOtherInspectFailuresAreUnknown() throws {
+    let notFound = try fixture("rex-block-inspect-missing", "stderr")
+    XCTAssertEqual(RexEditorPane.classifyInspect(block: missingBlock, status: 1, stderr: notFound), .unknown)
     XCTAssertEqual(
-      RexEditorPane.classifyInspect(status: 1, stderr: Data("Error: server unreachable".utf8)), .unknown)
-    XCTAssertEqual(RexEditorPane.classifyInspect(status: 3, stderr: Data()), .unknown)
+      RexEditorPane.classifyInspect(block: missingBlock, status: 3, stderr: Data("Error: timeout".utf8)), .unknown)
+    XCTAssertEqual(RexEditorPane.classifyInspect(block: missingBlock, status: 3, stderr: Data()), .unknown)
   }
 
   func testInspectFixtureDecodesAsABlock() throws {

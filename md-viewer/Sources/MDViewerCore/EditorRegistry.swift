@@ -54,8 +54,8 @@ public struct EditorRegistry: Sendable {
   }
 
   public func sidecarFiles(of entry: EditorEntry) -> [String] {
-    guard let sidecar = sidecar(of: entry),
-      let text = try? String(contentsOf: sidecar, encoding: .utf8)
+    guard let id = neovimID(of: entry),
+      let text = try? String(contentsOf: paths.neovimFiles(id: id), encoding: .utf8)
     else { return [] }
     return text.split(separator: "\n").map { canonicalPath(String($0)) }
   }
@@ -69,12 +69,20 @@ public struct EditorRegistry: Sendable {
     return entries().filter { $0.session == session && files(of: $0).contains(wanted) }
   }
 
+  public func withLock<T>(_ body: (OpenLock) throws -> T) throws -> T {
+    guard let lock = OpenLock.acquire(paths.editLock, timeout: lockTimeout) else {
+      throw EditorRegistryError.lockUnavailable
+    }
+    defer { lock.release() }
+    return try body(lock)
+  }
+
   public func lookup(
-    file: String, session: String, under lock: OpenLock? = nil, blockState: (String) -> BlockState
-  ) -> EditorEntry? {
+    file: String, session: String, under lock: OpenLock, blockState: (String) -> BlockState
+  ) throws -> EditorEntry? {
     for candidate in entries(listing: file, session: session) {
       if blockState(candidate.block) == .notFound {
-        remove(block: candidate.block, under: lock)
+        try remove(block: candidate.block, under: lock)
       } else {
         return candidate
       }
@@ -83,26 +91,25 @@ public struct EditorRegistry: Sendable {
   }
 
   @discardableResult
-  public func prune(under lock: OpenLock? = nil, blockState: (String) -> BlockState) -> [EditorEntry] {
-    entries().filter { blockState($0.block) == .notFound }.map { entry in
-      remove(block: entry.block, under: lock)
-      return entry
+  public func prune(under lock: OpenLock, blockState: (String) -> BlockState) throws -> [EditorEntry] {
+    var pruned: [EditorEntry] = []
+    for entry in entries() where blockState(entry.block) == .notFound {
+      if try remove(block: entry.block, under: lock) != nil { pruned.append(entry) }
     }
+    return pruned
   }
 
-  public func write(_ entry: EditorEntry, under lock: OpenLock? = nil) throws {
-    try locked(lock) { _ in
-      try FileManager.default.createDirectory(
-        at: paths.editorsDirectory, withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700])
-      let file = entryFile(block: entry.block)
-      try JSONEncoder().encode(entry).write(to: file, options: .atomic)
-      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-    }
+  public func write(_ entry: EditorEntry, under lock: OpenLock) throws {
+    try FileManager.default.createDirectory(
+      at: paths.editorsDirectory, withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
+    let file = entryFile(block: entry.block)
+    try JSONEncoder().encode(entry).write(to: file, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
   }
 
   @discardableResult
-  public func addFile(_ file: String, block: String, under lock: OpenLock? = nil) throws -> Bool {
+  public func addFile(_ file: String, block: String, under lock: OpenLock) throws -> Bool {
     try update(block: block, under: lock) { entry in
       let canonical = canonicalPath(file)
       if !entry.files.contains(canonical) { entry.files.append(canonical) }
@@ -110,47 +117,39 @@ public struct EditorRegistry: Sendable {
   }
 
   @discardableResult
-  public func setPreview(_ preview: String?, block: String, under lock: OpenLock? = nil) throws -> Bool {
+  public func setPreview(_ preview: String?, block: String, under lock: OpenLock) throws -> Bool {
     try update(block: block, under: lock) { $0.preview = preview }
   }
 
   @discardableResult
-  public func remove(block: String, under lock: OpenLock? = nil) -> EditorEntry? {
-    let removed = try? locked(lock) { _ -> EditorEntry? in
-      guard let entry = entry(block: block) else { return nil }
-      let manager = FileManager.default
-      try? manager.removeItem(at: entryFile(block: block))
-      if let sidecar = sidecar(of: entry) { try? manager.removeItem(at: sidecar) }
-      if let socket = entry.controlSocket { try? manager.removeItem(atPath: socket) }
-      return entry
+  public func remove(block: String, under lock: OpenLock) throws -> EditorEntry? {
+    guard let entry = entry(block: block) else { return nil }
+    let manager = FileManager.default
+    try manager.removeItem(at: entryFile(block: block))
+    if let id = neovimID(of: entry) {
+      try? manager.removeItem(at: paths.neovimFiles(id: id))
+      try? manager.removeItem(at: paths.neovimControlSocket(id: id))
     }
-    return removed ?? nil
+    return entry
   }
 
-  private func update(block: String, under lock: OpenLock?, _ change: (inout EditorEntry) -> Void) throws -> Bool {
-    try locked(lock) { held in
-      guard var entry = entry(block: block) else { return false }
-      let before = entry
-      change(&entry)
-      if entry != before { try write(entry, under: held) }
-      return true
-    }
+  private func update(block: String, under lock: OpenLock, _ change: (inout EditorEntry) -> Void) throws -> Bool {
+    guard var entry = entry(block: block) else { return false }
+    let before = entry
+    change(&entry)
+    if entry != before { try write(entry, under: lock) }
+    return true
   }
 
-  private func sidecar(of entry: EditorEntry) -> URL? {
+  private func neovimID(of entry: EditorEntry) -> String? {
     guard let socket = entry.controlSocket else { return nil }
-    let url = URL(fileURLWithPath: socket)
-    guard url.pathExtension == "sock" else { return nil }
-    return url.deletingPathExtension().appendingPathExtension("files")
-  }
-
-  private func locked<T>(_ held: OpenLock?, _ body: (OpenLock) throws -> T) throws -> T {
-    if let held { return try body(held) }
-    guard let lock = OpenLock.acquire(paths.editLock, timeout: lockTimeout) else {
-      throw EditorRegistryError.lockUnavailable
-    }
-    defer { lock.release() }
-    return try body(lock)
+    let url = URL(fileURLWithPath: socket).standardizedFileURL
+    let directory = paths.neovimSocketsDirectory.standardizedFileURL
+    let id = url.deletingPathExtension().lastPathComponent
+    guard url.pathExtension == "sock", url.deletingLastPathComponent().path == directory.path,
+      !id.isEmpty, !id.hasPrefix(".")
+    else { return nil }
+    return id
   }
 }
 

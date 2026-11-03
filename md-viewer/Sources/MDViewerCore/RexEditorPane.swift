@@ -67,9 +67,9 @@ public enum RexEditorPane {
     return .ended
   }
 
-  public static func classifyInspect(status: Int32, stderr: Data) -> BlockState {
+  public static func classifyInspect(block: String, status: Int32, stderr: Data) -> BlockState {
     if status == 0 { return .found }
-    let message = String(decoding: stderr, as: UTF8.self)
-    return status == 3 && message.contains("not found") ? .notFound : .unknown
+    let message = String(decoding: stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    return status == 3 && message == "Error: block target \"\(block)\" not found" ? .notFound : .unknown
   }
 }
