@@ -153,7 +153,7 @@ public final class EditorCoordinator {
   public let context: EditorContext
   public private(set) var link = EditorLinkState()
   private(set) var isBusy = false
-  public var onHandoff: (EditorLaunch) -> Void = { _ in }
+  public var onHandoff: (EditorLaunch, [StatusMessage]) -> Void = { _, _ in }
   weak var host: ViewerHost?
   nonisolated let queue = DispatchQueue(label: "md-viewer.editor")
   nonisolated let work: EditorWork
@@ -333,14 +333,16 @@ public final class EditorCoordinator {
   struct Outcome: Sendable {
     var notices: [String] = []
     var status: (text: String, kind: StatusMessage.Kind)?
+    var handoff: EditorLaunch?
     var then: (@MainActor @Sendable (EditorCoordinator) -> Void)?
 
     init(
-      notices: [String] = [], status: (text: String, kind: StatusMessage.Kind)? = nil,
+      notices: [String] = [], status: (text: String, kind: StatusMessage.Kind)? = nil, handoff: EditorLaunch? = nil,
       then: (@MainActor @Sendable (EditorCoordinator) -> Void)? = nil
     ) {
       self.notices = notices
       self.status = status
+      self.handoff = handoff
       self.then = then
     }
   }
@@ -361,6 +363,13 @@ public final class EditorCoordinator {
   nonisolated func finish(_ outcome: Outcome) {
     onMain { coordinator in
       coordinator.isBusy = false
+      if let launch = outcome.handoff {
+        outcome.then?(coordinator)
+        var statuses = outcome.notices.map { StatusMessage($0) }
+        if let status = outcome.status { statuses.append(StatusMessage(status.text, kind: status.kind)) }
+        coordinator.onHandoff(launch, statuses)
+        return
+      }
       for notice in outcome.notices { coordinator.host?.showEditorStatus(notice, kind: .info) }
       outcome.then?(coordinator)
       if let status = outcome.status { coordinator.host?.showEditorStatus(status.text, kind: status.kind) }
@@ -396,7 +405,7 @@ public final class EditorCoordinator {
       if !editor.profile.runsInTerminal { return launchGUI(editor, job: job) }
       let launch = work.terminalLaunch(editor, job: job, neovim: nil)
       let status = mode == .split ? (EditorCoordinator.notInRexMessage, StatusMessage.Kind.info) : nil
-      return Outcome(status: status) { $0.onHandoff(launch) }
+      return Outcome(status: status, handoff: launch)
     }
     if job.fromSocket, mode == .here, editor.profile.runsInTerminal { work.focus(rex.block) }
     do {
@@ -515,9 +524,8 @@ public final class EditorCoordinator {
     let launch = work.terminalLaunch(editor, job: job, neovim: neovim)
     var status = unavailable.map { (EditorCoordinator.liveSyncUnavailable($0), StatusMessage.Kind.info) }
     if !recorded { status = (EditorCoordinator.unrecordedMessage, .error) }
-    return Outcome(status: status) { coordinator in
+    return Outcome(status: status, handoff: launch) { coordinator in
       if let neovim { _ = coordinator.attachPending(neovim.token, block: rex.block) }
-      coordinator.onHandoff(launch)
     }
   }
 

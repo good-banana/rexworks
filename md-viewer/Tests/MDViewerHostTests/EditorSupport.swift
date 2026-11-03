@@ -1,6 +1,7 @@
 import Foundation
 import MDViewerCore
 import MDViewerInteraction
+import MDViewerRender
 import XCTest
 
 @testable import MDViewerHost
@@ -166,6 +167,7 @@ final class EditorFixture {
   let logs = Recorder<String>()
   let coordinator: EditorCoordinator
   var handoffs: [EditorLaunch] = []
+  var handoffStatuses: [[StatusMessage]] = []
 
   init(
     _ markdown: String = "# Title\n\nBody text.\n", files: [String: String] = [:], editor: String? = "nvim",
@@ -189,7 +191,10 @@ final class EditorFixture {
       previewSocket: previewSocket ? home.url.appendingPathComponent("preview.sock") : nil,
       ownEnvironment: ["SHELL": "/bin/zsh", "PATH": "/usr/bin"])
     coordinator = EditorCoordinator(context: context, system: system)
-    coordinator.onHandoff = { [unowned self] in handoffs.append($0) }
+    coordinator.onHandoff = { [unowned self] launch, statuses in
+      handoffs.append(launch)
+      handoffStatuses.append(statuses)
+    }
     host.attachEditor(coordinator)
   }
 

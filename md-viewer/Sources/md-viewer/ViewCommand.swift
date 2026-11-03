@@ -70,7 +70,7 @@ enum ViewCommand {
     let handoff = HandoffController(
       host: host, control: control, gate: gate, terminal: Handoff(input: input, inputQueue: inputQueue))
     retained.append(handoff)
-    editor.onHandoff = { handoff.start($0) }
+    editor.onHandoff = { handoff.start($0, statuses: $1) }
     retained.append(startResizeSignal(host))
     let themeWatch = ThemeWatchService(paths: paths, ownSocket: server?.path)
     themeWatch.onLocalChange = { host.themeChanged() }

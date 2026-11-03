@@ -27,8 +27,9 @@ public final class HandoffController {
   let control: ViewerControl
   let gate: GatedTerminalOutput
   let terminal: HandoffTerminal
-  let drainTimeout: UInt64
+  var drainTimeout: UInt64
   public private(set) var launch: EditorLaunch?
+  private var statuses: [StatusMessage] = []
 
   public init(
     host: ViewerHost, control: ViewerControl, gate: GatedTerminalOutput, terminal: HandoffTerminal,
@@ -41,18 +42,25 @@ public final class HandoffController {
     self.drainTimeout = drainTimeout
   }
 
-  public static func status(for result: Result, launch: EditorLaunch) -> (text: String, kind: StatusMessage.Kind) {
+  public static func status(
+    for result: Result, launch: EditorLaunch, before statuses: [StatusMessage] = []
+  ) -> StatusMessage {
     let name = launch.command.first.map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
+    let outcome: StatusMessage
     switch result {
-    case .exited(0): return ("Back from \(name)", .info)
-    case .exited(let status): return ("\(name) exited with status \(status)", .error)
-    case .failed: return ("Could not open \(launch.kind.displayName)", .error)
+    case .exited(0): outcome = StatusMessage("Back from \(name)")
+    case .exited(let status): outcome = StatusMessage("\(name) exited with status \(status)", kind: .error)
+    case .failed: outcome = StatusMessage("Could not open \(launch.kind.displayName)", kind: .error)
     }
+    let all = [outcome] + statuses
+    return StatusMessage(
+      all.map(\.text).joined(separator: "; "), kind: all.contains { $0.kind == .error } ? .error : .info)
   }
 
-  public func start(_ launch: EditorLaunch) {
+  public func start(_ launch: EditorLaunch, statuses: [StatusMessage] = []) {
     guard self.launch == nil, !host.handoffActive else { return }
     self.launch = launch
+    self.statuses = statuses
     host.beginHandoff()
     control.beginHold(token: launch.token)
     terminal.setHandoffActive(true)
@@ -81,7 +89,12 @@ public final class HandoffController {
 
   func finish(_ result: Result) {
     guard let launch else { return }
-    if !terminal.enterRawMode() { host.services.log("handoff: could not configure the terminal") }
+    guard terminal.enterRawMode() else {
+      host.services.log("handoff: could not configure the terminal")
+      self.launch = nil
+      host.onQuit()
+      return
+    }
     gate.openGate()
     gate.write(
       TerminalSequences.enter + TerminalSequences.enableViewerModes + TerminalSequences.queryInBandResizeReports)
@@ -94,7 +107,8 @@ public final class HandoffController {
     let shown = host.interaction.file
     let cursor = control.endHold()
     host.applyHandoffCursor(cursor, shownBefore: shown)
-    let status = Self.status(for: result, launch: launch)
+    let status = Self.status(for: result, launch: launch, before: statuses)
+    statuses = []
     host.showEditorStatus(status.text, kind: status.kind)
   }
 }

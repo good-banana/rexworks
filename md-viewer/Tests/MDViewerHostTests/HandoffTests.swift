@@ -13,6 +13,7 @@ final class FakeHandoffTerminal: HandoffTerminal {
   var calls: [String] = []
   var pendingInput: [[UInt8]] = []
   var spawnFails = false
+  var rawModeFails = false
   var launches: [EditorLaunch] = []
   var onExit: (@MainActor (Int32) -> Void)?
 
@@ -43,7 +44,7 @@ final class FakeHandoffTerminal: HandoffTerminal {
 
   func enterRawMode() -> Bool {
     calls.append("enter raw")
-    return true
+    return !rawModeFails
   }
 
   func resumeInput() { calls.append("resume input") }
@@ -73,9 +74,12 @@ final class HandoffFixture {
 
   init(
     _ markdown: String = "# Title\n\nBody text.\n", files: [String: String] = [:], editor name: String = "nvim",
-    themeQueryTimedOut: Bool = false, drainTimeout: UInt64 = ViewerHost.handoffDrainTimeout
+    inRex: Bool = true, previewSocket: Bool = true, themeQueryTimedOut: Bool = false,
+    drainTimeout: UInt64 = ViewerHost.handoffDrainTimeout
   ) throws {
-    editor = try EditorFixture(markdown, files: files, editor: name, themeQueryTimedOut: themeQueryTimedOut)
+    editor = try EditorFixture(
+      markdown, files: files, editor: name, inRex: inRex, previewSocket: previewSocket,
+      themeQueryTimedOut: themeQueryTimedOut)
     let host = editor.host
     let coordinator = editor.coordinator
     terminal = FakeHandoffTerminal(output: editor.hostFixture.output)
@@ -87,9 +91,9 @@ final class HandoffFixture {
       coordinator.liveFollow(token: token, file: file)
     }
     control.attach(host)
-    coordinator.onHandoff = { [unowned self] launch in
+    coordinator.onHandoff = { [unowned self] launch, statuses in
       self.editor.handoffs.append(launch)
-      controller.start(launch)
+      controller.start(launch, statuses: statuses)
     }
   }
 
@@ -97,8 +101,8 @@ final class HandoffFixture {
   var output: RecordingOutput { editor.hostFixture.output }
   var token: String { editor.handoffs.last?.token ?? "" }
 
-  func pressHere(line: Int = 1) {
-    editor.press(.alternate, line: line)
+  func pressHere(_ mode: EditRequestMode = .alternate, line: Int = 1) {
+    editor.press(mode, line: line)
     spin(until: { self.host.handoffActive && !self.editor.coordinator.isBusy })
   }
 
@@ -106,8 +110,8 @@ final class HandoffFixture {
     host.receive(Array(text.utf8))
   }
 
-  func runEditor() {
-    pressHere()
+  func runEditor(_ mode: EditRequestMode = .alternate) {
+    pressHere(mode)
     reply(Self.deviceAttributesReply)
     spin(until: { self.terminal.spawned })
   }
@@ -251,25 +255,26 @@ final class HandoffTests: XCTestCase {
   }
 
   func testATimedOutDrainResetsTheCounterForTheNextHandoff() throws {
-    let fixture = try HandoffFixture(themeQueryTimedOut: true, drainTimeout: 400_000_000)
+    let fixture = try HandoffFixture(themeQueryTimedOut: true, drainTimeout: 100_000_000)
     fixture.pressHere()
     XCTAssertEqual(fixture.host.pendingDeviceAttributes, 2)
     fixture.reply(HandoffFixture.deviceAttributesReply)
-    spin(0.2)
-    XCTAssertFalse(fixture.terminal.spawned)
-    spin(until: { fixture.terminal.spawned }, timeout: 2)
+    XCTAssertEqual(fixture.host.pendingDeviceAttributes, 1, "one reply does not end the drain")
+    XCTAssertNotNil(fixture.host.drainCompletion)
+    spin(until: { fixture.terminal.spawned })
     XCTAssertTrue(fixture.terminal.spawned, "the drain ends at its timeout")
     XCTAssertEqual(fixture.host.pendingDeviceAttributes, 0)
     fixture.terminal.exit(0)
 
+    fixture.controller.drainTimeout = 3_600_000_000_000
     fixture.terminal.launches = []
     fixture.pressHere()
     XCTAssertEqual(fixture.host.pendingDeviceAttributes, 1)
-    let replied = Date()
     fixture.reply(HandoffFixture.deviceAttributesReply)
+    XCTAssertEqual(fixture.host.pendingDeviceAttributes, 0)
+    XCTAssertNil(fixture.host.drainCompletion, "the sentinel reply ends the drain")
     spin(until: { fixture.terminal.spawned })
     XCTAssertTrue(fixture.terminal.spawned)
-    XCTAssertLessThan(Date().timeIntervalSince(replied), 0.3, "ended by the sentinel reply, not the timeout")
   }
 
   func testHeldMessagesQueueAndAFollowUpdatesTheRegistryAtOnce() throws {
@@ -364,6 +369,72 @@ final class HandoffTests: XCTestCase {
     XCTAssertEqual(fixture.editor.status, "Back from hx")
     XCTAssertNil(fixture.host.interaction.editorCursor)
     spin(until: { fixture.editor.registry.entry(block: EditorFixture.previewBlock) == nil })
+    XCTAssertNil(fixture.editor.registry.entry(block: EditorFixture.previewBlock))
+  }
+
+  func testStatusesSetBeforeTheHandoffFollowTheResumeStatus() throws {
+    let plain = try HandoffFixture()
+    plain.runEditor()
+    plain.terminal.exit(0)
+    XCTAssertEqual(plain.editor.status, "Back from nvim")
+    XCTAssertEqual(plain.host.interaction.status.message?.kind, .info)
+
+    let outside = try HandoffFixture(inRex: false)
+    outside.runEditor(.configured)
+    outside.terminal.exit(0)
+    XCTAssertEqual(outside.editor.status, "Back from nvim; Not in a Rex pane; editing here")
+
+    let noSocket = try HandoffFixture(previewSocket: false)
+    noSocket.runEditor()
+    noSocket.terminal.exit(2)
+    XCTAssertEqual(
+      noSocket.editor.status,
+      "nvim exited with status 2; Neovim live sync unavailable (no preview socket); refreshing on save")
+
+    let unrecorded = try HandoffFixture(editor: "hx")
+    try Data().write(to: unrecorded.editor.paths.editorsDirectory)
+    unrecorded.runEditor()
+    unrecorded.terminal.exit(0)
+    XCTAssertEqual(
+      unrecorded.editor.status, "Back from hx; Could not record the editor; another e may open a second one")
+    XCTAssertEqual(unrecorded.host.interaction.status.message?.kind, .error)
+  }
+
+  func testAFailedRawModeReentryQuitsWithoutTurningTheViewerModesOn() throws {
+    let fixture = try HandoffFixture()
+    var quit = false
+    fixture.host.onQuit = { quit = true }
+    fixture.runEditor()
+    fixture.terminal.rawModeFails = true
+    fixture.terminal.calls = []
+    _ = fixture.output.take()
+    fixture.terminal.exit(0)
+    XCTAssertTrue(quit)
+    XCTAssertEqual(fixture.terminal.calls, ["enter raw"])
+    XCTAssertEqual(fixture.output.writes, [])
+    XCTAssertFalse(fixture.editor.hostFixture.gate.isOpen)
+  }
+
+  func testAKeptCursorForAnotherFileIsSkipped() throws {
+    let fixture = try HandoffFixture(files: ["other.md": "# Other\n\nMore.\n"])
+    let other = fixture.editor.hostFixture.directory.url.appendingPathComponent("other.md")
+    fixture.runEditor()
+    fixture.control.receive(editor: .cursor(fixture.envelope(1, file: other), line: 2, top: 1, height: 10))
+    fixture.terminal.exit(0)
+    XCTAssertEqual(fixture.host.interaction.file, fixture.editor.file)
+    XCTAssertNil(fixture.host.interaction.editorCursor)
+  }
+
+  func testResumeDeletesThisPreviewsHereEntryAndItsSidecar() throws {
+    let fixture = try HandoffFixture()
+    fixture.runEditor()
+    let launch = try XCTUnwrap(fixture.terminal.launches.first)
+    let sidecar = URL(fileURLWithPath: try XCTUnwrap(launch.environment["MD_VIEWER_FILES"]))
+    try Data(fixture.editor.file.path.utf8).write(to: sidecar)
+    XCTAssertNotNil(fixture.editor.registry.entry(block: EditorFixture.previewBlock))
+    fixture.terminal.exit(0)
+    spin(until: { !FileManager.default.fileExists(atPath: sidecar.path) })
+    XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
     XCTAssertNil(fixture.editor.registry.entry(block: EditorFixture.previewBlock))
   }
 

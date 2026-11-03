@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import MDViewerCore
 import MDViewerInteraction
+import MDViewerRender
 import XCTest
 
 @testable import MDViewerHost
@@ -316,7 +317,7 @@ final class EditorCoordinatorTests: XCTestCase {
     let fixture = try EditorFixture(inRex: false)
     fixture.press()
     fixture.waitIdle()
-    XCTAssertEqual(fixture.status, "Not in a Rex pane; editing here")
+    XCTAssertEqual(fixture.handoffStatuses, [[StatusMessage("Not in a Rex pane; editing here")]])
     XCTAssertEqual(fixture.handoffs.first?.command, ["/fake/bin/nvim", "+1", fixture.file.path])
     XCTAssertNil(fixture.handoffs.first?.token)
     XCTAssertTrue(fixture.runner.rexCalls.isEmpty)
