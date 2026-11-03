@@ -51,6 +51,16 @@ enum ViewCommand {
       size: size, theme: resolved.theme, themeQueryTimedOut: resolved.queryTimedOut, services: services)
     host.onQuit = { quit(host) }
     host.onDocumentShown = { status.show($0) }
+    let environment = ProcessInfo.processInfo.environment
+    let editor = EditorCoordinator(
+      context: EditorContext(
+        paths: paths, rexPath: (try? ConfigStore.load(paths))?.rexPath ?? locateExecutable("rex"),
+        session: environment["REX_SESSION"], block: environment["REX_BLOCK"], previewSocket: server?.path,
+        ownEnvironment: environment))
+    host.setEditMode(SettingsStore.load(paths).editMode)
+    host.attachEditor(editor)
+    control.onEditorMessage = { host.receiveEditor($0) }
+    control.onLiveFollow = { editor.liveFollow(token: $0, file: $1) }
     host.start(file: url, windowSize: size)
     control.attach(host)
     retained.append(startInput(host))
@@ -120,6 +130,7 @@ enum ViewCommand {
     _ control: ViewerControl, status: ViewerStatus, paths: SupportPaths
   ) -> ViewerSocketServer? {
     guard let block = ProcessInfo.processInfo.environment["REX_BLOCK"], !block.isEmpty else { return nil }
-    return try? control.listen(on: paths.viewerSocket(block: block), status: status)
+    return try? control.listen(
+      on: paths.viewerSocket(block: block), status: status, buffersDirectory: paths.buffersDirectory)
   }
 }

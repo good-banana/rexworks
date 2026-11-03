@@ -23,10 +23,10 @@ private struct RunResult: Decodable {
 
 public enum RexEditorPane {
   public static func runArguments(
-    session: String, anchorBlock: String, directory: String, command: [String]
+    session: String, anchorBlock: String, directory: String, command: [String], split: String = "left"
   ) -> [String] {
     [
-      "run", "--json", "--session", session, "--block", anchorBlock, "--split", "left", "--ratio", "50",
+      "run", "--json", "--session", session, "--block", anchorBlock, "--split", split, "--ratio", "50",
       "--label", editorPaneLabel, "--cwd", directory, "--",
     ] + command
   }

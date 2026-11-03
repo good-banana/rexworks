@@ -68,6 +68,7 @@ public final class ViewerHost {
   public let driver: DisplayDriver
   public var onQuit: () -> Void = {}
   public var onDocumentShown: (URL) -> Void = { _ in }
+  public private(set) var editor: EditorCoordinator?
 
   let services: HostServices
   let source: RasterFrameSource
@@ -94,6 +95,7 @@ public final class ViewerHost {
   var animationTimerDeadline: UInt64?
   var tickTimerDeadline: UInt64?
   var lastAnimationTick: UInt64 = 0
+  var liveBufferNoticeShown = false
 
   public init(size: PaneSize, theme: ResolvedTheme, themeQueryTimedOut: Bool = false, services: HostServices) {
     self.services = services
@@ -169,12 +171,21 @@ public final class ViewerHost {
   }
 
   public func open(_ url: URL) {
+    leaveLiveBuffer()
+    perform(interaction.clearEditorCursor())
     perform(interaction.open(url))
     settle()
   }
 
   public func fileChanged() {
-    reloadFile()
+    if interaction.liveBuffer {
+      if !liveBufferNoticeShown {
+        liveBufferNoticeShown = true
+        perform(interaction.show(Self.liveBufferNotice, kind: .info, at: Self.now()))
+      }
+    } else {
+      reloadFile()
+    }
     settle()
   }
 
@@ -184,6 +195,7 @@ public final class ViewerHost {
   }
 
   public func shutdown() {
+    editor?.shutdown()
     watcher?.stop()
     watcher = nil
     tickTimer?.cancel()
@@ -286,12 +298,20 @@ public final class ViewerHost {
       load(url)
     case .reload:
       watcher?.rearmIfNeeded()
+      leaveLiveBuffer()
       reloadFile()
       requestTheme(.reload)
+      editor?.refreshEnvironment()
     case .quit:
       onQuit()
-    case .edit, .openEditorPicker, .chooseEditor, .jumpEditor:
-      trace("editor intent \(effect)")
+    case .edit(let request):
+      editor?.edit(request)
+    case .openEditorPicker:
+      editor?.openPicker()
+    case .chooseEditor(let candidate, let mode, let pending):
+      editor?.choose(candidate, mode: mode, pending: pending)
+    case .jumpEditor(let line):
+      editor?.jump(line: line)
     }
   }
 
@@ -319,6 +339,7 @@ public final class ViewerHost {
     let now = Self.now()
     do {
       perform(interaction.open(file: url, source: try read(url), at: now))
+      refreshEditorLink()
       onDocumentShown(url)
       watch(url)
     } catch {
@@ -349,6 +370,121 @@ public final class ViewerHost {
   }
 
   static func cannotRead(_ url: URL) -> String { "Cannot read \(url.lastPathComponent)" }
+
+  // MARK: Editor
+
+  public static let liveBufferNotice = "File changed on disk; showing the editor's unsaved text"
+
+  public func attachEditor(_ editor: EditorCoordinator) {
+    self.editor = editor
+    editor.host = self
+    refreshEditorLink()
+  }
+
+  public func setEditMode(_ mode: EditMode) {
+    guard interaction.editMode != mode else { return }
+    interaction.editMode = mode
+    source.editMode = mode
+    guard interaction.helpVisible else { return }
+    transport.invalidateAll()
+    settle()
+  }
+
+  public func receiveEditor(_ message: EditorMessage) {
+    guard let editor else { return }
+    if case .edit(let mode, let line) = message {
+      editor.edit(EditRequest(mode: mode, line: line), fromSocket: true)
+      return
+    }
+    guard editor.accept(message, shownFile: interaction.file) else {
+      trace("editor message dropped \(message)")
+      return
+    }
+    switch message {
+    case .cursor(_, let line, let top, let height):
+      perform(interaction.applyEditorCursor(EditorCursor(line: line, top: top, height: height)))
+    case .buffer(_, let text):
+      showLiveBuffer(text, buffers: editor.buffersDirectory)
+    case .clean:
+      leaveLiveBuffer()
+      reloadFile()
+    case .follow(let envelope):
+      followEditor(to: URL(fileURLWithPath: envelope.file))
+    case .unlinked(let envelope):
+      if editor.unlinked(token: envelope.token) { editorEnded(status: EditorCoordinator.relinkedMessage) }
+    case .exit(let envelope):
+      editor.exited(token: envelope.token)
+    case .edit:
+      break
+    }
+    refreshEditorLink()
+    settle()
+  }
+
+  func showLiveBuffer(_ text: URL, buffers: URL) {
+    guard let url = validateBufferPath(text.path, buffersDirectory: buffers), let source = try? read(url) else {
+      return
+    }
+    if !interaction.liveBuffer { liveBufferNoticeShown = false }
+    perform(interaction.fileChanged(source: source))
+    perform(interaction.setLiveBuffer(true))
+  }
+
+  func leaveLiveBuffer() {
+    perform(interaction.setLiveBuffer(false))
+  }
+
+  func followEditor(to url: URL) {
+    let wasLive = interaction.liveBuffer
+    leaveLiveBuffer()
+    perform(interaction.clearEditorCursor())
+    if let file = interaction.file, canonicalPath(file.path) == canonicalPath(url.path) {
+      if wasLive { reloadFile() }
+    } else {
+      perform(interaction.open(url))
+    }
+  }
+
+  func dropLiveBuffer() {
+    guard interaction.liveBuffer else { return }
+    leaveLiveBuffer()
+    reloadFile()
+    settle()
+  }
+
+  func editorEnded(status: String) {
+    perform(interaction.clearEditorCursor())
+    leaveLiveBuffer()
+    reloadFile()
+    refreshEditorLink()
+    perform(interaction.show(status, kind: .info, at: Self.now()))
+    settle()
+  }
+
+  func editorLinkChanged() {
+    refreshEditorLink()
+    settle()
+  }
+
+  func refreshEditorLink() {
+    var current: EditorLink?
+    if let link = editor?.link, link.block != nil, let kind = link.kind {
+      current = EditorLink(
+        name: kind.displayName, syncsLive: kind == .neovim && link.token != nil,
+        followsShownFile: interaction.file.map(link.follows) ?? false)
+    }
+    perform(interaction.setEditorLink(current))
+  }
+
+  func showEditorStatus(_ text: String, kind: StatusMessage.Kind) {
+    perform(interaction.show(text, kind: kind, at: Self.now()))
+    settle()
+  }
+
+  func showEditorPicker(_ candidates: [EditorCandidate], mode: EditMode, pending: EditRequest? = nil) {
+    perform(interaction.showEditorPicker(candidates: candidates, mode: mode, pending: pending))
+    settle()
+  }
 
   static func unreadableDocument(_ url: URL) -> String {
     var run = 0

@@ -19,6 +19,13 @@ final class RexEditorPaneTests: XCTestCase {
       ])
   }
 
+  func testRunArgumentsCanSplitBelowAnotherEditor() {
+    let arguments = RexEditorPane.runArguments(
+      session: "session:1", anchorBlock: "block:e", directory: "/tmp/notes", command: ["/usr/bin/hx", "a.md"],
+      split: "below")
+    XCTAssertEqual(Array(arguments[4...9]), ["--block", "block:e", "--split", "below", "--ratio", "50"])
+  }
+
   func testQueryArgumentsAskForJSONWhereTheyParseIt() {
     XCTAssertEqual(RexEditorPane.waitArguments(block: "block:e", session: "session:1").last, "--json")
     XCTAssertEqual(RexEditorPane.blockListArguments(session: "session:1").last, "--json")
