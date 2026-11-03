@@ -1,0 +1,12 @@
+{
+  "session_id": "session:01a18e8c-860a-7d94-b653-588b0358ac75",
+  "block": {
+    "block_id": "block:01a1a2b8-248d-7733-a80b-e2c571e5779e",
+    "label": "md-viewer-fixture",
+    "creator_name": "com.superlogical.terminal",
+    "flavor": "com.superlogical.terminal.shell",
+    "host_id": "04d8b403-ffbb-4516-a4a8-d1faf1d4d769",
+    "placement": "placed",
+    "window_id": "window:01a193ad-f8f8-7ee0-ad1e-277b4d213ab6"
+  }
+}

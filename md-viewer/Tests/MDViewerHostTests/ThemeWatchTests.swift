@@ -225,4 +225,19 @@ final class ThemeWatchServiceTests: XCTestCase {
       in: directory.url, excluding: directory.url.appendingPathComponent("a.sock"))
     XCTAssertEqual(peers.map(\.lastPathComponent), ["b.sock"])
   }
+
+  func testNeovimSocketsAndSidecarsStayOutOfPeerSockets() throws {
+    let directory = try TestDirectory()
+    let paths = SupportPaths(home: directory.url)
+    try FileManager.default.createDirectory(at: paths.viewersDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: paths.neovimSocketsDirectory, withIntermediateDirectories: true)
+    try Data().write(to: paths.viewerSocket(block: "block:a"))
+    try Data().write(to: paths.neovimControlSocket(id: "abc"))
+    try Data().write(to: paths.neovimFiles(id: "abc"))
+    XCTAssertFalse(
+      paths.neovimSocketsDirectory.standardizedFileURL.path.hasPrefix(
+        paths.viewersDirectory.standardizedFileURL.path + "/"))
+    let peers = ThemeWatchService.peerSockets(in: paths.viewersDirectory, excluding: nil)
+    XCTAssertEqual(peers.map(\.lastPathComponent), [paths.viewerSocket(block: "block:a").lastPathComponent])
+  }
 }

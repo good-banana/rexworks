@@ -33,12 +33,12 @@ public struct Config: Codable, Equatable, Sendable {
   }
 }
 
-public enum EditMode: String, Sendable, CaseIterable {
+public enum EditMode: String, Codable, Sendable, CaseIterable {
   case split
   case here
 }
 
-public enum EditorKind: String, Sendable, CaseIterable {
+public enum EditorKind: String, Codable, Sendable, CaseIterable {
   case neovim
   case vim
   case helix

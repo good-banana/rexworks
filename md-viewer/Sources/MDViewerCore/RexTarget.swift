@@ -100,7 +100,7 @@ private struct BlockInspect: Decodable {
   }
 }
 
-private struct BlockList: Decodable {
+struct BlockList: Decodable {
   struct Block: Decodable {
     let blockID: String
     let label: String?
