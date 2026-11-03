@@ -163,28 +163,30 @@ final class EditorFixture {
   let waits = FakeWaits()
   let gui = FakeGUILauncher()
   let tokens = TokenSource()
+  let logs = Recorder<String>()
   let coordinator: EditorCoordinator
   var handoffs: [EditorLaunch] = []
 
   init(
     _ markdown: String = "# Title\n\nBody text.\n", files: [String: String] = [:], editor: String? = "nvim",
-    inRex: Bool = true
+    inRex: Bool = true, previewSocket: Bool = true, homeSuffix: String = ""
   ) throws {
     hostFixture = try HostFixture(markdown, files: files)
     host = hostFixture.host
     home = try ShortHome()
-    paths = SupportPaths(home: home.url)
+    paths = SupportPaths(home: home.url.appendingPathComponent(homeSuffix))
     if let editor { try SettingsStore.update(paths, set: [.editor: editor]) }
     let control = control
     let gui = gui
     let tokens = tokens
+    let logs = logs
     let system = EditorSystem(
       runner: runner, isExecutable: { $0.hasPrefix("/fake/bin/") || $0 == "/bin/zsh" },
       sendControl: { control.send($0, $1) }, launchGUI: { try gui.launch($0) }, paneWait: waits.launcher,
-      makeToken: { tokens.next() })
+      makeToken: { tokens.next() }, log: { logs.add($0) })
     let context = EditorContext(
       paths: paths, rexPath: "/fake/rex", session: inRex ? Self.session : nil, block: Self.previewBlock,
-      previewSocket: home.url.appendingPathComponent("preview.sock"),
+      previewSocket: previewSocket ? home.url.appendingPathComponent("preview.sock") : nil,
       ownEnvironment: ["SHELL": "/bin/zsh", "PATH": "/usr/bin"])
     coordinator = EditorCoordinator(context: context, system: system)
     coordinator.onHandoff = { [unowned self] in handoffs.append($0) }

@@ -148,6 +148,88 @@ final class EditorCoordinatorTests: XCTestCase {
     XCTAssertEqual(fixture.status, "Focused the editor")
   }
 
+  func testAnExistingOtherEditorIsFocusedAndWatchedWithoutAToken() throws {
+    let fixture = try EditorFixture(editor: "hx")
+    try fixture.write(
+      EditorEntry(
+        block: "block:hx", mode: .split, session: EditorFixture.session, files: [fixture.file.path], kind: .helix))
+    fixture.press(line: 9)
+    fixture.waitIdle()
+    XCTAssertEqual(
+      fixture.runner.rexCalls,
+      [
+        ["block", "inspect", "-s", EditorFixture.session, "block:hx"],
+        ["focus", "block:hx", "-s", EditorFixture.session],
+      ])
+    XCTAssertTrue(fixture.control.commands.isEmpty, "no line jump")
+    XCTAssertEqual(fixture.coordinator.link.block, "block:hx")
+    XCTAssertEqual(fixture.coordinator.link.kind, .helix)
+    XCTAssertNil(fixture.coordinator.link.token)
+    XCTAssertEqual(fixture.coordinator.watchedBlocks, ["block:hx"])
+    XCTAssertEqual(fixture.status, "Focused the editor")
+    XCTAssertEqual(fixture.host.interaction.status.editor, "Helix: on save")
+
+    fixture.press()
+    fixture.waitIdle()
+    XCTAssertEqual(fixture.waits.processes.count, 1, "the existing watch is kept")
+  }
+
+  func testARelinkWhoseTokenWasDiscardedDoesNotClaimSuccess() throws {
+    let fixture = try EditorFixture()
+    try fixture.write(fixture.neovimEntry(block: "block:nvim", files: [fixture.file]))
+    let host = fixture.host
+    let file = fixture.file
+    fixture.control.onSend = { command in
+      guard case .link(_, let token, _, _) = command else { return }
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          host.receiveEditor(.unlinked(PluginEnvelope(token: token, seq: 1, file: file.path)))
+        }
+      }
+    }
+    fixture.press()
+    fixture.waitIdle()
+    XCTAssertEqual(fixture.control.commands.count, 1)
+    XCTAssertNil(fixture.coordinator.link.block)
+    XCTAssertNil(fixture.coordinator.link.pending)
+    XCTAssertTrue(fixture.coordinator.watchedBlocks.isEmpty)
+    XCTAssertNotEqual(fixture.status, "Focused the editor")
+  }
+
+  func testNeovimLiveSyncFailuresAreReportedAndTheLaunchProceeds() throws {
+    let noSocket = try EditorFixture(previewSocket: false)
+    noSocket.launchNeovim()
+    XCTAssertEqual(noSocket.status, "Neovim live sync unavailable (no preview socket); refreshing on save")
+    XCTAssertNil(noSocket.coordinator.link.token)
+    XCTAssertEqual(noSocket.host.interaction.status.editor, "Neovim: on save")
+    XCTAssertTrue(noSocket.logs.values.contains { $0.contains("no preview socket") })
+
+    let long = try EditorFixture(homeSuffix: String(repeating: "h", count: 60))
+    long.launchNeovim()
+    XCTAssertEqual(long.status, "Neovim live sync unavailable (socket path too long); refreshing on save")
+    XCTAssertEqual(
+      long.runner.rexCalls.first { $0.first == "run" }?.suffix(3), ["/fake/bin/nvim", "+1", long.file.path])
+    XCTAssertTrue(long.logs.values.contains { $0.contains("socket path too long") })
+
+    let broken = try EditorFixture()
+    try Data().write(to: broken.paths.root.appendingPathComponent("nvim"))
+    broken.launchNeovim()
+    XCTAssertEqual(broken.status, "Neovim live sync unavailable (plugin install failed); refreshing on save")
+    XCTAssertNil(broken.coordinator.link.token)
+    XCTAssertTrue(broken.logs.values.contains { $0.contains("plugin install failed") })
+  }
+
+  func testAFailedRegistryWriteAfterLaunchIsReported() throws {
+    let fixture = try EditorFixture(editor: "hx")
+    try Data().write(to: fixture.paths.editorsDirectory)
+    fixture.runner.queueRun((0, runJSON(block: "block:helix"), Data()))
+    fixture.press()
+    fixture.waitIdle()
+    XCTAssertEqual(fixture.status, "Could not record the editor; another e may open a second one")
+    XCTAssertEqual(fixture.coordinator.link.block, "block:helix")
+    XCTAssertTrue(fixture.logs.values.contains { $0.contains("could not write the entry for block:helix") })
+  }
+
   func testAMissingEditorIsPrunedAndANewOneLaunched() throws {
     let fixture = try EditorFixture()
     try fixture.write(fixture.neovimEntry(block: "block:gone", files: [fixture.file]))
@@ -316,6 +398,26 @@ final class EditorCoordinatorTests: XCTestCase {
     XCTAssertEqual(fixture.status, "Editor closed")
     spin(until: { fixture.registry.entry(block: block) == nil })
     XCTAssertNil(fixture.registry.entry(block: block))
+  }
+
+  func testARetryForAStoppedWatchLeavesItsReplacementAlone() throws {
+    let waits = FakeWaits()
+    let watches = PaneWatches(session: EditorFixture.session, launch: waits.launcher)
+    watches.retryDelay = { _ in 0.01 }
+    var ended: Int?
+    watches.onFinish = { _, generation, _ in ended = generation }
+    watches.start("block:a")
+    try XCTUnwrap(waits.running("block:a")).finished(Data())
+    spin(until: { ended != nil })
+    watches.stop("block:a")
+    watches.start("block:a")
+    let replacement = try XCTUnwrap(waits.running("block:a"))
+    watches.retry("block:a", generation: try XCTUnwrap(ended))
+    spin(0.1)
+    XCTAssertEqual(waits.processes.count, 2)
+    XCTAssertFalse(replacement.stopped)
+    watches.stopAll()
+    XCTAssertTrue(replacement.stopped)
   }
 
   func testThePickerOpensWhenNothingResolvesAndChoosingContinuesTheEdit() throws {

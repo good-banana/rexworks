@@ -56,7 +56,8 @@ enum ViewCommand {
       context: EditorContext(
         paths: paths, rexPath: (try? ConfigStore.load(paths))?.rexPath ?? locateExecutable("rex"),
         session: environment["REX_SESSION"], block: environment["REX_BLOCK"], previewSocket: server?.path,
-        ownEnvironment: environment))
+        ownEnvironment: environment),
+      system: EditorSystem(log: { log.write($0) }))
     host.setEditMode(SettingsStore.load(paths).editMode)
     host.attachEditor(editor)
     control.onEditorMessage = { host.receiveEditor($0) }

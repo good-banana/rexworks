@@ -80,7 +80,7 @@ final class PaneWatches {
   private let session: String
   private var watches: [String: Watch] = [:]
   private var generation = 0
-  var onFinish: (_ block: String, _ output: Data) -> Void = { _, _ in }
+  var onFinish: (_ block: String, _ generation: Int, _ output: Data) -> Void = { _, _, _ in }
   var retryDelay: (Int) -> TimeInterval = { failures in min(pow(2, Double(failures - 1)), PaneWatches.maximumRetryDelay)
   }
 
@@ -97,8 +97,8 @@ final class PaneWatches {
     run(block)
   }
 
-  func retry(_ block: String) {
-    guard var watch = watches[block] else { return }
+  func retry(_ block: String, generation finished: Int) {
+    guard var watch = watches[block], watch.generation == finished, watch.process == nil else { return }
     watch.failures += 1
     watch.process = nil
     generation += 1
@@ -139,6 +139,6 @@ final class PaneWatches {
   private func finished(_ block: String, generation expected: Int, output: Data) {
     guard watches[block]?.generation == expected else { return }
     watches[block]?.process = nil
-    onFinish(block, output)
+    onFinish(block, expected, output)
   }
 }

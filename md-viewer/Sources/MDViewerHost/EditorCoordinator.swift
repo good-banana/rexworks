@@ -41,6 +41,7 @@ public struct EditorSystem: @unchecked Sendable {
   public var launchGUI: @Sendable (EditorLaunch) throws -> Void
   public var paneWait: PaneWaitLauncher?
   public var makeToken: @Sendable () -> String
+  public var log: @Sendable (String) -> Void
 
   public init(
     runner: ProcessRunning = ProcessRunner(timeout: EditorCoordinator.rexTimeout),
@@ -48,7 +49,8 @@ public struct EditorSystem: @unchecked Sendable {
     sendControl: @escaping @Sendable (EditorControlCommand, URL) -> Bool = { ViewerSocketClient.send($0, to: $1) },
     launchGUI: @escaping @Sendable (EditorLaunch) throws -> Void = EditorCoordinator.launchProcess,
     paneWait: PaneWaitLauncher? = nil,
-    makeToken: @escaping @Sendable () -> String = EditorCoordinator.randomToken
+    makeToken: @escaping @Sendable () -> String = EditorCoordinator.randomToken,
+    log: @escaping @Sendable (String) -> Void = { _ in }
   ) {
     self.runner = runner
     self.isExecutable = isExecutable
@@ -56,6 +58,7 @@ public struct EditorSystem: @unchecked Sendable {
     self.launchGUI = launchGUI
     self.paneWait = paneWait
     self.makeToken = makeToken
+    self.log = log
   }
 }
 
@@ -141,6 +144,11 @@ public final class EditorCoordinator {
   public nonisolated static let alreadyEditingMessage = "Already editing in another pane"
   public nonisolated static let relinkedMessage = "Editor linked to another preview"
   public nonisolated static let closedMessage = "Editor closed"
+  public nonisolated static let unrecordedMessage = "Could not record the editor; another e may open a second one"
+
+  public nonisolated static func liveSyncUnavailable(_ reason: String) -> String {
+    "Neovim live sync unavailable (\(reason)); refreshing on save"
+  }
 
   public let context: EditorContext
   public private(set) var link = EditorLinkState()
@@ -160,7 +168,9 @@ public final class EditorCoordinator {
     } else {
       watches = nil
     }
-    watches?.onFinish = { [unowned self] block, output in watchFinished(block, output: output) }
+    watches?.onFinish = { [unowned self] block, generation, output in
+      watchFinished(block, generation: generation, output: output)
+    }
   }
 
   var buffersDirectory: URL { context.paths.buffersDirectory }
@@ -299,11 +309,11 @@ public final class EditorCoordinator {
     host?.editorEnded(status: Self.closedMessage)
   }
 
-  func watchFinished(_ block: String, output: Data) {
+  func watchFinished(_ block: String, generation: Int, output: Data) {
     if RexEditorPane.classifyWait(stdout: output) == .ended { return blockEnded(block) }
     queue.async { [self] in
       let state = work.blockState(block)
-      onMain { state == .notFound ? $0.blockEnded(block) : $0.watches?.retry(block) }
+      onMain { state == .notFound ? $0.blockEnded(block) : $0.watches?.retry(block, generation: generation) }
     }
   }
 
@@ -433,8 +443,10 @@ public final class EditorCoordinator {
     }
     work.setPreview(block: block, under: lock)
     if focusAfter { work.focus(block) }
-    return Outcome(status: (EditorCoordinator.focusedMessage, .info)) { coordinator in
-      if coordinator.attachPending(token, block: block) { coordinator.watch(block) }
+    return Outcome { coordinator in
+      guard coordinator.attachPending(token, block: block) else { return }
+      coordinator.watch(block)
+      coordinator.host?.showEditorStatus(EditorCoordinator.focusedMessage, kind: .info)
     }
   }
 
@@ -450,7 +462,7 @@ public final class EditorCoordinator {
 
   nonisolated func launchSplit(_ editor: ResolvedEditor, job: EditJob, lock: OpenLock) -> Outcome {
     guard let rex = work.rex else { return Outcome() }
-    let neovim = work.prepareNeovim(editor)
+    let (neovim, unavailable) = work.prepareNeovim(editor)
     if let neovim {
       onMainSync {
         $0.recordPending(
@@ -471,16 +483,20 @@ public final class EditorCoordinator {
     let entry = EditorEntry(
       block: block, mode: .split, session: rex.session, files: [job.file.path], kind: editor.kind,
       controlSocket: neovim?.controlSocket, preview: rex.block)
-    work.write(entry, under: lock)
+    let recorded = work.write(entry, under: lock)
     let kind = editor.kind
-    return Outcome(status: ("Opened \(name)", .info)) { coordinator in
+    let status =
+      !recorded
+      ? (EditorCoordinator.unrecordedMessage, StatusMessage.Kind.error)
+      : (unavailable.map(EditorCoordinator.liveSyncUnavailable) ?? "Opened \(name)", StatusMessage.Kind.info)
+    return Outcome(status: status) { coordinator in
       if neovim == nil { coordinator.adoptPlain(block: block, kind: kind) } else { coordinator.watch(block) }
     }
   }
 
   nonisolated func launchHere(_ editor: ResolvedEditor, job: EditJob, lock: OpenLock) -> Outcome {
     guard let rex = work.rex else { return Outcome() }
-    let neovim = work.prepareNeovim(editor)
+    let (neovim, unavailable) = work.prepareNeovim(editor)
     if let neovim {
       onMainSync {
         $0.recordPending(
@@ -491,9 +507,11 @@ public final class EditorCoordinator {
     let entry = EditorEntry(
       block: rex.block, mode: .here, session: rex.session, files: [job.file.path], kind: editor.kind,
       controlSocket: neovim?.controlSocket, preview: rex.block)
-    work.write(entry, under: lock)
+    let recorded = work.write(entry, under: lock)
     let launch = work.terminalLaunch(editor, job: job, neovim: neovim)
-    return Outcome { coordinator in
+    var status = unavailable.map { (EditorCoordinator.liveSyncUnavailable($0), StatusMessage.Kind.info) }
+    if !recorded { status = (EditorCoordinator.unrecordedMessage, .error) }
+    return Outcome(status: status) { coordinator in
       if let neovim { _ = coordinator.attachPending(neovim.token, block: rex.block) }
       coordinator.onHandoff(launch)
     }
@@ -614,13 +632,20 @@ final class EditorWork: @unchecked Sendable {
     return RexEditorPane.fallbackBlockID(blockListJSON: list.stdout, excluding: known)
   }
 
-  func prepareNeovim(_ editor: ResolvedEditor) -> NeovimSetup? {
-    guard editor.kind == .neovim, context.previewSocket != nil else { return nil }
+  func prepareNeovim(_ editor: ResolvedEditor) -> (setup: NeovimSetup?, unavailable: String?) {
+    guard editor.kind == .neovim else { return (nil, nil) }
+    func unavailable(_ reason: String, _ detail: String = "") -> (NeovimSetup?, String?) {
+      system.log("editor: Neovim live sync unavailable: \(reason)\(detail)")
+      return (nil, reason)
+    }
+    guard context.previewSocket != nil else { return unavailable("no preview socket") }
     let paths = context.paths
     let digest = SHA256.hash(data: Data(UUID().uuidString.utf8))
     let id = digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     let control = paths.neovimControlSocket(id: id)
-    guard socketAddress(path: control.path) != nil else { return nil }
+    guard socketAddress(path: control.path) != nil else {
+      return unavailable("socket path too long", ": \(control.path)")
+    }
     do {
       _ = try NeovimPlugin.install(paths)
       for directory in [paths.neovimSocketsDirectory, paths.buffersDirectory] {
@@ -629,10 +654,11 @@ final class EditorWork: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
       }
     } catch {
-      return nil
+      return unavailable("plugin install failed", ": \(error)")
     }
-    return NeovimSetup(
+    let setup = NeovimSetup(
       token: system.makeToken(), controlSocket: control.path, filesSidecar: paths.neovimFiles(id: id).path)
+    return (setup, nil)
   }
 
   func neovimLaunch(_ neovim: NeovimSetup) -> NeovimLaunch? {
@@ -676,20 +702,35 @@ final class EditorWork: @unchecked Sendable {
       kind: editor.kind, block: rex?.block, token: neovim?.token)
   }
 
-  func write(_ entry: EditorEntry, under lock: OpenLock) {
-    _ = try? registry.write(entry, under: lock)
+  func write(_ entry: EditorEntry, under lock: OpenLock) -> Bool {
+    attempt("write the entry for \(entry.block)") { try registry.write(entry, under: lock) }
   }
 
   func setPreview(block: String, under lock: OpenLock) {
     guard let preview = context.block else { return }
-    _ = try? registry.setPreview(preview, block: block, under: lock)
+    attempt("set the preview of \(block)") { _ = try registry.setPreview(preview, block: block, under: lock) }
   }
 
   func addFile(_ file: String, block: String) {
-    _ = try? registry.withLock { try registry.addFile(file, block: block, under: $0) }
+    attempt("add \(file) to \(block)") {
+      _ = try registry.withLock { try registry.addFile(file, block: block, under: $0) }
+    }
   }
 
   func remove(block: String) {
-    _ = try? registry.withLock { try registry.remove(block: block, under: $0) }
+    attempt("remove the entry for \(block)") {
+      _ = try registry.withLock { try registry.remove(block: block, under: $0) }
+    }
+  }
+
+  @discardableResult
+  private func attempt(_ action: String, _ body: () throws -> Void) -> Bool {
+    do {
+      try body()
+      return true
+    } catch {
+      system.log("editor: could not \(action): \(error)")
+      return false
+    }
   }
 }
