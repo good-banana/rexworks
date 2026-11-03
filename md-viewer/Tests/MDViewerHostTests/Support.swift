@@ -1,4 +1,6 @@
+import Compression
 import CoreGraphics
+import Darwin
 import Foundation
 import ImageIO
 import MDViewerCore
@@ -163,4 +165,38 @@ func pngData(width: Int, height: Int) -> Data {
   CGImageDestinationAddImage(destination, image, nil)
   CGImageDestinationFinalize(destination)
   return data as Data
+}
+
+let mdViewerExecutable = Bundle(for: TestDirectory.self).bundleURL.deletingLastPathComponent()
+  .appendingPathComponent("md-viewer")
+
+func physicalFootprint() -> Int {
+  var info = rusage_info_v2()
+  let result = withUnsafeMutablePointer(to: &info) {
+    $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(getpid(), RUSAGE_INFO_V2, $0) }
+  }
+  return result == 0 ? Int(info.ri_phys_footprint) : 0
+}
+
+func giantPNG(side: Int) throws -> Data {
+  func bigEndian(_ value: UInt32) -> Data { withUnsafeBytes(of: value.bigEndian) { Data($0) } }
+  func chunk(_ type: String, _ body: Data) -> Data {
+    let tagged = Data(type.utf8) + body
+    var crc: UInt32 = 0xffff_ffff
+    for byte in tagged {
+      crc ^= UInt32(byte)
+      for _ in 0..<8 { crc = crc & 1 == 1 ? (crc >> 1) ^ 0xedb8_8320 : crc >> 1 }
+    }
+    return bigEndian(UInt32(body.count)) + tagged + bigEndian(~crc)
+  }
+  let rowBytes = 1 + side * 4
+  var deflated = Data([0x78, 0x01])
+  let filter = try OutputFilter(.compress, using: .zlib) { deflated.append($0 ?? Data()) }
+  let rows = Data(count: rowBytes * 64)
+  for start in stride(from: 0, to: side, by: 64) { try filter.write(rows.prefix(rowBytes * min(64, side - start))) }
+  try filter.finalize()
+  deflated += bigEndian(UInt32((rowBytes * side) % 65521) << 16 | 1)
+  let header = bigEndian(UInt32(side)) + bigEndian(UInt32(side)) + Data([8, 6, 0, 0, 0])
+  return Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) + chunk("IHDR", header) + chunk("IDAT", deflated)
+    + chunk("IEND", Data())
 }

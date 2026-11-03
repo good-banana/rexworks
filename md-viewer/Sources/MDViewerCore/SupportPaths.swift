@@ -16,6 +16,7 @@ public struct SupportPaths: Sendable {
   public var handlerLog: URL { root.appendingPathComponent("handler.log") }
   public var viewersDirectory: URL { root.appendingPathComponent("viewers", isDirectory: true) }
   public var viewerLog: URL { root.appendingPathComponent("viewer.log") }
+  public var openLock: URL { root.appendingPathComponent("open.lock") }
 
   public var installedApp: URL {
     home.appendingPathComponent("Applications/MD Viewer.app", isDirectory: true)

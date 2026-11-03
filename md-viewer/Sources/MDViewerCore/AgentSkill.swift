@@ -31,7 +31,10 @@ public let agentGuide = """
 
   How:
   - Run `md-viewer open /absolute/path/to/file.md`.
-  - The preview opens beside the pane the user has focused in Rex, without taking focus. Repeat calls reuse that tab's preview.
+  - The preview opens without taking focus: the tab's first preview beside the pane the command runs in (your own pane), later ones below the newest preview. A file that is already shown reuses its preview.
+  - Add `--replace` when updating or revising the same deliverable, so the preview you opened last switches to it instead of a new pane opening.
+  - Add `--new` when the user should compare documents side by side, so each one opens in its own pane.
+  - When unsure, use no flag.
   - Always also print the file path in your reply.
 
   If the command fails, or md-viewer or Rex is unavailable, mention the file path and continue. Do not retry, use another viewer, or install anything.

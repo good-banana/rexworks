@@ -113,7 +113,7 @@ final class LinkRoutingTests: XCTestCase {
     XCTAssertTrue(isSafeLocalImage(try make("photo.png")))
     XCTAssertTrue(isSafeLocalImage(try make("photo.jpeg")))
     XCTAssertTrue(isSafeLocalImage(try make("anim.gif")))
-    XCTAssertFalse(isSafeLocalImage(try make("vector.svg")))
+    XCTAssertTrue(isSafeLocalImage(try make("vector.svg")))
     XCTAssertFalse(isSafeLocalImage(try make("clip.mp4")))
     XCTAssertFalse(isSafeLocalImage(try make("notes.txt")))
     XCTAssertFalse(isSafeLocalImage(try make("page.html")))

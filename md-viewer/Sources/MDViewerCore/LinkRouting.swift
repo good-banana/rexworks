@@ -49,15 +49,15 @@ public func isPosterCandidate(_ url: URL) -> Bool {
 }
 
 public func isSafeLocalImage(_ url: URL) -> Bool {
-  localFileType(url, allowed: [.image]) != nil
+  localFileType(url, allowed: [.image], exempt: [.svg]) != nil
 }
 
-private func localFileType(_ url: URL, allowed: [UTType]) -> UTType? {
+private func localFileType(_ url: URL, allowed: [UTType], exempt: [UTType] = []) -> UTType? {
   let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentTypeKey]
   guard url.isFileURL, let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true,
     let type = values.contentType, !FileManager.default.isExecutableFile(atPath: url.path),
     allowed.contains(where: { type.conforms(to: $0) }),
-    !blockedLocalTypes.contains(where: { type.conforms(to: $0) })
+    exempt.contains(where: { type.conforms(to: $0) }) || !blockedLocalTypes.contains(where: { type.conforms(to: $0) })
   else { return nil }
   return type
 }

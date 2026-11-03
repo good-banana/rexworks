@@ -2,57 +2,61 @@ import Foundation
 import MDViewerCore
 
 enum OpenCommand {
-  static func run(file argument: String) -> Never {
-    guard let file = validatedMarkdownFile(argument) else {
-      fail("not a Markdown file: \(argument)", status: 1)
+  static func run(_ arguments: OpenArguments) -> Never {
+    guard let file = validatedMarkdownFile(arguments.file) else {
+      fail("not a Markdown file: \(arguments.file)", status: 1)
     }
     let runner = ProcessRunner()
     let paths = SupportPaths(home: FileManager.default.homeDirectoryForCurrentUser)
     let config = try? ConfigStore.load(paths)
     guard let rex = config?.rexPath ?? locateExecutable("rex") else { fail("rex not found", status: 1) }
     let mdViewer = config?.mdViewerPath ?? ownExecutable().path
-    let viewerTakesThemeSource = isSameExecutable(mdViewer, ownExecutable().path)
+    let viewerIsCurrent = isSameExecutable(mdViewer, ownExecutable().path)
 
     do {
-      let clients = try rexJSON(runner, rex, ["client", "ls", "--json"])
-      let sessions = try rexJSON(runner, rex, ["ls", "--json"])
-      guard
-        let session = selectSession(
-          lastFocused: readLastFocusedSession(), clientListJSON: clients, sessionListJSON: sessions)
-      else { fail("no Rex session found", status: 1) }
+      let target = try openTarget(
+        environment: ProcessInfo.processInfo.environment,
+        inspectBlock: { try? rexJSON(runner, rex, ["block", "inspect", $0, "--json"]) },
+        focusedTarget: { try focusedTarget(runner, rex) })
 
-      let inspect = try rexJSON(runner, rex, ["session", "inspect", session, "--json"])
-      let target = resolveTarget(sessionInspectJSON: inspect, session: session)
-
-      var existing: String?
+      let lock = OpenLock.acquire(paths.openLock)
+      var previews: [PreviewPane] = []
       if let window = target.window {
-        let blocks = try rexJSON(runner, rex, ["block", "ls", "-s", session, "--json"])
-        existing = previewBlock(blockListJSON: blocks, window: window)
+        let blocks = try rexJSON(runner, rex, ["block", "ls", "-s", target.session, "--json"])
+        previews = reachablePreviews(previewBlocks(blockListJSON: blocks, window: window)) {
+          ViewerSocketClient.query(paths.viewerSocket(block: $0))
+        }
       }
 
-      let delivered = existing.map {
-        ViewerSocketClient.send(path: file.path, to: paths.viewerSocket(block: $0))
-      }
-      switch planOpen(target: target, existingPreview: existing, previewAlive: delivered ?? false) {
+      let origin = viewerIsCurrent ? ViewerOrigin(themeSourceBlock: target.block, opener: target.block) : ViewerOrigin()
+      let outcome = resolveOpen(
+        target: target, file: file, previews: previews, policy: arguments.policy(config?.previewMode ?? .perFile)
+      ) { ViewerSocketClient.send(path: $1, to: paths.viewerSocket(block: $0)) }
+      switch outcome {
       case .reused:
-        exit(0)
-      case .split(let target):
+        break
+      case .split(let placement):
         _ = try rexJSON(
-          runner, rex,
-          splitArguments(
-            target: target, file: file, mdViewer: mdViewer,
-            themeSourceBlock: viewerTakesThemeSource ? target.block : nil))
+          runner, rex, splitArguments(placement: placement, file: file, mdViewer: mdViewer, origin: origin))
       case .newTab(let session):
-        _ = try rexJSON(
-          runner, rex,
-          tabArguments(
-            session: session, file: file, mdViewer: mdViewer,
-            themeSourceBlock: viewerTakesThemeSource ? target.block : nil))
+        _ = try rexJSON(runner, rex, tabArguments(session: session, file: file, mdViewer: mdViewer, origin: origin))
       }
+      lock?.release()
       exit(0)
     } catch {
       fail("\(error)", status: 1)
     }
+  }
+
+  private static func focusedTarget(_ runner: ProcessRunning, _ rex: String) throws -> PaneTarget {
+    let clients = try rexJSON(runner, rex, ["client", "ls", "--json"])
+    let sessions = try rexJSON(runner, rex, ["ls", "--json"])
+    guard
+      let session = selectSession(
+        lastFocused: readLastFocusedSession(), clientListJSON: clients, sessionListJSON: sessions)
+    else { fail("no Rex session found", status: 1) }
+    let inspect = try rexJSON(runner, rex, ["session", "inspect", session, "--json"])
+    return resolveTarget(sessionInspectJSON: inspect, session: session)
   }
 
   private static func validatedMarkdownFile(_ argument: String) -> URL? {

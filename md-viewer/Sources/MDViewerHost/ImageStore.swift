@@ -1,5 +1,7 @@
 import AVFoundation
+import AppKit
 import CoreGraphics
+import CryptoKit
 import Foundation
 import ImageIO
 import MDViewerCore
@@ -51,13 +53,23 @@ public struct LoadedImage: @unchecked Sendable {
   public let frames: [CGImage]
   public let delays: [TimeInterval]
   public let loopCount: Int
+  public let isVector: Bool
 
-  public init(image: CGImage, size: CGSize, frames: [CGImage] = [], delays: [TimeInterval] = [], loopCount: Int = 0) {
+  public init(
+    image: CGImage, size: CGSize, frames: [CGImage] = [], delays: [TimeInterval] = [], loopCount: Int = 0,
+    isVector: Bool = false
+  ) {
     self.image = image
     self.size = size
+    self.isVector = isVector
     self.frames = frames.isEmpty ? [image] : frames
     self.delays = delays.count == self.frames.count ? delays : Array(repeating: 0.1, count: self.frames.count)
     self.loopCount = loopCount
+  }
+
+  var isBelowFullResolution: Bool {
+    let fullWidth = isVector ? size.width * ImageStore.maximumVectorScale : size.width
+    return CGFloat(image.width) < (fullWidth - 0.5).rounded(.down)
   }
 
   public var isAnimated: Bool { frames.count > 1 }
@@ -132,14 +144,31 @@ public final class ImageStore: @unchecked Sendable {
   private var useCounter: UInt64 = 0
   private var displayDimension = ImageStore.maximumDisplayDimension
   private let decoding = DispatchQueue(label: "md-viewer.images.decode", qos: .userInitiated)
+  private let vectors = DispatchQueue(label: "md-viewer.images.vectors", qos: .userInitiated)
+  private var vectorLane = ImageStore.makeVectorLane()
+  private let isolatedLane = ImageStore.makeIsolatedLane()
+  private let watchdog = DispatchQueue(label: "md-viewer.images.watchdog", qos: .userInitiated)
   private let posters = DispatchQueue(label: "md-viewer.images.posters", qos: .utility)
+  private let renderIsolated: @Sendable (Data, Limits, Int?) -> LoadedImage?
+  private var heavyDigests: Set<SHA256.Digest> = []
+  private var abandonedRenderRunning = false
+  private var queuedInProcess: [VectorRender] = []
+  let watchdogThreshold: TimeInterval
+
+  public static let defaultWatchdogThreshold: TimeInterval = 0.5
+  static let isolatedConcurrency = 2
 
   public init(
     limits: Limits = Limits(), readLocal: (@Sendable (URL) -> Data?)? = nil,
     fetchRemote: (@Sendable (URL, @escaping @Sendable (Data?) -> Void) -> Void)? = nil,
-    posterFrame: (@Sendable (URL) -> CGImage?)? = nil
+    posterFrame: (@Sendable (URL) -> CGImage?)? = nil,
+    renderIsolated: (@Sendable (Data, Limits, Int?) -> LoadedImage?)? = nil,
+    watchdogThreshold: TimeInterval = ImageStore.defaultWatchdogThreshold
   ) {
     self.limits = limits
+    self.watchdogThreshold = watchdogThreshold
+    let process = SVGRenderProcess(launchPath: Bundle.main.executableURL)
+    self.renderIsolated = renderIsolated ?? { process.render($0, limits: $1, dimension: $2) }
     self.posterFrame =
       posterFrame ?? { url in
         isPosterCandidate(url) ? VideoPosterFrame.generate(for: url) : nil
@@ -222,9 +251,16 @@ public final class ImageStore: @unchecked Sendable {
     let finish: @Sendable (Data?) -> Void = { [weak self] data in
       guard let self else { return }
       let dimension = lock.withLock { displayDimension }
-      let image = data.flatMap { ImageStore.decode($0, limits: self.limits, dimension: dimension) }
-      store(image, at: location, stamp: stamp, decodedFor: dimension)
-      queue.async { completion(image != nil) }
+      let deliver: @Sendable (LoadedImage?) -> Void = { [weak self] image in
+        self?.store(image, at: location, stamp: stamp, decodedFor: dimension)
+        queue.async { completion(image != nil) }
+      }
+      guard let data else { return deliver(nil) }
+      if ImageStore.isVectorCandidate(data) {
+        vectors.async { [weak self] in self?.routeVector(data, dimension: dimension, deliver: deliver) }
+      } else {
+        deliver(ImageStore.decode(data, limits: limits, dimension: dimension))
+      }
     }
     switch location {
     case .local(let url):
@@ -234,6 +270,81 @@ public final class ImageStore: @unchecked Sendable {
       fetchRemote(url) { [decoding] data in decoding.async { finish(data) } }
     }
     return true
+  }
+
+  private func routeVector(_ data: Data, dimension: Int, deliver: @escaping @Sendable (LoadedImage?) -> Void) {
+    guard data.count <= limits.maximumBytes, let weight = ImageStore.vectorWeight(of: data) else { return deliver(nil) }
+    let digest = SHA256.hash(data: data)
+    let inProcess = lock.withLock { weight == .light && !abandonedRenderRunning && !heavyDigests.contains(digest) }
+    let job = VectorRender(data: data, digest: digest, dimension: dimension, deliver: deliver)
+    if inProcess { renderInProcess(job) } else { renderInChild(job) }
+  }
+
+  private func renderInProcess(_ job: VectorRender) {
+    let lane = lock.withLock {
+      queuedInProcess.append(job)
+      return vectorLane
+    }
+    lane.async { [weak self] in
+      guard let self else { return }
+      let current: Bool? = lock.withLock {
+        guard !job.handedOff else { return nil }
+        queuedInProcess.removeAll { $0 === job }
+        return lane === vectorLane && !abandonedRenderRunning
+      }
+      guard let current else { return }
+      guard current else { return vectors.async { [weak self] in self?.reroute(job) } }
+      let watch = DispatchWorkItem { [weak self] in self?.abandon(job) }
+      watchdog.asyncAfter(deadline: .now() + watchdogThreshold, execute: watch)
+      let image = ImageStore.renderSVG(job.data, limits: limits, dimension: job.dimension)
+      watch.cancel()
+      let abandoned = lock.withLock {
+        if job.abandoned { abandonedRenderRunning = false }
+        job.finished = true
+        return job.abandoned
+      }
+      if !abandoned { job.deliver(image) }
+    }
+  }
+
+  private func reroute(_ job: VectorRender) {
+    let inProcess = lock.withLock { !abandonedRenderRunning && !heavyDigests.contains(job.digest) }
+    if inProcess { renderInProcess(job) } else { renderInChild(job) }
+  }
+
+  private func abandon(_ job: VectorRender) {
+    let handOff: [VectorRender] = lock.withLock {
+      guard !job.finished else { return [] }
+      job.abandoned = true
+      abandonedRenderRunning = true
+      heavyDigests.insert(job.digest)
+      vectorLane = Self.makeVectorLane()
+      let queued = queuedInProcess
+      queuedInProcess = []
+      for waiting in queued { waiting.handedOff = true }
+      return [job] + queued
+    }
+    for handed in handOff { renderInChild(handed) }
+  }
+
+  private func renderInChild(_ job: VectorRender) {
+    let limits = limits
+    let renderIsolated = renderIsolated
+    isolatedLane.addOperation { job.deliver(renderIsolated(job.data, limits, job.dimension)) }
+  }
+
+  var isAbandonedRenderRunning: Bool { lock.withLock { abandonedRenderRunning } }
+
+  private static func makeVectorLane() -> DispatchQueue {
+    DispatchQueue(label: "md-viewer.images.vectors.render", qos: .userInitiated)
+  }
+
+  private static func makeIsolatedLane() -> OperationQueue {
+    let lane = OperationQueue()
+    lane.name = "md-viewer.images.isolated"
+    lane.qualityOfService = .userInitiated
+    lane.maxConcurrentOperationCount = isolatedConcurrency
+    return lane
   }
 
   @discardableResult
@@ -264,8 +375,7 @@ public final class ImageStore: @unchecked Sendable {
         case .failed: guard stamp != nil, entry.stamp != stamp else { return nil }
         case .loaded(let image):
           let changedOnDisk = stamp != nil && entry.stamp != stamp
-          let downscaled = CGFloat(image.image.width) < (image.size.width - 0.5).rounded(.down)
-          let sharper = downscaled && displayDimension > entry.decodedFor
+          let sharper = image.isBelowFullResolution && displayDimension > entry.decodedFor
           guard changedOnDisk || sharper else { return nil }
           previous = image
         }
@@ -306,9 +416,10 @@ public final class ImageStore: @unchecked Sendable {
 
   public static func decode(_ data: Data, limits: Limits, dimension: Int? = nil) -> LoadedImage? {
     guard data.count <= limits.maximumBytes,
-      let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-      CGImageSourceGetCount(source) > 0,
-      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+      let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
+    else { return nil }
+    guard CGImageSourceGetCount(source) > 0 else { return decodeSVG(data, limits: limits, dimension: dimension) }
+    guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
       let width = properties[kCGImagePropertyPixelWidth] as? Int,
       let height = properties[kCGImagePropertyPixelHeight] as? Int,
       width > 0, height > 0, width.multipliedReportingOverflow(by: height).partialValue <= limits.maximumSourcePixels
@@ -319,7 +430,8 @@ public final class ImageStore: @unchecked Sendable {
     var scale = min(1, targetWidth / size.width)
     let kept = size.width * scale * size.height * scale
     if kept > CGFloat(limits.maximumPixels) { scale *= (CGFloat(limits.maximumPixels) / kept).squareRoot() }
-    let longEdge = max(Int((max(size.width, size.height) * scale).rounded(.down)), 1)
+    guard let pixels = pixelSize(of: size, scale: scale, limits: limits) else { return nil }
+    let longEdge = max(pixels.width, pixels.height)
     let options: [CFString: Any] = [
       kCGImageSourceCreateThumbnailFromImageAlways: true,
       kCGImageSourceCreateThumbnailWithTransform: true,
@@ -341,6 +453,65 @@ public final class ImageStore: @unchecked Sendable {
       delays.append(frameDelay(source, at: index))
     }
     return LoadedImage(image: image, size: size, frames: frames, delays: delays, loopCount: loopCount(source))
+  }
+
+  public static let maximumVectorScale: CGFloat = 4
+
+  static func isVectorCandidate(_ data: Data) -> Bool {
+    guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
+    else { return false }
+    return CGImageSourceGetCount(source) == 0
+  }
+
+  static func vectorWeight(of data: Data) -> VectorWeight? {
+    guard String(decoding: data.prefix(4096), as: UTF8.self).contains("<svg") else { return nil }
+    return SVGScan.weight(of: data)
+  }
+
+  static func decodeSVG(_ data: Data, limits: Limits, dimension: Int?) -> LoadedImage? {
+    guard vectorWeight(of: data) != nil else { return nil }
+    return renderSVG(data, limits: limits, dimension: dimension)
+  }
+
+  static func renderSVG(_ data: Data, limits: Limits, dimension: Int?) -> LoadedImage? {
+    guard let (context, size) = rasterizeSVG(data, limits: limits, dimension: dimension) else { return nil }
+    return context.makeImage().map { LoadedImage(image: $0, size: size, isVector: true) }
+  }
+
+  static func rasterizeSVG(_ data: Data, limits: Limits, dimension: Int?) -> (context: CGContext, size: CGSize)? {
+    autoreleasepool { drawSVG(data, limits: limits, dimension: dimension) }
+  }
+
+  private static func drawSVG(_ data: Data, limits: Limits, dimension: Int?) -> (context: CGContext, size: CGSize)? {
+    guard let svg = NSImage(data: data) else { return nil }
+    let size = svg.size
+    guard size.width.isFinite, size.height.isFinite, size.width >= 1, size.height >= 1,
+      size.width * size.height <= CGFloat(limits.maximumSourcePixels)
+    else { return nil }
+    let targetWidth = CGFloat(max(min(dimension ?? limits.maximumDimension, limits.maximumDimension), 1))
+    var scale = min(maximumVectorScale, targetWidth / size.width, CGFloat(limits.maximumDimension) / size.height)
+    let kept = size.width * scale * size.height * scale
+    if kept > CGFloat(limits.maximumPixels) { scale *= (CGFloat(limits.maximumPixels) / kept).squareRoot() }
+    guard let (width, height) = pixelSize(of: size, scale: scale, limits: limits),
+      let space = CGColorSpace(name: CGColorSpace.sRGB),
+      let context = CGContext(
+        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return nil }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+    svg.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
+    NSGraphicsContext.restoreGraphicsState()
+    return (context, size)
+  }
+
+  private static func pixelSize(of size: CGSize, scale: CGFloat, limits: Limits) -> (width: Int, height: Int)? {
+    for rule in [FloatingPointRoundingRule.toNearestOrAwayFromZero, .down] {
+      let width = max(Int((size.width * scale).rounded(rule)), 1)
+      let height = max(Int((size.height * scale).rounded(rule)), 1)
+      if width * height <= limits.maximumPixels { return (width, height) }
+    }
+    return nil
   }
 
   public static func normalizedDelay(_ raw: Double?) -> TimeInterval {
@@ -370,6 +541,191 @@ public final class ImageStore: @unchecked Sendable {
       return png[kCGImagePropertyAPNGLoopCount] as? Int ?? 0
     }
     return 0
+  }
+}
+
+enum VectorWeight {
+  case light
+  case heavy
+}
+
+final class VectorRender: @unchecked Sendable {
+  let data: Data
+  let digest: SHA256.Digest
+  let dimension: Int
+  let deliver: @Sendable (LoadedImage?) -> Void
+  var finished = false
+  var abandoned = false
+  var handedOff = false
+
+  init(data: Data, digest: SHA256.Digest, dimension: Int, deliver: @escaping @Sendable (LoadedImage?) -> Void) {
+    self.data = data
+    self.digest = digest
+    self.dimension = dimension
+    self.deliver = deliver
+  }
+}
+
+private final class SVGScan: NSObject, XMLParserDelegate {
+  static let maximumElements = 5_000
+  static let maximumLayers = 16
+  static let maximumFilterPrimitives = 16
+  static let maximumEffects = 8
+  static let maximumBytes = 1 << 20
+  static let maximumReferenceDepth = 16
+
+  private struct Cost {
+    var elements = 0
+    var layers = 0
+    var effects = 0
+    var bytes = 0
+
+    static func += (lhs: inout Cost, rhs: Cost) {
+      lhs.elements += rhs.elements
+      lhs.layers += rhs.layers
+      lhs.effects += rhs.effects
+      lhs.bytes += rhs.bytes
+    }
+  }
+
+  private struct Subtree {
+    var cost = Cost()
+    var references: [String] = []
+  }
+
+  private var rejected = false
+  private var embedsData = false
+  private var filterPrimitives = 0
+  private var stylesheet = ""
+  private var styleDepth = 0
+  private var open: [(id: String?, subtree: Subtree)] = [(nil, Subtree())]
+  private var identified: [String: Subtree] = [:]
+
+  static func weight(of data: Data) -> VectorWeight? {
+    let parser = XMLParser(data: data)
+    parser.shouldResolveExternalEntities = true
+    parser.externalEntityResolvingPolicy = .never
+    let scan = SVGScan()
+    parser.delegate = scan
+    guard parser.parse(), !scan.rejected, let document = scan.open.first?.subtree else { return nil }
+    return scan.isHeavy(document) ? .heavy : .light
+  }
+
+  private func isHeavy(_ document: Subtree) -> Bool {
+    let styles = stylesheet.lowercased()
+    guard !embedsData, !styles.contains("data:"), filterPrimitives <= Self.maximumFilterPrimitives,
+      var total = expanded(document)
+    else { return true }
+    if Self.affects(styles, ["filter", "mask"]) { total.effects = total.elements }
+    if Self.affects(styles, ["filter", "mask", "opacity", "clip", "url("]) { total.layers = total.elements }
+    return total.layers > Self.maximumLayers || total.effects > Self.maximumEffects
+  }
+
+  private func expanded(_ document: Subtree) -> Cost? {
+    var expanded: [String: Cost] = [:]
+    var expanding: Set<String> = []
+    func withinLimits(_ cost: Cost) -> Bool {
+      cost.elements <= Self.maximumElements && cost.bytes <= Self.maximumBytes
+    }
+    func expand(_ subtree: Subtree) -> Cost? {
+      var total = subtree.cost
+      for reference in subtree.references {
+        guard let target = identified[reference] else { continue }
+        if expanded[reference] == nil {
+          guard expanding.count < Self.maximumReferenceDepth, expanding.insert(reference).inserted,
+            let cost = expand(target)
+          else { return nil }
+          expanding.remove(reference)
+          expanded[reference] = cost
+        }
+        total += expanded[reference]!
+        guard withinLimits(total) else { return nil }
+      }
+      return total
+    }
+    guard let total = expand(document), withinLimits(total) else { return nil }
+    return total
+  }
+
+  private static func affects(_ style: String, _ properties: [String]) -> Bool {
+    properties.contains { style.contains($0) }
+  }
+
+  private static func localName(_ name: String) -> String {
+    name.split(separator: ":").last.map(String.init) ?? name
+  }
+
+  private func reject(_ parser: XMLParser) {
+    rejected = true
+    parser.abortParsing()
+  }
+
+  func parser(
+    _ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName: String?,
+    attributes: [String: String]
+  ) {
+    let name = Self.localName(elementName)
+    var values: [String: String] = [:]
+    for (key, value) in attributes { values[Self.localName(key)] = value.trimmingCharacters(in: .whitespaces) }
+    let lowercased = values.mapValues { $0.lowercased() }
+    let style = lowercased["style"] ?? ""
+    let applied = { (property: String) in lowercased[property].map { $0 != "none" } ?? false }
+    let href = values["href"] ?? ""
+    let effect =
+      applied("filter") || applied("mask") || Self.affects(style, ["filter", "mask"])
+      || ((name == "image" || name == "feImage") && !href.isEmpty)
+    let layered =
+      effect || applied("opacity") || applied("clip-path") || lowercased.values.contains { $0.contains("url(") }
+      || Self.affects(style, ["opacity", "clip", "url("])
+    if lowercased.values.contains(where: { $0.contains("data:") }) { embedsData = true }
+    if name.hasPrefix("fe") { filterPrimitives += 1 }
+    if name == "style" { styleDepth += 1 }
+    var subtree = Subtree()
+    subtree.cost = Cost(
+      elements: 1, layers: layered ? 1 : 0, effects: effect ? 1 : 0,
+      bytes: attributes.values.reduce(0) { $0 + $1.utf8.count })
+    if name == "use", href.hasPrefix("#") { subtree.references.append(String(href.dropFirst())) }
+    open.append((values["id"], subtree))
+  }
+
+  func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) {
+    guard open.count > 1, let (id, subtree) = open.popLast() else { return }
+    if Self.localName(elementName) == "style" { styleDepth -= 1 }
+    if let id {
+      var combined = identified[id] ?? Subtree()
+      combined.cost += subtree.cost
+      combined.references += subtree.references
+      identified[id] = combined
+    }
+    open[open.count - 1].subtree.cost += subtree.cost
+    open[open.count - 1].subtree.references += subtree.references
+  }
+
+  func parser(_ parser: XMLParser, foundCharacters string: String) {
+    if styleDepth > 0 { stylesheet += string }
+    open[open.count - 1].subtree.cost.bytes += string.utf8.count
+  }
+
+  func parser(_ parser: XMLParser, foundCDATA block: Data) {
+    if styleDepth > 0 { stylesheet += String(decoding: block, as: UTF8.self) }
+    open[open.count - 1].subtree.cost.bytes += block.count
+  }
+
+  func parser(_ parser: XMLParser, foundInternalEntityDeclarationWithName name: String, value: String?) {
+    reject(parser)
+  }
+
+  func parser(
+    _ parser: XMLParser, foundExternalEntityDeclarationWithName name: String, publicID: String?, systemID: String?
+  ) {
+    reject(parser)
+  }
+
+  func parser(
+    _ parser: XMLParser, foundUnparsedEntityDeclarationWithName name: String, publicID: String?, systemID: String?,
+    notationName: String?
+  ) {
+    reject(parser)
   }
 }
 

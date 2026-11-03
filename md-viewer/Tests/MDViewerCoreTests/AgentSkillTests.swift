@@ -46,6 +46,12 @@ final class AgentSkillTests: XCTestCase {
     XCTAssertTrue(agentGuide.contains("md-viewer open /absolute/path/to/file.md"))
     XCTAssertTrue(agentGuide.contains("Do not retry, use another viewer, or install anything."))
     XCTAssertTrue(agentGuide.contains("print the file path"))
+    XCTAssertTrue(agentGuide.contains("beside the pane the command runs in (your own pane)"))
+    XCTAssertFalse(agentGuide.contains("focused in Rex"))
+    XCTAssertFalse(agentGuide.contains("reuse that tab's preview"))
+    XCTAssertTrue(agentGuide.contains("`--replace` when updating or revising the same deliverable"))
+    XCTAssertTrue(agentGuide.contains("`--new` when the user should compare documents side by side"))
+    XCTAssertTrue(agentGuide.contains("When unsure, use no flag."))
   }
 
   func testStubVersionRejectsForeignContent() {

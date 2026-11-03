@@ -112,6 +112,24 @@ final class ViewerHostTests: XCTestCase {
     XCTAssertEqual(fixture.host.interaction.file?.lastPathComponent, "main.md")
   }
 
+  func testEveryShownDocumentIsReported() throws {
+    let fixture = try HostFixture(document, files: ["third.md": "# Third"], start: false)
+    var shown: [String] = []
+    fixture.host.onDocumentShown = { shown.append($0.lastPathComponent) }
+    fixture.host.start(file: fixture.file, windowSize: testPaneSize)
+    XCTAssertEqual(shown, ["main.md"])
+    fixture.host.receive(Array("\t\r".utf8))
+    XCTAssertEqual(shown, ["main.md"], "a failed link keeps the shown document")
+    try fixture.directory.write("other.md", "# Other")
+    fixture.host.receive(Array("\r".utf8))
+    spin(until: { shown.count == 2 })
+    XCTAssertEqual(shown, ["main.md", "other.md"])
+    fixture.host.receive([0x7f])
+    spin(until: { shown.count == 3 })
+    fixture.host.open(fixture.directory.url.appendingPathComponent("third.md"))
+    XCTAssertEqual(shown, ["main.md", "other.md", "main.md", "third.md"])
+  }
+
   func testLinksLoadInPlaceAndFailuresShowInTheStatusBar() throws {
     let fixture = try HostFixture(document)
     fixture.host.receive(Array("\t\r".utf8))

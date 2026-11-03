@@ -21,6 +21,67 @@ final class ConfigTests: XCTestCase {
     XCTAssertEqual(dirMode, 0o700)
   }
 
+  func testPreviewModeDefaultsToPerFile() throws {
+    let base = Config(rexPath: "/r", mdViewerPath: "/m", previousHandlers: [:])
+    XCTAssertEqual(base.previewMode, .perFile)
+    for (value, mode) in [("perFile", PreviewMode.perFile), ("single", .single), ("bogus", .perFile), ("", .perFile)] {
+      var config = base
+      config.previews = value
+      XCTAssertEqual(config.previewMode, mode, value)
+    }
+  }
+
+  func testUnknownPreviewsValueStillLoads() throws {
+    let paths = SupportPaths(home: temporaryHome())
+    try FileManager.default.createDirectory(at: paths.root, withIntermediateDirectories: true)
+    let json = #"{"rexPath":"/r","mdViewerPath":"/m","previousHandlers":{},"previews":"tabs"}"#
+    try Data(json.utf8).write(to: paths.configFile)
+    let config = try XCTUnwrap(try ConfigStore.load(paths))
+    XCTAssertEqual(config.previews, "tabs")
+    XCTAssertEqual(config.previewMode, .perFile)
+  }
+
+  func testANonStringPreviewsValueLoadsTheRestAsPerFile() throws {
+    let paths = SupportPaths(home: temporaryHome())
+    try FileManager.default.createDirectory(at: paths.root, withIntermediateDirectories: true)
+    for value in ["true", "3", "[\"single\"]", "{}", "null"] {
+      let json = #"{"rexPath":"/r","mdViewerPath":"/m","previousHandlers":{"t":"com.x"},"previews":"# + value + "}"
+      try Data(json.utf8).write(to: paths.configFile)
+      let config = try XCTUnwrap(try ConfigStore.load(paths), value)
+      XCTAssertEqual(config.previousHandlers, ["t": "com.x"], value)
+      XCTAssertNil(config.previews, value)
+      XCTAssertEqual(config.previewMode, .perFile, value)
+    }
+  }
+
+  func testSavingKeepsExistingKeysTheConfigDoesNotSet() throws {
+    let paths = SupportPaths(home: temporaryHome())
+    try FileManager.default.createDirectory(at: paths.root, withIntermediateDirectories: true)
+    let json = #"{"rexPath":"/old","mdViewerPath":"/m","previousHandlers":{},"previews":"single","future":[1,2]}"#
+    try Data(json.utf8).write(to: paths.configFile)
+    try ConfigStore.save(Config(rexPath: "/new", mdViewerPath: "/m", previousHandlers: ["t": "com.x"]), paths)
+    let loaded = try XCTUnwrap(try ConfigStore.load(paths))
+    XCTAssertEqual(loaded.rexPath, "/new")
+    XCTAssertEqual(loaded.previousHandlers, ["t": "com.x"])
+    XCTAssertEqual(loaded.previewMode, .single)
+    let raw = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(contentsOf: paths.configFile)) as? [String: Any])
+    XCTAssertEqual(raw["future"] as? [Int], [1, 2])
+    var perFile = loaded
+    perFile.previews = "perFile"
+    try ConfigStore.save(perFile, paths)
+    XCTAssertEqual(try ConfigStore.load(paths)?.previewMode, .perFile)
+  }
+
+  func testSavingOverACorruptFileStartsFresh() throws {
+    let paths = SupportPaths(home: temporaryHome())
+    try FileManager.default.createDirectory(at: paths.root, withIntermediateDirectories: true)
+    try Data("not json".utf8).write(to: paths.configFile)
+    let config = Config(rexPath: "/r", mdViewerPath: "/m", previousHandlers: [:])
+    try ConfigStore.save(config, paths)
+    XCTAssertEqual(try ConfigStore.load(paths), config)
+  }
+
   func testLoadMissingReturnsNil() throws {
     XCTAssertNil(try ConfigStore.load(SupportPaths(home: temporaryHome())))
   }

@@ -19,13 +19,17 @@ enum ViewCommand {
     guard let size = Terminal.size() else { fail("could not read the terminal size", status: 1) }
 
     let paths = SupportPaths(home: FileManager.default.homeDirectoryForCurrentUser)
+    let status = ViewerStatus(file: url, opener: arguments.origin.opener)
+    let control = ViewerControl()
+    let server = startControlSocket(control, status: status, paths: paths)
+    if let server { retained.append(server) }
     let log = ViewerLog(url: paths.viewerLog)
     let application = NSApplication.shared
     application.setActivationPolicy(.prohibited)
     Terminal.installRestoreHandlers()
     guard Terminal.enterViewerMode() else { fail("could not configure the terminal", status: 1) }
 
-    let source = arguments.themeSourceBlock
+    let source = arguments.origin.themeSourceBlock
     let resolved = Terminal.resolveTheme(themeSourceBlock: source)
     Terminal.write(TerminalSequences.enableViewerModes + TerminalSequences.queryInBandResizeReports)
     logTheme(resolved.theme, timedOut: resolved.queryTimedOut, log: log)
@@ -46,11 +50,11 @@ enum ViewCommand {
     let host = ViewerHost(
       size: size, theme: resolved.theme, themeQueryTimedOut: resolved.queryTimedOut, services: services)
     host.onQuit = { quit(host) }
+    host.onDocumentShown = { status.show($0) }
     host.start(file: url, windowSize: size)
+    control.attach(host)
     retained.append(startInput(host))
     retained.append(startResizeSignal(host))
-    let server = startControlSocket(host, paths: paths)
-    if let server { retained.append(server) }
     let themeWatch = ThemeWatchService(paths: paths, ownSocket: server?.path)
     themeWatch.onLocalChange = { host.themeChanged() }
     themeWatch.start()
@@ -112,19 +116,10 @@ enum ViewCommand {
     return resize
   }
 
-  nonisolated private static func startControlSocket(_ host: ViewerHost, paths: SupportPaths) -> ViewerSocketServer? {
+  private static func startControlSocket(
+    _ control: ViewerControl, status: ViewerStatus, paths: SupportPaths
+  ) -> ViewerSocketServer? {
     guard let block = ProcessInfo.processInfo.environment["REX_BLOCK"], !block.isEmpty else { return nil }
-    return try? ViewerSocketServer(
-      socket: paths.viewerSocket(block: block),
-      onOpen: { url in
-        DispatchQueue.main.async {
-          MainActor.assumeIsolated { host.open(url) }
-        }
-      },
-      onTheme: {
-        DispatchQueue.main.async {
-          MainActor.assumeIsolated { host.themeChanged() }
-        }
-      })
+    return try? control.listen(on: paths.viewerSocket(block: block), status: status)
   }
 }

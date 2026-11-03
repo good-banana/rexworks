@@ -9,9 +9,9 @@
 
 ## Features
 
-- **Click to preview.** Click any Markdown path in any Rex pane, from `ls`, `git status`, a build log or a coding agent's reply, and the rendered page opens beside it. Click another and the same preview pane switches to it.
+- **Click to preview.** Click any Markdown path in any Rex pane, from `ls`, `git status`, a build log or a coding agent's reply, and the rendered page opens beside it. Click another and it opens in its own pane.
 - **Real typography in the terminal.** Proportional fonts, true heading sizes, tables with header rows, syntax-highlighted code, task lists, footnotes, GitHub alerts like `[!NOTE]` and `[!WARNING]`, and frontmatter shown as a compact table.
-- **Everything GitHub renders.** GitHub Flavored Markdown, the same safe HTML GitHub allows (centered logos, `<details>` sections, light and dark `<picture>` variants, side-by-side images), Mermaid diagrams, animated GIFs and inline images.
+- **Everything GitHub renders.** GitHub Flavored Markdown, the same safe HTML GitHub allows (centered logos, `<details>` sections, light and dark `<picture>` variants, side-by-side images), Mermaid diagrams, animated GIFs, SVGs and inline images.
 - **A document, not a picture.** Select and copy text, copy code blocks with one click, find with `/` or Cmd-F, follow links and anchors with back and forward history, scroll wide code and tables sideways, and zoom.
 - **Matches your Rex theme.** Every color comes from your current Rex theme and updates when you switch themes or between light and dark.
 - **Stays in sync.** The preview reloads when the file changes and keeps your place, so you can watch a plan or README update as you or an agent edits it.
@@ -92,6 +92,10 @@ md-viewer open <file>
 md-viewer uninstall && brew uninstall md-viewer
 ```
 `md-viewer uninstall` removes the handler app, restores the previous Markdown handler and removes the Cmd-F binding from your Rex config. macOS may ask you to confirm the change of default app for Markdown files.
+
+## Settings
+
+By default each file gets its own preview pane. To keep a single preview per tab that switches to each file you open, add `"previews": "single"` to `~/Library/Application Support/md-viewer/config.json`. Set it to `"perFile"`, or remove it, for one preview per file again.
 
 ## Mouse
 

@@ -67,6 +67,7 @@ public final class ViewerHost {
   public let transport: DisplayTransport
   public let driver: DisplayDriver
   public var onQuit: () -> Void = {}
+  public var onDocumentShown: (URL) -> Void = { _ in }
 
   let services: HostServices
   let source: RasterFrameSource
@@ -139,6 +140,7 @@ public final class ViewerHost {
       perform(interaction.show(Self.cannotRead(file), kind: .error, at: Self.now()))
     }
     synchronousLayout = false
+    onDocumentShown(file)
     watch(file)
     apply(sizeTracker.windowChanged(windowSize))
     settle()
@@ -313,6 +315,7 @@ public final class ViewerHost {
     let now = Self.now()
     do {
       perform(interaction.open(file: url, source: try read(url), at: now))
+      onDocumentShown(url)
       watch(url)
     } catch {
       perform(interaction.loadFailed(url, reason: Self.cannotRead(url), at: now))

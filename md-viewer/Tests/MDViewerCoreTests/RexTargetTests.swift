@@ -44,13 +44,86 @@ final class RexTargetTests: XCTestCase {
       PaneTarget(session: "session:1", window: nil, block: nil))
   }
 
-  func testPreviewBlockFindsLabeledBlockInWindow() throws {
+  private let callerInspect = Data(
+    """
+    {"session_id":"session:caller","block":{"block_id":"block:caller","label":"shell",
+      "placement":"placed","window_id":"window:caller"}}
+    """.utf8)
+  private let focused = PaneTarget(session: "session:focused", window: "window:focused", block: "block:focused")
+
+  func testCallerTargetReadsBlockInspect() {
+    XCTAssertEqual(
+      callerTarget(blockInspectJSON: callerInspect),
+      PaneTarget(session: "session:caller", window: "window:caller", block: "block:caller"))
+    let unplaced = Data(#"{"session_id":"session:1","block":{"block_id":"block:1","placement":"unplaced"}}"#.utf8)
+    XCTAssertNil(callerTarget(blockInspectJSON: unplaced))
+    XCTAssertNil(callerTarget(blockInspectJSON: Data("nope".utf8)))
+  }
+
+  func testOpenTargetPrefersCallingBlock() {
+    var inspected: [String] = []
+    var focusedCalls = 0
+    let target = openTarget(
+      environment: ["REX_BLOCK": "block:caller"],
+      inspectBlock: {
+        inspected.append($0)
+        return self.callerInspect
+      },
+      focusedTarget: {
+        focusedCalls += 1
+        return self.focused
+      })
+    XCTAssertEqual(target, PaneTarget(session: "session:caller", window: "window:caller", block: "block:caller"))
+    XCTAssertEqual(inspected, ["block:caller"])
+    XCTAssertEqual(focusedCalls, 0)
+  }
+
+  func testOpenTargetFallsBackToFocusedPaneWithoutCallingBlock() {
+    for environment in [[:], ["REX_BLOCK": ""]] as [[String: String]] {
+      var inspected = false
+      let target = openTarget(
+        environment: environment,
+        inspectBlock: { _ in
+          inspected = true
+          return self.callerInspect
+        },
+        focusedTarget: { self.focused })
+      XCTAssertEqual(target, focused)
+      XCTAssertFalse(inspected)
+    }
+  }
+
+  func testOpenTargetFallsBackToFocusedPaneForUnknownBlock() {
+    XCTAssertEqual(
+      openTarget(
+        environment: ["REX_BLOCK": "block:gone"], inspectBlock: { _ in nil }, focusedTarget: { self.focused }),
+      focused)
+    XCTAssertEqual(
+      openTarget(
+        environment: ["REX_BLOCK": "block:gone"], inspectBlock: { _ in Data("{}".utf8) },
+        focusedTarget: { self.focused }),
+      focused)
+  }
+
+  func testHandlerEnvironmentDropsCallerBlockSoClicksTargetFocusedPane() {
+    let inherited = ["REX_BLOCK": "block:stale", "REX_SESSION": "session:1", "PATH": "/usr/bin"]
+    let environment = environmentWithoutCallerBlock(inherited)
+    XCTAssertEqual(environment, ["REX_SESSION": "session:1", "PATH": "/usr/bin"])
+    XCTAssertEqual(
+      openTarget(environment: environment, inspectBlock: { _ in self.callerInspect }, focusedTarget: { self.focused }),
+      focused)
+  }
+
+  func testPreviewBlocksListsEveryPreviewInTheWindowOnly() throws {
     let json = try fixture("block-ls")
     XCTAssertEqual(
-      previewBlock(blockListJSON: json, window: "window:01a193ad-f8f8-7ee0-ad1e-277b4d213ab6"),
-      "block:01a193b9-0508-79fa-bbba-bae305053d7a")
-    XCTAssertNil(previewBlock(blockListJSON: json, window: "window:none"))
-    XCTAssertNil(previewBlock(blockListJSON: Data("nope".utf8), window: "w"))
+      previewBlocks(blockListJSON: json, window: "window:01a193ad-f8f8-7ee0-ad1e-277b4d213ab6"),
+      ["block:01a193b9-0508-79fa-bbba-bae305053d7a"])
+    XCTAssertEqual(
+      previewBlocks(blockListJSON: json, window: "window:01a18e8c-86a4-7320-99d8-5c0e0a7dcf04"),
+      ["block:01a18e8c-ffff-7134-90c4-3b3fc97dac00"])
+    XCTAssertEqual(previewBlocks(blockListJSON: json, window: "window:none"), [])
+    XCTAssertEqual(previewBlocks(blockListJSON: Data("nope".utf8), window: "w"), [])
   }
 
   func testSessionSelectionPrefersFocusedThenClientThenList() throws {
@@ -75,16 +148,25 @@ final class RexTargetTests: XCTestCase {
   func testSplitArgumentsAreLiteralAndShellFree() {
     let file = URL(fileURLWithPath: "/tmp/$(touch pwned); a (b) \u{1F415}.md")
     let args = splitArguments(
-      target: PaneTarget(session: "session:1", window: "window:2", block: "block:b"),
-      file: file, mdViewer: "/opt/homebrew/bin/md-viewer", themeSourceBlock: "block:b")
+      placement: .beside(PaneTarget(session: "session:1", window: "window:2", block: "block:b")),
+      file: file, mdViewer: "/opt/homebrew/bin/md-viewer",
+      origin: ViewerOrigin(themeSourceBlock: "block:b", opener: "block:b"))
     XCTAssertEqual(
       args,
       [
         "run", "--session", "session:1", "--block", "block:b", "--split", "right",
         "--ratio", "45", "--focus=false", "--shell=none", "--label", "md-viewer",
         "--cwd", "/tmp", "--", "/opt/homebrew/bin/md-viewer", "view", "--theme-source-block", "block:b",
-        file.path,
+        "--opener-block", "block:b", file.path,
       ])
+  }
+
+  func testLaterPreviewsSplitBelowTheNewestPreview() {
+    let args = splitArguments(
+      placement: .below(PaneTarget(session: "s", window: "w", block: "block:preview")),
+      file: URL(fileURLWithPath: "/tmp/a.md"), mdViewer: "/bin/md-viewer")
+    XCTAssertEqual(
+      Array(args.prefix(9)), ["run", "--session", "s", "--block", "block:preview", "--split", "below", "--ratio", "50"])
   }
 
   func testTabArgumentsOpenNewWindowWithoutFocus() {
@@ -96,16 +178,19 @@ final class RexTargetTests: XCTestCase {
         "md-viewer", "--cwd", "/tmp", "--", "/bin/md-viewer", "view", "/tmp/a.md",
       ])
     XCTAssertEqual(
-      tabArguments(session: "session:1", file: file, mdViewer: "/bin/md-viewer", themeSourceBlock: "block:s")
-        .suffix(4),
+      tabArguments(
+        session: "session:1", file: file, mdViewer: "/bin/md-viewer", origin: ViewerOrigin(themeSourceBlock: "block:s")
+      )
+      .suffix(4),
       ["view", "--theme-source-block", "block:s", "/tmp/a.md"])
   }
 
-  func testSplitWithoutThemeSourceOmitsTheFlag() {
+  func testSplitWithoutOriginOmitsTheFlags() {
     let args = splitArguments(
-      target: PaneTarget(session: "s", window: "w", block: "b"), file: URL(fileURLWithPath: "/tmp/a.md"),
+      placement: .beside(PaneTarget(session: "s", window: "w", block: "b")), file: URL(fileURLWithPath: "/tmp/a.md"),
       mdViewer: "/old/md-viewer")
     XCTAssertFalse(args.contains("--theme-source-block"))
+    XCTAssertFalse(args.contains("--opener-block"))
     XCTAssertEqual(args.suffix(2), ["view", "/tmp/a.md"])
   }
 
@@ -124,36 +209,20 @@ final class RexTargetTests: XCTestCase {
     XCTAssertFalse(isSameExecutable(other.path, real.path))
   }
 
-  func testViewArgumentsAcceptOptionalThemeSourceBlock() {
+  func testViewArgumentsAcceptOptionalThemeSourceAndOpenerBlocks() {
     XCTAssertEqual(ViewArguments(["/tmp/a.md"])?.file, "/tmp/a.md")
-    XCTAssertNil(ViewArguments(["/tmp/a.md"])?.themeSourceBlock)
+    XCTAssertEqual(ViewArguments(["/tmp/a.md"])?.origin, ViewerOrigin())
     let withBlock = ViewArguments(["--theme-source-block", "block:7", "/tmp/a.md"])
-    XCTAssertEqual(withBlock?.themeSourceBlock, "block:7")
+    XCTAssertEqual(withBlock?.origin, ViewerOrigin(themeSourceBlock: "block:7"))
     XCTAssertEqual(withBlock?.file, "/tmp/a.md")
+    let both = ViewArguments(["--opener-block", "block:o", "--theme-source-block", "block:t", "/tmp/a.md"])
+    XCTAssertEqual(both?.origin, ViewerOrigin(themeSourceBlock: "block:t", opener: "block:o"))
+    XCTAssertEqual(both?.file, "/tmp/a.md")
     XCTAssertNil(ViewArguments([]))
     XCTAssertNil(ViewArguments(["--theme-source-block", "", "/tmp/a.md"]))
+    XCTAssertNil(ViewArguments(["--opener-block", "", "/tmp/a.md"]))
+    XCTAssertNil(ViewArguments(["--opener-block", "a", "--opener-block", "b", "/tmp/a.md"]))
     XCTAssertNil(ViewArguments(["--other", "x", "/tmp/a.md"]))
     XCTAssertNil(ViewArguments(["a.md", "b.md"]))
-  }
-
-  func testPlanPrefersReuseThenSplitThenTab() {
-    let target = PaneTarget(session: "s", window: "w", block: "b")
-    XCTAssertEqual(
-      planOpen(target: target, existingPreview: "block:p", previewAlive: true),
-      .reused(block: "block:p"))
-    XCTAssertEqual(
-      planOpen(target: target, existingPreview: "block:p", previewAlive: false), .split(target))
-    XCTAssertEqual(
-      planOpen(target: target, existingPreview: nil, previewAlive: false), .split(target))
-    XCTAssertEqual(
-      planOpen(
-        target: PaneTarget(session: "s", window: nil, block: nil), existingPreview: nil,
-        previewAlive: false),
-      .newTab(session: "s"))
-    XCTAssertEqual(
-      planOpen(
-        target: PaneTarget(session: "s", window: "w", block: nil), existingPreview: nil,
-        previewAlive: false),
-      .newTab(session: "s"))
   }
 }

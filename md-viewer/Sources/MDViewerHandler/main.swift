@@ -93,6 +93,7 @@ final class HandlerDelegate: NSObject, NSApplicationDelegate {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: config.mdViewerPath)
     process.arguments = ["open", url.path]
+    process.environment = environmentWithoutCallerBlock(ProcessInfo.processInfo.environment)
     process.standardInput = FileHandle.nullDevice
     let log = openLog()
     process.standardOutput = log
