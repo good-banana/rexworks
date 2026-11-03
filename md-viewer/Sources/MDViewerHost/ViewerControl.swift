@@ -10,6 +10,7 @@ public enum ViewerControlEvent: Equatable, Sendable {
 @MainActor
 public final class ViewerControl {
   private var host: ViewerHost?
+  private var holding = false
   private var holdToken: String?
   private(set) var pending: [ViewerControlEvent] = []
   public var onEditorMessage: ((EditorMessage) -> Void)?
@@ -17,7 +18,7 @@ public final class ViewerControl {
 
   public init() {}
 
-  public var isHolding: Bool { holdToken != nil }
+  public var isHolding: Bool { holding }
 
   public func attach(_ host: ViewerHost) {
     self.host = host
@@ -37,18 +38,29 @@ public final class ViewerControl {
     receive(.editor(message))
   }
 
-  public func beginHold(token: String) {
+  public func beginHold(token: String?) {
+    holding = true
     holdToken = token
   }
 
-  public func endHold() {
-    guard let token = holdToken else { return }
+  @discardableResult
+  public func endHold() -> EditorMessage? {
+    guard holding else { return nil }
+    holding = false
+    var replayed = Self.replay(pending, handoffToken: holdToken)
     holdToken = nil
-    pending = Self.replay(pending, handoffToken: token)
+    var cursor: EditorMessage?
+    if let index = replayed.firstIndex(where: { if case .editor(.cursor) = $0 { true } else { false } }),
+      case .editor(let message) = replayed.remove(at: index)
+    {
+      cursor = message
+    }
+    pending = replayed
     flush()
+    return cursor
   }
 
-  nonisolated static func replay(_ events: [ViewerControlEvent], handoffToken: String) -> [ViewerControlEvent] {
+  nonisolated static func replay(_ events: [ViewerControlEvent], handoffToken: String?) -> [ViewerControlEvent] {
     var lastCursor: Int?
     for (index, event) in events.enumerated() {
       if case .editor(.cursor(let envelope, _, _, _)) = event, envelope.token == handoffToken { lastCursor = index }

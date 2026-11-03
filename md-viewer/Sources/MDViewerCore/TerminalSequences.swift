@@ -23,7 +23,11 @@ public enum TerminalSequences {
 
   public static let queryCellSize = "\u{1b}[16t"
 
-  public static let restore =
+  public static let restoreModes =
     "\u{1b}[?2031l\u{1b}[<u\u{1b}[>0s\u{1b}[?1003l\u{1b}[?2048l\u{1b}[?1016l\u{1b}[?1006l\u{1b}[?1000l\u{1b}[?25h"
-    + pointerShape(.default) + Kitty.deleteAll() + "\u{1b}[?1049l"
+    + pointerShape(.default) + Kitty.deleteAll()
+
+  public static let restoreScreen = "\u{1b}[?1049l"
+
+  public static let restore = restoreModes + restoreScreen
 }

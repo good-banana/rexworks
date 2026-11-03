@@ -169,9 +169,9 @@ final class EditorFixture {
 
   init(
     _ markdown: String = "# Title\n\nBody text.\n", files: [String: String] = [:], editor: String? = "nvim",
-    inRex: Bool = true, previewSocket: Bool = true, homeSuffix: String = ""
+    inRex: Bool = true, previewSocket: Bool = true, homeSuffix: String = "", themeQueryTimedOut: Bool = false
   ) throws {
-    hostFixture = try HostFixture(markdown, files: files)
+    hostFixture = try HostFixture(markdown, files: files, themeQueryTimedOut: themeQueryTimedOut)
     host = hostFixture.host
     home = try ShortHome()
     paths = SupportPaths(home: home.url.appendingPathComponent(homeSuffix))

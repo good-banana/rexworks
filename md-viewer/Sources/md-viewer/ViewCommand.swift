@@ -37,8 +37,9 @@ enum ViewCommand {
 
     var trace: (@Sendable (String) -> Void)?
     if ProcessInfo.processInfo.environment["MDVIEWER_TRACE"] == "1" { trace = { log.write("trace " + $0) } }
+    let gate = GatedTerminalOutput(FileDescriptorOutput())
     let services = HostServices(
-      output: FileDescriptorOutput(), stagers: FrameStaging.preferred(),
+      output: gate, stagers: FrameStaging.preferred(),
       environment: InteractionEnvironment(openURL: { NSWorkspace.shared.open($0) }),
       highlighter: SyntaxHighlighter(), mermaid: MermaidRenderer(),
       resolveTheme: { Terminal.themeResolver().resolve(inBand: $0, sourceBlock: source) },
@@ -64,7 +65,12 @@ enum ViewCommand {
     control.onLiveFollow = { editor.liveFollow(token: $0, file: $1) }
     host.start(file: url, windowSize: size)
     control.attach(host)
-    retained.append(startInput(host))
+    let input = startInput(host)
+    retained.append(input)
+    let handoff = HandoffController(
+      host: host, control: control, gate: gate, terminal: Handoff(input: input, inputQueue: inputQueue))
+    retained.append(handoff)
+    editor.onHandoff = { handoff.start($0) }
     retained.append(startResizeSignal(host))
     let themeWatch = ThemeWatchService(paths: paths, ownSocket: server?.path)
     themeWatch.onLocalChange = { host.themeChanged() }
@@ -97,8 +103,10 @@ enum ViewCommand {
     }
   }
 
+  nonisolated private static let inputQueue = DispatchQueue(label: "md-viewer.stdin", qos: .userInteractive)
+
   nonisolated private static func startInput(_ host: ViewerHost) -> DispatchSourceRead {
-    let input = DispatchSource.makeReadSource(fileDescriptor: STDIN_FILENO, queue: .global(qos: .userInteractive))
+    let input = DispatchSource.makeReadSource(fileDescriptor: STDIN_FILENO, queue: inputQueue)
     input.setEventHandler {
       var buffer = [UInt8](repeating: 0, count: 16_384)
       let count = read(STDIN_FILENO, &buffer, buffer.count)

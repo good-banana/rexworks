@@ -145,12 +145,25 @@ final class ViewerControlTests: XCTestCase {
     XCTAssertEqual(fixture.host.interaction.file?.lastPathComponent, "main.md")
     XCTAssertTrue(log.isEmpty)
 
-    control.endHold()
+    XCTAssertEqual(control.endHold(), lastCursor)
     XCTAssertFalse(control.isHolding)
-    XCTAssertEqual(log, [edit, lastCursor])
+    XCTAssertEqual(log, [edit], "the kept cursor is returned, not delivered")
     XCTAssertEqual(fixture.host.interaction.file?.lastPathComponent, "other.md")
     XCTAssertTrue(control.pending.isEmpty)
-    control.endHold()
+    XCTAssertNil(control.endHold())
+  }
+
+  func testAHoldWithoutATokenKeepsNoCursor() throws {
+    let fixture = try HostFixture("# Main", start: false)
+    fixture.host.start(file: fixture.file, windowSize: testPaneSize)
+    let control = ViewerControl()
+    control.attach(fixture.host)
+    control.beginHold(token: nil)
+    XCTAssertTrue(control.isHolding)
+    control.receive(editor: .cursor(envelope("h", seq: 1), line: 1, top: 1, height: 10))
+    control.themeChanged()
+    XCTAssertNil(control.endHold())
+    XCTAssertTrue(control.pending.isEmpty)
   }
 
   func testReplayKeepsOnlyTheLastHandoffCursorAndDropsOtherPluginMessages() {

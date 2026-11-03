@@ -12,8 +12,12 @@ import XCTest
 
 final class RecordingOutput: TerminalOutput {
   var writes: [String] = []
+  var onWrite: ((String) -> Void)?
 
-  func write(_ text: String) { writes.append(text) }
+  func write(_ text: String) {
+    writes.append(text)
+    onWrite?(text)
+  }
 
   var joined: String { writes.joined() }
 
@@ -84,13 +88,14 @@ final class ThemeCalls: @unchecked Sendable {
 struct HostFixture {
   let host: ViewerHost
   let output: RecordingOutput
+  let gate: GatedTerminalOutput
   let pasteboard = FakePasteboard()
   let directory: TestDirectory
   let file: URL
   let themeCalls: ThemeCalls
 
   init(
-    _ markdown: String, files: [String: String] = [:], start: Bool = true,
+    _ markdown: String, files: [String: String] = [:], start: Bool = true, themeQueryTimedOut: Bool = false,
     resolve: (@Sendable (TerminalColorSet) -> ResolvedTheme)? = nil,
     posterFrame: (@Sendable (URL) -> CGImage?)? = nil,
     fetchRemote: (@Sendable (URL, @escaping @Sendable (Data?) -> Void) -> Void)? = nil
@@ -99,11 +104,12 @@ struct HostFixture {
     file = try directory.write("main.md", markdown)
     for (name, text) in files { try directory.write(name, text) }
     output = RecordingOutput()
+    gate = GatedTerminalOutput(output)
     let calls = ThemeCalls()
     themeCalls = calls
     let fallback = ResolvedTheme(colors: RenderPalette.fallbackColors(dark: true), source: .terminalQuery)
     let services = HostServices(
-      output: output, pasteboard: pasteboard, stagers: (MemoryStager(), nil),
+      output: gate, pasteboard: pasteboard, stagers: (MemoryStager(), nil),
       environment: InteractionEnvironment(openURL: { _ in true }, copyOnSelect: { false }),
       images: ImageStore(fetchRemote: fetchRemote, posterFrame: posterFrame),
       resolveTheme: { colors in
@@ -111,7 +117,8 @@ struct HostFixture {
         return resolve?(colors) ?? fallback
       },
       watchesFiles: false)
-    host = ViewerHost(size: testPaneSize, theme: fallback, services: services)
+    host = ViewerHost(
+      size: testPaneSize, theme: fallback, themeQueryTimedOut: themeQueryTimedOut, services: services)
     if start { host.start(file: file, windowSize: testPaneSize) }
   }
 

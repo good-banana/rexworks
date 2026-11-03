@@ -60,6 +60,7 @@ public final class ViewerHost {
   public static let highlightRetryDelay: UInt64 = 1_000_000_000
   public static let maximumHighlightRetries = 3
   public static let assetSettleDelay: UInt64 = 30_000_000
+  public static let handoffDrainTimeout: UInt64 = 2_000_000_000
 
   public private(set) var interaction: ViewerInteraction
   public private(set) var theme: ResolvedTheme
@@ -69,6 +70,8 @@ public final class ViewerHost {
   public var onQuit: () -> Void = {}
   public var onDocumentShown: (URL) -> Void = { _ in }
   public private(set) var editor: EditorCoordinator?
+  public private(set) var handoffActive = false
+  public private(set) var pendingDeviceAttributes: Int
 
   let services: HostServices
   let source: RasterFrameSource
@@ -96,10 +99,14 @@ public final class ViewerHost {
   var tickTimerDeadline: UInt64?
   var lastAnimationTick: UInt64 = 0
   var liveBufferNoticeShown = false
+  var displaySuspended = false
+  var drainCompletion: (() -> Void)?
+  var drainID = 0
 
   public init(size: PaneSize, theme: ResolvedTheme, themeQueryTimedOut: Bool = false, services: HostServices) {
     self.services = services
     self.theme = theme
+    pendingDeviceAttributes = themeQueryTimedOut ? 1 : 0
     palette = theme.palette
     mermaidTheme = MermaidTheme(palette: palette)
     let cellHeight = CGFloat(size.rows > 0 ? size.pixelHeight / size.rows : 0)
@@ -166,6 +173,7 @@ public final class ViewerHost {
   }
 
   public func windowChanged(_ size: PaneSize) {
+    guard !handoffActive else { return }
     apply(sizeTracker.windowChanged(size))
     settle()
   }
@@ -220,6 +228,10 @@ public final class ViewerHost {
   }
 
   func handle(_ event: InputEvent, answeringThemeQuery: Bool, at now: UInt64) {
+    if handoffActive {
+      if event == .deviceAttributes { deviceAttributesArrived() }
+      return
+    }
     switch event {
     case .key, .mouse:
       if transport.isStopped { transport.resume() }
@@ -227,6 +239,7 @@ public final class ViewerHost {
     case .colorScheme:
       if !answeringThemeQuery { requestTheme(.colorScheme) }
     case .deviceAttributes:
+      deviceAttributesArrived()
       themeScheduler.deviceAttributesReceived()
     case .paneSize(let size):
       apply(sizeTracker.inBandReport(size))
@@ -497,6 +510,88 @@ public final class ViewerHost {
     return "> [!CAUTION]\n> **Cannot read this file.**\n>\n> \(fence) \(url.path) \(fence)\n"
   }
 
+  // MARK: Handoff
+
+  public func beginHandoff() {
+    handoffActive = true
+    watcher?.stop()
+    watcher = nil
+    suspendDisplay()
+  }
+
+  public func suspendDisplay() {
+    displaySuspended = true
+    if themeReplies != nil {
+      themeReplies = nil
+      themeQueryID += 1
+      themeScheduler.finish(now: Self.seconds(), queryTimedOut: false)
+    }
+    transport.suspend()
+    updateAnimations()
+  }
+
+  public func awaitSentinelReply(
+    timeout: UInt64 = ViewerHost.handoffDrainTimeout, then completion: @escaping () -> Void
+  ) {
+    pendingDeviceAttributes += 1
+    drainID += 1
+    let drain = drainID
+    drainCompletion = completion
+    DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(timeout))) { [weak self] in
+      MainActor.assumeIsolated {
+        guard let self, self.drainID == drain else { return }
+        self.endDrain()
+      }
+    }
+  }
+
+  func deviceAttributesArrived() {
+    pendingDeviceAttributes = max(pendingDeviceAttributes - 1, 0)
+    if pendingDeviceAttributes == 0 { endDrain() }
+  }
+
+  func endDrain() {
+    guard let completion = drainCompletion else { return }
+    drainCompletion = nil
+    drainID += 1
+    pendingDeviceAttributes = 0
+    DispatchQueue.main.async { completion() }
+  }
+
+  public func resetInput() {
+    parser = InputParser()
+  }
+
+  public func resumeDisplay(size: PaneSize?) {
+    displaySuspended = false
+    transport.resume()
+    if let size { apply(sizeTracker.windowChanged(size)) }
+    settle()
+  }
+
+  public func endHandoff(block: String?) {
+    handoffActive = false
+    if let file = interaction.file { watch(file) }
+    let linked = block.map { editor?.isLinked(to: $0) == true } ?? false
+    if let block { editor?.blockEnded(block) }
+    if !linked {
+      perform(interaction.clearEditorCursor())
+      leaveLiveBuffer()
+      reloadFile()
+    }
+    requestTheme(.reload)
+    settle()
+  }
+
+  public func applyHandoffCursor(_ message: EditorMessage?, shownBefore: URL?) {
+    guard case .cursor(let envelope, let line, let top, let height) = message, let file = interaction.file,
+      let shownBefore, canonicalPath(file.path) == canonicalPath(shownBefore.path),
+      canonicalPath(envelope.file) == canonicalPath(file.path)
+    else { return }
+    perform(interaction.applyEditorCursor(EditorCursor(line: line, top: top, height: height)))
+    settle()
+  }
+
   // MARK: Layout
 
   func runLayout(_ request: LayoutRequest) {
@@ -585,7 +680,8 @@ public final class ViewerHost {
 
   func updateAnimations() {
     var visible: [String: AnimationPlayer.Clip] = [:]
-    if !services.reduceMotion(), !interaction.helpVisible, interaction.editorPicker == nil, !transport.isStopped,
+    if !displaySuspended, !services.reduceMotion(), !interaction.helpVisible, interaction.editorPicker == nil,
+      !transport.isStopped,
       let layout = interaction.layout
     {
       for box in layout.images {
@@ -786,7 +882,7 @@ public final class ViewerHost {
   }
 
   func startThemeQuery() {
-    guard themeReplies == nil, !themeScheduler.inFlight else { return }
+    guard !displaySuspended, themeReplies == nil, !themeScheduler.inFlight else { return }
     guard themeScheduler.start(now: Self.seconds()) else { return scheduleThemeQuery() }
     let includeScheme = themeScheduler.sendsColorSchemeQuery
     themeReplies = TerminalColorReplyReader(expectsPalette: true, expectsColorScheme: includeScheme)
@@ -794,6 +890,7 @@ public final class ViewerHost {
     let query = themeQueryID
     trace("theme query \(query)\(includeScheme ? " with scheme" : "")")
     services.output.write(TerminalColorQuery.request(includePalette: true, includeColorSchemeQuery: includeScheme))
+    pendingDeviceAttributes += 1
     DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(Self.themeQueryTimeout))) { [weak self] in
       MainActor.assumeIsolated {
         guard let self, self.themeQueryID == query else { return }

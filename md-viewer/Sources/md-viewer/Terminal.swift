@@ -6,16 +6,23 @@ import MDViewerSystem
 
 nonisolated(unsafe) private var savedAttributes = termios()
 nonisolated(unsafe) private var rawModeActive = false
+nonisolated(unsafe) private var exitRestoreRegistered = false
+nonisolated(unsafe) private var handoffInProgress = false
 nonisolated(unsafe) private var restoreBytes: [UInt8] = []
 nonisolated(unsafe) private var signalSources: [DispatchSourceSignal] = []
 
 private func restoreTerminalState() {
   guard rawModeActive else { return }
-  rawModeActive = false
-  mdv_crash_restore_disarm()
   restoreBytes.withUnsafeBufferPointer { buffer in
     _ = Darwin.write(STDOUT_FILENO, buffer.baseAddress, buffer.count)
   }
+  leaveRawModeState()
+}
+
+private func leaveRawModeState() {
+  guard rawModeActive else { return }
+  rawModeActive = false
+  mdv_crash_restore_disarm()
   tcsetattr(STDIN_FILENO, TCSAFLUSH, &savedAttributes)
 }
 
@@ -44,7 +51,10 @@ enum Terminal {
     guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0 else { return false }
     restoreBytes = Array(TerminalSequences.restore.utf8)
     rawModeActive = true
-    atexit { restoreTerminalState() }
+    if !exitRestoreRegistered {
+      exitRestoreRegistered = true
+      atexit { restoreTerminalState() }
+    }
     _ = restoreBytes.withUnsafeBufferPointer { bytes in
       bytes.withMemoryRebound(to: CChar.self) {
         mdv_crash_restore_prepare($0.baseAddress, $0.count, STDOUT_FILENO, STDIN_FILENO, &savedAttributes)
@@ -64,6 +74,15 @@ enum Terminal {
     restoreTerminalState()
   }
 
+  static func leaveRawMode() {
+    leaveRawModeState()
+  }
+
+  static var handoffActive: Bool {
+    get { handoffInProgress }
+    set { handoffInProgress = newValue }
+  }
+
   static func size() -> PaneSize? {
     var ws = winsize()
     guard ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0, ws.ws_col > 0, ws.ws_row > 0 else {
@@ -78,6 +97,7 @@ enum Terminal {
       signal(signalNumber, SIG_IGN)
       let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
       source.setEventHandler {
+        if signalNumber == SIGINT, handoffInProgress { return }
         restoreTerminalState()
         exit(128 + signalNumber)
       }

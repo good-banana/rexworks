@@ -300,10 +300,14 @@ public final class EditorCoordinator {
     watches?.start(block)
   }
 
+  func isLinked(to block: String) -> Bool {
+    block == link.block || block == link.pending?.block
+  }
+
   func blockEnded(_ block: String) {
     watches?.stop(block)
     queue.async { [work] in work.remove(block: block) }
-    guard block == link.block || block == link.pending?.block else { return }
+    guard isLinked(to: block) else { return }
     link.unlink()
     link.pending = nil
     host?.editorEnded(status: Self.closedMessage)
