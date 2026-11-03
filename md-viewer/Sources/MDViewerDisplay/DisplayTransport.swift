@@ -59,6 +59,7 @@ public final class DisplayTransport {
   public private(set) var consecutiveFailures = 0
   public private(set) var retryAfter: UInt64?
   public private(set) var isStopped = false
+  public private(set) var isSuspended = false
   public var relayout: (PaneSize, DisplayViewport) -> DisplayViewport
   public var onEvent: (DisplayEvent) -> Void = { _ in }
   public var shiftScrolling = true
@@ -151,7 +152,24 @@ public final class DisplayTransport {
     damage.invalidateAll()
   }
 
+  public func suspend() {
+    guard !isShutDown, !isSuspended else { return }
+    isSuspended = true
+    let ids = ledger.removeAll()
+    if !ids.isEmpty { output.write(ids.map(Kitty.deleteImage).joined()) }
+    stager.removeAll()
+    fallback?.removeAll()
+    pacer = FramePacer(minimumInterval: pacer.minimumInterval, fenceTimeout: pacer.fenceTimeout)
+    debouncer.reset(displayed: viewport.size)
+    outstanding = []
+    failures = [:]
+    lastTimedOutSentAt = nil
+    scratchFrameImage = nil
+    damage.invalidateAll()
+  }
+
   public func resume() {
+    isSuspended = false
     isStopped = false
     consecutiveFailures = 0
     retryAfter = nil
@@ -159,7 +177,7 @@ public final class DisplayTransport {
   }
 
   public func observe(_ size: PaneSize, at now: UInt64) {
-    guard !isShutDown, size.hasPixels else { return }
+    guard !isShutDown, !isSuspended, size.hasPixels else { return }
     guard !ledger.live.isEmpty else {
       guard size != viewport.size || debouncer.isHolding else { return }
       debouncer.reset(displayed: size)
@@ -172,7 +190,7 @@ public final class DisplayTransport {
   }
 
   public func handle(_ response: GraphicsResponse, at now: UInt64) {
-    guard !isShutDown else { return }
+    guard !isShutDown, !isSuspended else { return }
     if response.id >= FenceIDs.base {
       settle(through: response.id, at: now)
       return
@@ -190,6 +208,7 @@ public final class DisplayTransport {
   }
 
   public func nextWake(after now: UInt64) -> UInt64? {
+    guard !isSuspended else { return nil }
     var wakes: [UInt64] = []
     if let deadline = debouncer.deadline { wakes.append(deadline) }
     if let inFlight = pacer.inFlight { wakes.append(inFlight.sentAt + pacer.fenceTimeout) }
@@ -200,7 +219,7 @@ public final class DisplayTransport {
   }
 
   public func pump(at now: UInt64) {
-    guard !isShutDown else { return }
+    guard !isShutDown, !isSuspended else { return }
     if case .settle(let size) = debouncer.fire(at: now) {
       viewport = relayout(size, viewport)
       damage.invalidateAll()

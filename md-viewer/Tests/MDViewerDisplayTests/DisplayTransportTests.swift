@@ -518,6 +518,67 @@ final class DisplayTransportTests: XCTestCase {
     XCTAssertFalse(transport.isHolding)
   }
 
+  func testSuspendDeletesImagesAndClearsState() {
+    let transport = makeTransport()
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.scroll(by: 400)
+    transport.pump(at: 20 * ms)
+    output.writes = []
+    transport.suspend()
+    XCTAssertEqual(output.take(), [Kitty.deleteImage(id: 100) + Kitty.deleteImage(id: 101)])
+    XCTAssertTrue(transport.isSuspended)
+    XCTAssertTrue(transport.ledger.live.isEmpty)
+    XCTAssertNil(transport.pacer.inFlight)
+    XCTAssertEqual(transport.outstandingFrames, 0)
+    XCTAssertTrue(stager.removed)
+    XCTAssertEqual(stager.outstanding, 0)
+  }
+
+  func testSuspendedTransportIgnoresLateFencesAndSendsNothing() {
+    let transport = makeTransport()
+    transport.pump(at: 0)
+    let fence = transport.pacer.inFlight?.fence ?? 0
+    transport.suspend()
+    output.writes = []
+    events = []
+    transport.handle(GraphicsResponse(id: fence, message: "OK"), at: 1 * ms)
+    transport.handle(GraphicsResponse(id: 100, message: "ENOENT: gone"), at: 1 * ms)
+    transport.scroll(by: 400)
+    transport.invalidateAll()
+    transport.pump(at: 100 * ms)
+    XCTAssertEqual(output.writes, [])
+    XCTAssertEqual(events, [])
+    XCTAssertNil(transport.nextWake(after: 100 * ms))
+    XCTAssertTrue(transport.ledger.live.isEmpty)
+  }
+
+  func testSuspendIsIdempotent() {
+    let transport = makeTransport()
+    transport.pump(at: 0)
+    transport.suspend()
+    output.writes = []
+    transport.suspend()
+    XCTAssertEqual(output.writes, [])
+  }
+
+  func testResumeAfterSuspendSendsAFullFrame() {
+    let transport = makeTransport()
+    transport.pump(at: 0)
+    acknowledge(transport, at: 1 * ms)
+    transport.suspend()
+    output.writes = []
+    transport.resume()
+    XCTAssertFalse(transport.isSuspended)
+    transport.pump(at: 100 * ms)
+    let frames = output.take()
+    XCTAssertEqual(frames.count, 1)
+    XCTAssertTrue(frames[0].contains("a=t,f=32,s=100,v=100"))
+    XCTAssertTrue(frames[0].contains("a=p,"))
+    XCTAssertEqual(transport.ledger.unsettled.count, 1)
+    XCTAssertEqual(source.frames.count, 2)
+  }
+
   func testShutdownDeletesEveryImageAndStagedFrame() {
     let transport = makeTransport()
     transport.pump(at: 0)
