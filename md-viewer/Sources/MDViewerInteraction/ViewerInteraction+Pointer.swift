@@ -91,7 +91,7 @@ extension ViewerInteraction {
     let before = overlay.selection
     press = Press(
       kind: .content(target: target, region: hit.region), start: pane, selectionBefore: before,
-      textOffset: layout.isOverText(page) ? hit.position?.offset : nil)
+      textOffset: hit.target == nil && layout.isOverText(page) ? hit.position?.offset : nil)
     let focusEffects = setFocus(
       clickedFocusable(at: page, target: target, position: hit.position?.offset), fromPointer: true)
     guard let position = hit.position?.offset else { return focusEffects }

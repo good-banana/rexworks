@@ -215,6 +215,17 @@ final class ClickToJumpTests: XCTestCase {
     XCTAssertEqual(jumps(h.click(h.point(of: "item two"))), [21])
   }
 
+  func testATaskCheckboxClickDoesNotJump() throws {
+    var h = Harness("- [ ] first task\n- [x] second task\n")
+    h.run(h.model.setEditorLink(neovim))
+    let boxes = h.layout.decorations.filter { if case .taskBox = $0.kind { true } else { false } }
+    XCTAssertEqual(boxes.count, 2)
+    for box in boxes {
+      XCTAssertEqual(jumps(h.click(CGPoint(x: box.rect.midX, y: box.rect.midY))), [])
+    }
+    XCTAssertEqual(jumps(h.click(h.point(of: "second"))), [2], "the task text still jumps")
+  }
+
   func testNoJumpWithoutALiveEditorOnThisFile() {
     var h = Harness(blocks)
     XCTAssertEqual(jumps(h.click(h.point(of: "continues"))), [], "no editor")
@@ -316,6 +327,23 @@ final class EditorCursorTests: XCTestCase {
     XCTAssertEqual(h.model.overlay.sourceCursor?.minY, y)
     XCTAssertNotEqual(y, before.minY)
     XCTAssertEqual(h.model.offset, h.model.snapped(y - 0.25 * 600))
+  }
+
+  func testACursorArrivingBeforeAPendingLayoutIsAppliedWhenItLands() throws {
+    var h = Harness("Short.", height: 600, row: 30, files: ["/docs/next.md": longDocument()])
+    let next = URL(fileURLWithPath: "/docs/next.md")
+    let opened = h.model.open(file: next, source: "Stale text.")
+    XCTAssertFalse(opened.layoutRequests.isEmpty, "follow requests a layout that is held back")
+    let changed = h.model.fileChanged(source: longDocument())
+    let request = try XCTUnwrap(changed.layoutRequests.last)
+    XCTAssertEqual(h.model.applyEditorCursor(EditorCursor(line: 61, top: 51, height: 40)), [])
+    XCTAssertEqual(h.model.offset, 0)
+    XCTAssertNil(h.model.overlay.sourceCursor, "no bar against the previous document's layout")
+    h.run(h.model.apply(request.perform(), for: request, at: h.now))
+    let y = try XCTUnwrap(h.model.y(forSourceLine: 61))
+    XCTAssertEqual(h.model.offset, h.model.snapped(y - 0.25 * 600))
+    XCTAssertEqual(h.model.overlay.sourceCursor?.minY, y)
+    XCTAssertEqual(h.model.editorCursor, EditorCursor(line: 61, top: 51, height: 40))
   }
 
   func testTheBarFollowsAWidthChangeWithoutScrolling() throws {

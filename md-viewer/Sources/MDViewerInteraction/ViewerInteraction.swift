@@ -544,6 +544,10 @@ public struct ViewerInteraction {
 
   public mutating func applyEditorCursor(_ cursor: EditorCursor) -> [InteractionEffect] {
     editorCursor = cursor
+    guard pendingRequest == nil else {
+      reapplyEditorCursor = true
+      return []
+    }
     guard let layout else { return [] }
     var effects = setSourceCursorBar(sourceCursorBar(for: cursor, in: layout))
     if let target = editorCursorOffset(cursor, in: layout) { effects += setOffset(target) }
