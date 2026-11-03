@@ -351,7 +351,7 @@ public enum NeovimPlugin {
     end
 
     local function run_commands()
-      if running_command then return end
+      if running_command or leaving then return end
       while commands[1] do
         local mode = api.nvim_get_mode().mode
         if mode == 'c' then
@@ -461,6 +461,9 @@ public enum NeovimPlugin {
     local function shutdown()
       send_exit()
       leaving = true
+      commands = {}
+      command_timer:stop()
+      close_handle(command_timer)
       if M.server then
         close_handle(M.server)
         M.server = nil

@@ -255,9 +255,10 @@ final class EditorHostTests: XCTestCase {
     XCTAssertEqual(fixture.coordinator.link.token, first)
     let sent = fixture.control.commands.count
     fixture.host.perform(.jumpEditor(line: 9))
-    spin(until: { fixture.control.commands.count == sent + 2 })
+    spin(until: { fixture.control.commands.count == sent + 3 })
     XCTAssertEqual(
-      fixture.control.commands.dropFirst(sent), [.jump(token: first, line: 9), .jump(token: third, line: 9)])
+      fixture.control.commands.dropFirst(sent),
+      [.jump(token: first, line: 9), .jump(token: second, line: 9), .jump(token: third, line: 9)])
   }
 
   func testTheEndOfANeovimThatNeverAdoptedTheRelinkKeepsTheCurrentLink() throws {
@@ -296,6 +297,149 @@ final class EditorHostTests: XCTestCase {
     fixture.host.receiveEditor(.follow(fixture.envelope(second, 1, file: other)))
     XCTAssertEqual(fixture.coordinator.link.block, "block:nvim2")
     XCTAssertEqual(fixture.coordinator.link.token, second)
+  }
+
+  private func relinkToSecondNeovim(_ fixture: EditorFixture) throws -> (other: URL, token: String) {
+    let other = fixture.hostFixture.directory.url.appendingPathComponent("other.md")
+    try fixture.write(fixture.neovimEntry(block: "block:nvim2", files: [other]))
+    fixture.host.open(other)
+    fixture.press()
+    fixture.waitIdle()
+    let token = try XCTUnwrap(fixture.coordinator.link.pending?.token)
+    XCTAssertEqual(fixture.coordinator.link.pending?.block, "block:nvim2")
+    return (other, token)
+  }
+
+  func testUnlinkedOldTokenWhileARelinkOnTheSameBlockIsPendingKeepsTheWatchForTheAdoption() throws {
+    let fixture = try EditorFixture()
+    let first = fixture.launchNeovim()
+    fixture.press()
+    fixture.waitIdle()
+    let second = try XCTUnwrap(fixture.coordinator.link.pending?.token)
+
+    fixture.host.receiveEditor(.unlinked(fixture.envelope(first, 1)))
+    XCTAssertNil(fixture.coordinator.link.block)
+    XCTAssertEqual(fixture.status, "Editor linked to another preview")
+    XCTAssertEqual(fixture.coordinator.link.pending?.token, second)
+    XCTAssertNotNil(fixture.waits.running(EditorFixture.launchedBlock))
+
+    fixture.host.receiveEditor(.follow(fixture.envelope(second, 1)))
+    XCTAssertEqual(fixture.coordinator.link.token, second)
+    XCTAssertEqual(fixture.coordinator.link.block, EditorFixture.launchedBlock)
+    XCTAssertEqual(fixture.coordinator.watchedBlocks, [EditorFixture.launchedBlock])
+    XCTAssertNotNil(fixture.waits.running(EditorFixture.launchedBlock))
+  }
+
+  func testAnAdoptionRestartsAWatchThatWasStopped() throws {
+    let fixture = try EditorFixture(files: ["other.md": "# Other\n"])
+    let first = fixture.launchNeovim()
+    let (_, second) = try relinkToSecondNeovim(fixture)
+    fixture.coordinator.watches?.stop("block:nvim2")
+    XCTAssertNil(fixture.waits.running("block:nvim2"))
+    XCTAssertEqual(fixture.coordinator.link.token, first)
+
+    fixture.host.receiveEditor(.follow(fixture.envelope(second, 1)))
+    XCTAssertEqual(fixture.coordinator.link.block, "block:nvim2")
+    XCTAssertNotNil(fixture.waits.running("block:nvim2"))
+  }
+
+  func testUnlinkedOldTokenWhileARelinkToAnotherBlockIsPendingKeepsThePendingLink() throws {
+    let fixture = try EditorFixture(files: ["other.md": "# Other\n"])
+    let first = fixture.launchNeovim()
+    let (other, second) = try relinkToSecondNeovim(fixture)
+
+    fixture.host.receiveEditor(.unlinked(fixture.envelope(first, 1, file: other)))
+    XCTAssertNil(fixture.coordinator.link.block)
+    XCTAssertNil(fixture.waits.running(EditorFixture.launchedBlock))
+    XCTAssertEqual(fixture.coordinator.link.pending?.token, second)
+    XCTAssertNotNil(fixture.waits.running("block:nvim2"))
+
+    fixture.host.receiveEditor(.follow(fixture.envelope(second, 1, file: other)))
+    XCTAssertEqual(fixture.coordinator.link.block, "block:nvim2")
+  }
+
+  func testUnlinkedUnderAPendingTokenDiscardsOnlyThatToken() throws {
+    let fixture = try EditorFixture()
+    let first = fixture.launchNeovim()
+    fixture.press()
+    fixture.waitIdle()
+    let second = try XCTUnwrap(fixture.coordinator.link.pending?.token)
+
+    fixture.host.receiveEditor(.unlinked(fixture.envelope(second, 1)))
+    XCTAssertNil(fixture.coordinator.link.pending)
+    XCTAssertEqual(fixture.coordinator.link.token, first)
+    XCTAssertEqual(fixture.coordinator.link.block, EditorFixture.launchedBlock)
+    XCTAssertEqual(fixture.status, "Focused the editor")
+    XCTAssertNotNil(fixture.waits.running(EditorFixture.launchedBlock))
+  }
+
+  func testExitUnderTheCurrentTokenKeepsARelinkToAnotherBlockPending() throws {
+    let fixture = try EditorFixture(files: ["other.md": "# Other\n"])
+    let first = fixture.launchNeovim()
+    let (other, second) = try relinkToSecondNeovim(fixture)
+
+    fixture.host.receiveEditor(.exit(fixture.envelope(first, 1, file: other)))
+    XCTAssertNil(fixture.coordinator.link.block)
+    XCTAssertEqual(fixture.status, "Editor closed")
+    XCTAssertEqual(fixture.coordinator.link.pending?.token, second)
+    XCTAssertNotNil(fixture.waits.running("block:nvim2"))
+  }
+
+  func testExitUnderAPendingTokenKeepsTheCurrentLink() throws {
+    let fixture = try EditorFixture(files: ["other.md": "# Other\n"])
+    let first = fixture.launchNeovim()
+    let (other, second) = try relinkToSecondNeovim(fixture)
+
+    fixture.host.receiveEditor(.exit(fixture.envelope(second, 1, file: other)))
+    XCTAssertNil(fixture.coordinator.link.pending)
+    XCTAssertEqual(fixture.coordinator.link.token, first)
+    XCTAssertEqual(fixture.coordinator.link.block, EditorFixture.launchedBlock)
+    XCTAssertNotEqual(fixture.status, "Editor closed")
+    spin(until: { fixture.registry.entry(block: "block:nvim2") == nil })
+    XCTAssertNil(fixture.registry.entry(block: "block:nvim2"))
+  }
+
+  func testAnEarlierRelinkThatSucceedsIsAdoptedWhenALaterOneFails() throws {
+    let fixture = try EditorFixture()
+    let first = fixture.launchNeovim()
+    fixture.press()
+    fixture.waitIdle()
+    let second = try XCTUnwrap(fixture.coordinator.link.pending?.token)
+    fixture.press()
+    fixture.waitIdle()
+    let third = try XCTUnwrap(fixture.coordinator.link.pending?.token)
+    XCTAssertEqual(fixture.coordinator.link.pendings.map(\.token), [second, third])
+
+    var sent = fixture.control.commands.count
+    fixture.host.receiveEditor(.follow(fixture.envelope(first, 1)))
+    fixture.host.perform(.jumpEditor(line: 6))
+    spin(until: { fixture.control.commands.count == sent + 3 })
+    XCTAssertEqual(
+      fixture.control.commands.dropFirst(sent),
+      [.jump(token: first, line: 6), .jump(token: second, line: 6), .jump(token: third, line: 6)])
+
+    fixture.host.receiveEditor(.follow(fixture.envelope(second, 1)))
+    fixture.host.receiveEditor(.cursor(fixture.envelope(second, 2), line: 8, top: 1, height: 20))
+    XCTAssertEqual(fixture.coordinator.link.token, second)
+    XCTAssertEqual(fixture.coordinator.link.pendings.map(\.token), [third])
+    XCTAssertEqual(fixture.host.interaction.editorCursor?.line, 8)
+    fixture.host.receiveEditor(.cursor(fixture.envelope(first, 2), line: 2, top: 1, height: 20))
+    XCTAssertEqual(fixture.host.interaction.editorCursor?.line, 8, "the first token is no longer heard")
+
+    sent = fixture.control.commands.count
+    fixture.host.perform(.jumpEditor(line: 9))
+    spin(until: { fixture.control.commands.count == sent + 2 })
+    XCTAssertEqual(
+      fixture.control.commands.dropFirst(sent), [.jump(token: second, line: 9), .jump(token: third, line: 9)])
+  }
+
+  func testARelinkToAnotherNeovimReplacesEarlierPendingRelinks() throws {
+    let fixture = try EditorFixture(files: ["other.md": "# Other\n"])
+    fixture.launchNeovim()
+    fixture.press()
+    fixture.waitIdle()
+    let (_, second) = try relinkToSecondNeovim(fixture)
+    XCTAssertEqual(fixture.coordinator.link.pendings.map(\.token), [second])
   }
 
   func testTheEndOfTheLinkedBlockClearsTheLinkAndThePreviewStaysOpen() throws {

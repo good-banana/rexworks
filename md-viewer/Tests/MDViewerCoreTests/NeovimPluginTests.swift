@@ -180,7 +180,7 @@ final class NeovimPluginTests: XCTestCase {
 
   func testCommandsRunInOrderOnlyAfterStartupPromptsAndCommandLineMode() throws {
     let run = try body(of: "local function run_commands()")
-    XCTAssertTrue(run.hasPrefix("local function run_commands()\n  if running_command then return end\n"))
+    XCTAssertTrue(run.hasPrefix("local function run_commands()\n  if running_command or leaving then return end\n"))
     XCTAssertTrue(
       run.contains(
         """
@@ -237,6 +237,8 @@ final class NeovimPluginTests: XCTestCase {
     XCTAssertTrue(exit.contains("vim.fn.chanclose(channel)"))
     let shutdown = try body(of: "local function shutdown()")
     XCTAssertTrue(shutdown.hasPrefix("local function shutdown()\n  send_exit()\n"))
+    XCTAssertTrue(
+      shutdown.contains("leaving = true\n  commands = {}\n  command_timer:stop()\n  close_handle(command_timer)\n"))
     XCTAssertTrue(shutdown.contains("os.remove(env.files)"))
     XCTAssertTrue(shutdown.contains("for buf in pairs(buffer_files) do remove_buffer_file(buf) end"))
   }

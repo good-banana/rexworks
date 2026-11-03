@@ -75,16 +75,22 @@ public struct EditorLinkState: Equatable, Sendable {
   public internal(set) var kind: EditorKind?
   public internal(set) var controlSocket: String?
   public internal(set) var followedFile: String?
-  public internal(set) var pending: Pending?
+  public internal(set) var pendings: [Pending] = []
   var bufferToken: String?
   var lastSeq: [String: Int] = [:]
 
+  public var pending: Pending? { pendings.last }
+
+  func pending(for token: String) -> Pending? {
+    pendings.first { $0.token == token }
+  }
+
   public mutating func accept(_ message: EditorMessage, shownFile: URL?) -> Bool {
     guard let envelope = message.envelope else { return true }
-    guard envelope.token == token || envelope.token == pending?.token else { return false }
+    guard envelope.token == token || pending(for: envelope.token) != nil else { return false }
     if let last = lastSeq[envelope.token], envelope.seq <= last { return false }
-    if let pending, pending.token == envelope.token, let block = pending.block, message.confirmsLink {
-      adopt(pending, block: block)
+    if let match = pending(for: envelope.token), let block = match.block, message.confirmsLink {
+      adopt(match, block: block)
     }
     lastSeq[envelope.token] = envelope.seq
     switch message {
@@ -100,17 +106,35 @@ public struct EditorLinkState: Equatable, Sendable {
 
   func block(owning token: String) -> String? {
     if token == self.token { return block }
-    if token == pending?.token { return pending?.block }
-    return nil
+    return pending(for: token)?.block
   }
 
   var jumpTargets: [(token: String, controlSocket: String)] {
     var targets: [(token: String, controlSocket: String)] = []
     if let token, let controlSocket { targets.append((token, controlSocket)) }
-    if let pending, pending.block != nil, let controlSocket = pending.controlSocket {
-      targets.append((pending.token, controlSocket))
+    for pending in pendings where pending.block != nil {
+      if let controlSocket = pending.controlSocket { targets.append((pending.token, controlSocket)) }
     }
     return targets
+  }
+
+  mutating func record(_ pending: Pending) {
+    pendings.removeAll { earlier in
+      pending.block == nil || earlier.block == nil || earlier.controlSocket == nil
+        || earlier.controlSocket != pending.controlSocket
+    }
+    pendings.append(pending)
+    lastSeq[pending.token] = nil
+  }
+
+  mutating func discard(_ token: String) {
+    pendings.removeAll { $0.token == token }
+    lastSeq[token] = nil
+  }
+
+  private func keepingPendingSeqs(_ tokens: Set<String> = []) -> [String: Int] {
+    let kept = tokens.union(pendings.map(\.token))
+    return lastSeq.filter { kept.contains($0.key) }
   }
 
   func follows(_ file: URL) -> Bool {
@@ -122,8 +146,10 @@ public struct EditorLinkState: Equatable, Sendable {
     token = pending.token
     kind = pending.kind
     controlSocket = pending.controlSocket
-    self.pending = nil
-    lastSeq = lastSeq.filter { $0.key == pending.token }
+    if let index = pendings.firstIndex(where: { $0.token == pending.token }) {
+      pendings.removeFirst(index + 1)
+    }
+    lastSeq = keepingPendingSeqs([pending.token])
   }
 
   mutating func adoptPlain(block: String, kind: EditorKind) {
@@ -132,7 +158,7 @@ public struct EditorLinkState: Equatable, Sendable {
     token = nil
     controlSocket = nil
     followedFile = nil
-    lastSeq = lastSeq.filter { $0.key == pending?.token }
+    lastSeq = keepingPendingSeqs()
   }
 
   mutating func unlink() {
@@ -142,7 +168,7 @@ public struct EditorLinkState: Equatable, Sendable {
     controlSocket = nil
     followedFile = nil
     bufferToken = nil
-    lastSeq = lastSeq.filter { $0.key == pending?.token }
+    lastSeq = keepingPendingSeqs()
   }
 }
 
@@ -265,7 +291,9 @@ public final class EditorCoordinator {
   // MARK: Plugin messages and link state
 
   func accept(_ message: EditorMessage, shownFile: URL?) -> Bool {
+    let current = link.token
     let accepted = link.accept(message, shownFile: shownFile)
+    if link.token != current, let block = link.block { watches?.start(block) }
     if accepted, case .buffer(let envelope, _) = message { link.bufferToken = envelope.token }
     if accepted, case .clean = message { link.bufferToken = nil }
     return accepted
@@ -277,40 +305,38 @@ public final class EditorCoordinator {
   }
 
   func unlinked(token: String) -> Bool {
-    if token == link.pending?.token {
+    if link.pending(for: token) != nil {
       discardPending(token)
       return false
     }
     guard token == link.token else { return false }
-    if let block = link.block { watches?.stop(block) }
+    if let block = link.block, !link.pendings.contains(where: { $0.block == block }) { watches?.stop(block) }
     link.unlink()
     return true
   }
 
   func exited(token: String) {
     if token == link.token, let block = link.block { return blockEnded(block) }
-    guard let pending = link.pending, pending.token == token else { return }
+    guard let pending = link.pending(for: token) else { return }
     if let block = pending.block { return blockEnded(block) }
     discardPending(token)
     host?.editorEnded(status: Self.closedMessage)
   }
 
   func recordPending(_ pending: EditorLinkState.Pending) {
-    link.pending = pending
-    link.lastSeq[pending.token] = nil
+    link.record(pending)
   }
 
   func discardPending(_ token: String) {
-    guard link.pending?.token == token else { return }
-    link.pending = nil
-    link.lastSeq[token] = nil
+    guard link.pending(for: token) != nil else { return }
+    link.discard(token)
     guard link.bufferToken == token else { return }
     link.bufferToken = nil
     host?.dropLiveBuffer()
   }
 
   func attachPending(_ token: String, block: String) -> Bool {
-    guard let pending = link.pending, pending.token == token else { return false }
+    guard let pending = link.pending(for: token) else { return false }
     link.adopt(pending, block: block)
     host?.editorLinkChanged()
     return true
@@ -327,14 +353,14 @@ public final class EditorCoordinator {
   }
 
   func isLinked(to block: String) -> Bool {
-    block == link.block || block == link.pending?.block
+    block == link.block || link.pendings.contains { $0.block == block }
   }
 
   func blockEnded(_ block: String) {
     watches?.stop(block)
     queue.async { [work] in work.remove(block: block) }
     guard isLinked(to: block) else { return }
-    if let pending = link.pending, pending.block == block { discardPending(pending.token) }
+    for pending in link.pendings where pending.block == block { discardPending(pending.token) }
     guard block == link.block || link.block == nil else { return }
     link.unlink()
     host?.editorEnded(status: Self.closedMessage)
