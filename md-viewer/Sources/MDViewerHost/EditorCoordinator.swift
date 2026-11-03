@@ -83,6 +83,9 @@ public struct EditorLinkState: Equatable, Sendable {
     guard let envelope = message.envelope else { return true }
     guard envelope.token == token || envelope.token == pending?.token else { return false }
     if let last = lastSeq[envelope.token], envelope.seq <= last { return false }
+    if let pending, pending.token == envelope.token, let block = pending.block, message.confirmsLink {
+      adopt(pending, block: block)
+    }
     lastSeq[envelope.token] = envelope.seq
     switch message {
     case .cursor, .buffer, .clean:
@@ -99,6 +102,15 @@ public struct EditorLinkState: Equatable, Sendable {
     if token == self.token { return block }
     if token == pending?.token { return pending?.block }
     return nil
+  }
+
+  var jumpTargets: [(token: String, controlSocket: String)] {
+    var targets: [(token: String, controlSocket: String)] = []
+    if let token, let controlSocket { targets.append((token, controlSocket)) }
+    if let pending, pending.block != nil, let controlSocket = pending.controlSocket {
+      targets.append((pending.token, controlSocket))
+    }
+    return targets
   }
 
   func follows(_ file: URL) -> Bool {
@@ -131,6 +143,15 @@ public struct EditorLinkState: Equatable, Sendable {
     followedFile = nil
     bufferToken = nil
     lastSeq = lastSeq.filter { $0.key == pending?.token }
+  }
+}
+
+extension EditorMessage {
+  fileprivate var confirmsLink: Bool {
+    switch self {
+    case .cursor, .buffer, .clean, .follow: true
+    case .unlinked, .exit, .edit: false
+    }
   }
 }
 
@@ -217,9 +238,14 @@ public final class EditorCoordinator {
   }
 
   public func jump(line: Int) {
-    guard let token = link.token, let control = link.controlSocket else { return }
+    let targets = link.jumpTargets
+    guard !targets.isEmpty else { return }
     let send = work.system.sendControl
-    queue.async { _ = send(.jump(token: token, line: line), URL(fileURLWithPath: control)) }
+    queue.async {
+      for target in targets {
+        _ = send(.jump(token: target.token, line: line), URL(fileURLWithPath: target.controlSocket))
+      }
+    }
   }
 
   public func refreshEnvironment() {
@@ -308,8 +334,9 @@ public final class EditorCoordinator {
     watches?.stop(block)
     queue.async { [work] in work.remove(block: block) }
     guard isLinked(to: block) else { return }
+    if let pending = link.pending, pending.block == block { discardPending(pending.token) }
+    guard block == link.block || link.block == nil else { return }
     link.unlink()
-    link.pending = nil
     host?.editorEnded(status: Self.closedMessage)
   }
 
@@ -457,7 +484,7 @@ public final class EditorCoordinator {
     work.setPreview(block: block, under: lock)
     if focusAfter { work.focus(block) }
     return Outcome { coordinator in
-      guard coordinator.attachPending(token, block: block) else { return }
+      guard coordinator.link.block(owning: token) == block else { return }
       coordinator.watch(block)
       coordinator.host?.showEditorStatus(EditorCoordinator.focusedMessage, kind: .info)
     }

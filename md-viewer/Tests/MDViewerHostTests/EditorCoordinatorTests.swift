@@ -119,7 +119,11 @@ final class EditorCoordinatorTests: XCTestCase {
     fixture.press()
     fixture.waitIdle()
     XCTAssertEqual(seen.values, ["token-1", "token-2", "token-2"])
+    XCTAssertEqual(coordinator.link.token, "token-1")
+    XCTAssertEqual(coordinator.link.pending?.token, "token-2")
+    fixture.host.receiveEditor(.follow(fixture.envelope("token-2", 1)))
     XCTAssertEqual(coordinator.link.token, "token-2")
+    XCTAssertNil(coordinator.link.pending)
   }
 
   func testAnExistingNeovimGetsASingleLink() throws {
@@ -143,10 +147,13 @@ final class EditorCoordinatorTests: XCTestCase {
         ["focus", "block:nvim", "-s", EditorFixture.session],
       ])
     XCTAssertEqual(fixture.registry.entry(block: "block:nvim")?.preview, EditorFixture.previewBlock)
-    XCTAssertEqual(fixture.coordinator.link.block, "block:nvim")
-    XCTAssertEqual(fixture.coordinator.link.token, "token-1")
+    XCTAssertNil(fixture.coordinator.link.token, "the link waits for the plugin to adopt the token")
+    XCTAssertEqual(fixture.coordinator.link.pending?.block, "block:nvim")
     XCTAssertEqual(fixture.coordinator.watchedBlocks, ["block:nvim"])
     XCTAssertEqual(fixture.status, "Focused the editor")
+    fixture.host.receiveEditor(.follow(fixture.envelope("token-1", 1)))
+    XCTAssertEqual(fixture.coordinator.link.block, "block:nvim")
+    XCTAssertEqual(fixture.coordinator.link.token, "token-1")
   }
 
   func testAnExistingOtherEditorIsFocusedAndWatchedWithoutAToken() throws {
@@ -248,7 +255,7 @@ final class EditorCoordinatorTests: XCTestCase {
     fixture.press(.alternate)
     fixture.waitIdle()
     XCTAssertTrue(fixture.handoffs.isEmpty)
-    XCTAssertEqual(fixture.coordinator.link.block, "block:nvim")
+    XCTAssertEqual(fixture.coordinator.link.pending?.block, "block:nvim")
     XCTAssertEqual(fixture.status, "Focused the editor")
 
     let other = fixture.hostFixture.directory.url.appendingPathComponent("other.md")

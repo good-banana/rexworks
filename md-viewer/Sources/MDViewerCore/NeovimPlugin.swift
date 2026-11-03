@@ -28,6 +28,7 @@ public enum NeovimPlugin {
     local CURSOR_DEBOUNCE_MS = 50
     local TEXT_DEBOUNCE_MS = 150
     local WATCH_DEBOUNCE_MS = 200
+    local PROMPT_RETRY_MS = 50
     local FILE_MODE = 384
     local DIRECTORY_MODE = 448
 
@@ -63,6 +64,10 @@ public enum NeovimPlugin {
     local last_file = nil
     local temp_counter = 0
     local cursor_timer = uv.new_timer()
+    local commands = {}
+    local command_timer = uv.new_timer()
+    local running_command = false
+    local awaiting_cmdline = false
 
     local function restart(timer, ms, work)
       timer:stop()
@@ -296,20 +301,6 @@ public enum NeovimPlugin {
       remove_buffer_file(buf)
     end
 
-    local function after_cmdline(task)
-      local function work()
-        if api.nvim_get_mode().mode == 'c' then
-          api.nvim_create_autocmd('CmdlineLeave', {
-            once = true,
-            callback = function() vim.schedule(work) end,
-          })
-          return
-        end
-        task()
-      end
-      return work
-    end
-
     local function place_cursor(win, buf, line)
       local target = math.max(1, math.min(line, api.nvim_buf_line_count(buf)))
       api.nvim_win_set_cursor(win, { target, 0 })
@@ -323,13 +314,14 @@ public enum NeovimPlugin {
       local previous = api.nvim_get_current_buf()
       local target
       linking = true
-      local ok = pcall(function()
+      local ok, err = pcall(function()
         vim.cmd.drop(vim.fn.fnameescape(command.file))
         target = api.nvim_get_current_buf()
         place_cursor(api.nvim_get_current_win(), target, command.line)
       end)
       linking = false
       if not ok then
+        vim.notify('md-viewer: could not link the preview: ' .. tostring(err), vim.log.levels.WARN)
         local current = api.nvim_get_current_buf()
         if current ~= previous then snapshot(current) end
         return
@@ -354,6 +346,37 @@ public enum NeovimPlugin {
       pcall(place_cursor, win, buf, command.line)
     end
 
+    local function waits_for_input(mode)
+      return vim.v.vim_did_enter ~= 1 or mode:sub(1, 1) == 'r'
+    end
+
+    local function run_commands()
+      if running_command then return end
+      while commands[1] do
+        local mode = api.nvim_get_mode().mode
+        if mode == 'c' then
+          if awaiting_cmdline then return end
+          awaiting_cmdline = true
+          api.nvim_create_autocmd('CmdlineLeave', {
+            once = true,
+            callback = function()
+              awaiting_cmdline = false
+              vim.schedule(run_commands)
+            end,
+          })
+          return
+        end
+        if waits_for_input(mode) then
+          restart(command_timer, PROMPT_RETRY_MS, run_commands)
+          return
+        end
+        local command = table.remove(commands, 1)
+        running_command = true
+        pcall(command.type == 'link' and run_link or run_jump, command)
+        running_command = false
+      end
+    end
+
     local function is_line_number(value)
       return value ~= vim.NIL and type(value) == 'number' and value >= 1 and value % 1 == 0
     end
@@ -374,8 +397,8 @@ public enum NeovimPlugin {
     local function handle_line(line)
       local command = decode_command(line)
       if not command then return end
-      local task = command.type == 'link' and run_link or run_jump
-      vim.schedule(after_cmdline(function() task(command) end))
+      commands[#commands + 1] = command
+      vim.schedule(run_commands)
     end
 
     local function accept(server)

@@ -143,7 +143,7 @@ final class NeovimPluginTests: XCTestCase {
     XCTAssertTrue(
       lineNumber.contains("value ~= vim.NIL and type(value) == 'number' and value >= 1 and value % 1 == 0"))
     let handle = try body(of: "local function handle_line(line)")
-    XCTAssertTrue(handle.contains("vim.schedule(after_cmdline(function() task(command) end))"))
+    XCTAssertTrue(handle.contains("commands[#commands + 1] = command\n  vim.schedule(run_commands)"))
   }
 
   func testClampsLines() throws {
@@ -154,28 +154,57 @@ final class NeovimPluginTests: XCTestCase {
 
   func testLinkAndJumpWorkRunInsidePcall() throws {
     let link = try body(of: "local function run_link(command)")
-    XCTAssertTrue(link.contains("local ok = pcall(function()"))
+    XCTAssertTrue(link.contains("local ok, err = pcall(function()"))
     XCTAssertTrue(link.contains("vim.cmd.drop(vim.fn.fnameescape(command.file))"))
     let jump = try body(of: "local function run_jump(command)")
     XCTAssertTrue(jump.contains("pcall(place_cursor, win, buf, command.line)"))
+    let run = try body(of: "local function run_commands()")
+    XCTAssertTrue(
+      run.contains(
+        """
+            running_command = true
+            pcall(command.type == 'link' and run_link or run_jump, command)
+            running_command = false
+        """))
   }
 
-  func testCommandLineModeReschedulesOnlyThroughVimSchedule() throws {
-    let deferred = try body(of: "local function after_cmdline(task)")
+  func testAFailedLinkIsReportedInNeovim() throws {
+    let link = try body(of: "local function run_link(command)")
     XCTAssertTrue(
-      deferred.contains(
+      link.contains(
         """
-          local function work()
-            if api.nvim_get_mode().mode == 'c' then
+          if not ok then
+            vim.notify('md-viewer: could not link the preview: ' .. tostring(err), vim.log.levels.WARN)
+        """))
+  }
+
+  func testCommandsRunInOrderOnlyAfterStartupPromptsAndCommandLineMode() throws {
+    let run = try body(of: "local function run_commands()")
+    XCTAssertTrue(run.hasPrefix("local function run_commands()\n  if running_command then return end\n"))
+    XCTAssertTrue(
+      run.contains(
+        """
+            if mode == 'c' then
+              if awaiting_cmdline then return end
+              awaiting_cmdline = true
               api.nvim_create_autocmd('CmdlineLeave', {
                 once = true,
-                callback = function() vim.schedule(work) end,
+                callback = function()
+                  awaiting_cmdline = false
+                  vim.schedule(run_commands)
+                end,
               })
               return
             end
-            task()
-          end
+            if waits_for_input(mode) then
+              restart(command_timer, PROMPT_RETRY_MS, run_commands)
+              return
+            end
+            local command = table.remove(commands, 1)
         """))
+    let waits = try body(of: "local function waits_for_input(mode)")
+    XCTAssertTrue(waits.contains("return vim.v.vim_did_enter ~= 1 or mode:sub(1, 1) == 'r'"))
+    assertContains("local PROMPT_RETRY_MS = 50")
   }
 
   func testLinkAdoptsTokenOnlyAfterSuccess() throws {

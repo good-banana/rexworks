@@ -178,13 +178,16 @@ final class EditorHostTests: XCTestCase {
     fixture.host.open(other)
     fixture.press()
     fixture.waitIdle()
-    let second = try XCTUnwrap(fixture.coordinator.link.token)
+    let second = try XCTUnwrap(fixture.coordinator.link.pending?.token)
     XCTAssertNotEqual(second, first)
+    XCTAssertEqual(fixture.coordinator.link.block, "block:nvim1", "nvim2 has not adopted the token yet")
+    fixture.host.receiveEditor(.follow(fixture.envelope(second, 1, file: other)))
+    XCTAssertEqual(fixture.coordinator.link.token, second)
     XCTAssertEqual(fixture.coordinator.link.block, "block:nvim2")
 
     fixture.host.receiveEditor(.cursor(fixture.envelope(first, 3, file: other), line: 1, top: 1, height: 20))
     XCTAssertNil(fixture.host.interaction.editorCursor, "nvim1 is no longer linked")
-    fixture.host.receiveEditor(.cursor(fixture.envelope(second, 1, file: other), line: 1, top: 1, height: 20))
+    fixture.host.receiveEditor(.cursor(fixture.envelope(second, 2, file: other), line: 1, top: 1, height: 20))
     XCTAssertEqual(fixture.host.interaction.editorCursor?.line, 1)
 
     try XCTUnwrap(fixture.waits.running("block:nvim1")).finished(try rexFixture("rex-wait-exited.json"))
@@ -193,6 +196,106 @@ final class EditorHostTests: XCTestCase {
     XCTAssertNotNil(fixture.registry.entry(block: "block:nvim2"))
     XCTAssertEqual(fixture.coordinator.link.block, "block:nvim2")
     XCTAssertNotEqual(fixture.status, "Editor closed")
+  }
+
+  func testARelinkKeepsTheCurrentTokenUntilThePluginAdoptsTheNewOne() throws {
+    let fixture = try EditorFixture()
+    let first = fixture.launchNeovim()
+    let control = try XCTUnwrap(fixture.coordinator.link.controlSocket)
+    fixture.press(line: 7)
+    fixture.waitIdle()
+    let second = try XCTUnwrap(fixture.coordinator.link.pending?.token)
+    XCTAssertEqual(fixture.coordinator.link.token, first)
+    XCTAssertEqual(fixture.status, "Focused the editor")
+
+    fixture.host.receiveEditor(.follow(fixture.envelope(first, 1)))
+    fixture.host.receiveEditor(.cursor(fixture.envelope(first, 2), line: 3, top: 1, height: 20))
+    XCTAssertEqual(fixture.host.interaction.editorCursor?.line, 3, "the old token is heard while Neovim waits")
+
+    var sent = fixture.control.commands.count
+    fixture.host.perform(.jumpEditor(line: 12))
+    spin(until: { fixture.control.commands.count == sent + 2 })
+    XCTAssertEqual(
+      fixture.control.commands.dropFirst(sent), [.jump(token: first, line: 12), .jump(token: second, line: 12)])
+    XCTAssertEqual(
+      fixture.control.sockets.dropFirst(sent), [URL(fileURLWithPath: control), URL(fileURLWithPath: control)])
+
+    fixture.host.receiveEditor(.follow(fixture.envelope(second, 1)))
+    XCTAssertEqual(fixture.coordinator.link.token, second)
+    XCTAssertNil(fixture.coordinator.link.pending)
+    fixture.host.receiveEditor(.cursor(fixture.envelope(first, 3), line: 5, top: 1, height: 20))
+    XCTAssertNil(fixture.host.interaction.editorCursor, "the old token is dropped once adopted")
+
+    sent = fixture.control.commands.count
+    fixture.host.perform(.jumpEditor(line: 14))
+    spin(until: { fixture.control.commands.count > sent })
+    spin(0.05)
+    XCTAssertEqual(fixture.control.commands.dropFirst(sent), [.jump(token: second, line: 14)])
+  }
+
+  func testARelinkThePluginNeverAdoptsLeavesBothSidesOnTheOldToken() throws {
+    let fixture = try EditorFixture()
+    let first = fixture.launchNeovim()
+    fixture.host.receiveEditor(.follow(fixture.envelope(first, 1)))
+    fixture.press()
+    fixture.waitIdle()
+    let second = try XCTUnwrap(fixture.coordinator.link.pending?.token)
+
+    fixture.host.receiveEditor(.clean(fixture.envelope(first, 2)))
+    fixture.host.receiveEditor(.cursor(fixture.envelope(first, 3), line: 4, top: 1, height: 20))
+    XCTAssertEqual(fixture.coordinator.link.token, first)
+    XCTAssertEqual(fixture.coordinator.link.pending?.token, second)
+    XCTAssertEqual(fixture.host.interaction.editorCursor?.line, 4)
+    XCTAssertEqual(fixture.host.interaction.editorLink?.followsShownFile, true)
+
+    fixture.press()
+    fixture.waitIdle()
+    let third = try XCTUnwrap(fixture.coordinator.link.pending?.token)
+    XCTAssertNotEqual(third, second)
+    XCTAssertEqual(fixture.coordinator.link.token, first)
+    let sent = fixture.control.commands.count
+    fixture.host.perform(.jumpEditor(line: 9))
+    spin(until: { fixture.control.commands.count == sent + 2 })
+    XCTAssertEqual(
+      fixture.control.commands.dropFirst(sent), [.jump(token: first, line: 9), .jump(token: third, line: 9)])
+  }
+
+  func testTheEndOfANeovimThatNeverAdoptedTheRelinkKeepsTheCurrentLink() throws {
+    let fixture = try EditorFixture(files: ["other.md": "# Other\n"])
+    let other = fixture.hostFixture.directory.url.appendingPathComponent("other.md")
+    let first = fixture.launchNeovim()
+    try fixture.write(fixture.neovimEntry(block: "block:nvim2", files: [other]))
+    fixture.host.open(other)
+    fixture.press()
+    fixture.waitIdle()
+    XCTAssertEqual(fixture.coordinator.link.pending?.block, "block:nvim2")
+
+    try XCTUnwrap(fixture.waits.running("block:nvim2")).finished(try rexFixture("rex-wait-exited.json"))
+    spin(until: { fixture.registry.entry(block: "block:nvim2") == nil })
+    XCTAssertNil(fixture.coordinator.link.pending)
+    XCTAssertEqual(fixture.coordinator.link.token, first)
+    XCTAssertEqual(fixture.coordinator.link.block, EditorFixture.launchedBlock)
+    XCTAssertNotEqual(fixture.status, "Editor closed")
+  }
+
+  func testTheEndOfTheCurrentNeovimKeepsARelinkToAnotherInFlight() throws {
+    let fixture = try EditorFixture(files: ["other.md": "# Other\n"])
+    let other = fixture.hostFixture.directory.url.appendingPathComponent("other.md")
+    fixture.launchNeovim()
+    try fixture.write(fixture.neovimEntry(block: "block:nvim2", files: [other]))
+    fixture.host.open(other)
+    fixture.press()
+    fixture.waitIdle()
+    let second = try XCTUnwrap(fixture.coordinator.link.pending?.token)
+
+    try XCTUnwrap(fixture.waits.running(EditorFixture.launchedBlock)).finished(try rexFixture("rex-wait-exited.json"))
+    spin(until: { fixture.coordinator.link.block == nil })
+    XCTAssertEqual(fixture.status, "Editor closed")
+    XCTAssertEqual(fixture.coordinator.link.pending?.token, second)
+
+    fixture.host.receiveEditor(.follow(fixture.envelope(second, 1, file: other)))
+    XCTAssertEqual(fixture.coordinator.link.block, "block:nvim2")
+    XCTAssertEqual(fixture.coordinator.link.token, second)
   }
 
   func testTheEndOfTheLinkedBlockClearsTheLinkAndThePreviewStaysOpen() throws {
