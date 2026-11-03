@@ -86,7 +86,7 @@ public final class ViewerControl {
   }
 
   private func receive(_ event: ViewerControlEvent) {
-    if host == nil || isHolding {
+    if host == nil || isHolding || !pending.isEmpty {
       if event == .theme, pending.last == .theme { return }
       pending.append(event)
     } else {
@@ -95,10 +95,7 @@ public final class ViewerControl {
   }
 
   private func flush() {
-    guard host != nil else { return }
-    let events = pending
-    pending = []
-    for event in events { deliver(event) }
+    while host != nil, !isHolding, !pending.isEmpty { deliver(pending.removeFirst()) }
   }
 
   private func deliver(_ event: ViewerControlEvent) {

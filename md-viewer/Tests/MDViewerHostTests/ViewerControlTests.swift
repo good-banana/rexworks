@@ -197,4 +197,64 @@ final class ViewerControlTests: XCTestCase {
     XCTAssertEqual(
       control.pending, [.editor(.edit(mode: .configured, line: 3)), .editor(.edit(mode: .alternate, line: 8))])
   }
+
+  func testAHoldStartedMidFlushKeepsTheRestQueuedInOrder() throws {
+    let fixture = try HostFixture("# Main", start: false)
+    let control = ViewerControl()
+    let first = EditorMessage.edit(mode: .alternate, line: 1)
+    let second = EditorMessage.edit(mode: .configured, line: 2)
+    let third = EditorMessage.edit(mode: .configured, line: 3)
+    var log: [EditorMessage] = []
+    control.onEditorMessage = {
+      log.append($0)
+      if $0 == first { control.beginHold(token: "h") }
+    }
+    for message in [first, second, third] { control.receive(editor: message) }
+    fixture.host.start(file: fixture.file, windowSize: testPaneSize)
+    control.attach(fixture.host)
+    XCTAssertEqual(log, [first])
+    XCTAssertEqual(control.pending, [.editor(second), .editor(third)])
+    XCTAssertTrue(control.isHolding)
+    control.endHold()
+    XCTAssertEqual(log, [first, second, third])
+  }
+
+  func testAnEditReplayedByReleaseCanStartANewHold() throws {
+    let fixture = try HostFixture("# Main", start: false)
+    fixture.host.start(file: fixture.file, windowSize: testPaneSize)
+    let control = ViewerControl()
+    control.attach(fixture.host)
+    let first = EditorMessage.edit(mode: .alternate, line: 1)
+    let second = EditorMessage.edit(mode: .configured, line: 2)
+    var log: [EditorMessage] = []
+    control.onEditorMessage = {
+      log.append($0)
+      if $0 == first { control.beginHold(token: "next") }
+    }
+    control.beginHold(token: "h")
+    control.receive(editor: first)
+    control.receive(editor: second)
+    control.endHold()
+    XCTAssertEqual(log, [first])
+    XCTAssertEqual(control.pending, [.editor(second)])
+    XCTAssertTrue(control.isHolding)
+    control.endHold()
+    XCTAssertEqual(log, [first, second])
+  }
+
+  func testMessagesReceivedDuringADeliveryStayBehindTheQueuedRest() throws {
+    let fixture = try HostFixture("# Main", start: false)
+    let control = ViewerControl()
+    let messages = (1...3).map { EditorMessage.edit(mode: .configured, line: $0) }
+    let late = EditorMessage.edit(mode: .alternate, line: 9)
+    var log: [EditorMessage] = []
+    control.onEditorMessage = {
+      log.append($0)
+      if $0 == messages[0] { control.receive(editor: late) }
+    }
+    for message in messages { control.receive(editor: message) }
+    fixture.host.start(file: fixture.file, windowSize: testPaneSize)
+    control.attach(fixture.host)
+    XCTAssertEqual(log, messages + [late])
+  }
 }
