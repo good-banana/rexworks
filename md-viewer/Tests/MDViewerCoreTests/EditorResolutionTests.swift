@@ -53,10 +53,37 @@ final class EditorResolutionTests: XCTestCase {
     XCTAssertNil(ShellWords.split("nvim \\"))
   }
 
+  func testShellWordsKeepBackslashesInDoubleQuotesUnlessTheyEscape() {
+    XCTAssertEqual(ShellWords.split(#""C:\temp\new" x"#), [#"C:\temp\new"#, "x"])
+    XCTAssertEqual(ShellWords.split(#""a\$b\`c\"d\\e""#), [#"a$b`c"d\e"#])
+    XCTAssertEqual(ShellWords.split(#""\'""#), [#"\'"#])
+    XCTAssertEqual(ShellWords.split(#"a\b"#), ["ab"])
+  }
+
+  func testShellWordsTreatBackslashNewlineAsContinuation() {
+    XCTAssertEqual(ShellWords.split("nvim \\\n-u x"), ["nvim", "-u", "x"])
+    XCTAssertEqual(ShellWords.split("ab\\\ncd"), ["abcd"])
+    XCTAssertEqual(ShellWords.split("\"ab\\\ncd\""), ["abcd"])
+  }
+
+  func testShellWordsTreatCRLFAsWhitespace() {
+    XCTAssertEqual(ShellWords.split("nvim\r\n-u\r\nx\r\n"), ["nvim", "-u", "x"])
+  }
+
   func testEnvParsingDropsStartupNoiseFromFirstRecord() {
     let output = "Last login: today\nwelcome\nEDITOR=nvim\0PATH=/a:/b\0"
     XCTAssertEqual(
       LoginEnvironment.parse(Data(output.utf8)), ["EDITOR": "nvim", "PATH": "/a:/b"])
+  }
+
+  func testEnvParsingDropsCRLFStartupNoise() {
+    let output = "Last login: today\r\nwelcome\r\nEDITOR=nvim\0PATH=/a\0"
+    XCTAssertEqual(LoginEnvironment.parse(Data(output.utf8)), ["EDITOR": "nvim", "PATH": "/a"])
+  }
+
+  func testEnvParsingSplitsOnTheFirstEqualsByteEvenBeforeACombiningMark() {
+    let output = "A=\u{301}x\0"
+    XCTAssertEqual(LoginEnvironment.parse(Data(output.utf8)), ["A": "\u{301}x"])
   }
 
   func testEnvParsingKeepsValuesWithNewlines() {
@@ -142,6 +169,35 @@ final class EditorResolutionTests: XCTestCase {
       settings: settings(editor: "./bin/nvim"), ownEnvironment: [:],
       loginEnvironment: { LoginEnvironment(variables: [:]) }, isExecutable: { _ in true })
     XCTAssertEqual(relative.resolve().outcome, .stopped("editor setting: ./bin/nvim not found; , to choose"))
+  }
+
+  func testAbsoluteEditorPathsSkipTheLoginProbe() throws {
+    final class Count: @unchecked Sendable { var probes = 0 }
+    let count = Count()
+    func resolver(_ settings: Settings, own: [String: String]) -> EditorResolver {
+      EditorResolver(
+        settings: settings, ownEnvironment: own,
+        loginEnvironment: {
+          count.probes += 1
+          return LoginEnvironment(variables: ["PATH": "/login/bin", "VISUAL": "nvim"])
+        },
+        isExecutable: { [installed] in installed.contains($0) })
+    }
+    XCTAssertEqual(
+      try XCTUnwrap(resolved(resolver(settings(editor: "/abs/custom-editor -x"), own: [:]).resolve())).executable,
+      "/abs/custom-editor")
+    XCTAssertEqual(
+      try XCTUnwrap(resolved(resolver(Settings(), own: ["VISUAL": "/usr/bin/vim"]).resolve())).executable,
+      "/usr/bin/vim")
+    XCTAssertEqual(count.probes, 0)
+
+    XCTAssertEqual(
+      try XCTUnwrap(resolved(resolver(settings(editor: "hx"), own: [:]).resolve())).executable, "/login/bin/hx")
+    XCTAssertEqual(count.probes, 1)
+    XCTAssertEqual(
+      try XCTUnwrap(resolved(resolver(Settings(), own: ["VISUAL": "/missing/editor"]).resolve())).executable,
+      "/login/bin/nvim")
+    XCTAssertEqual(count.probes, 2)
   }
 
   func testVisualBeforeEditorInOwnEnvironment() throws {

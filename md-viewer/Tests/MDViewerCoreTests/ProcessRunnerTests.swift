@@ -58,11 +58,19 @@ final class ProcessRunnerTests: XCTestCase {
   }
 
   func testNoReaderThreadStaysBlockedAcrossManyCalls() throws {
-    let baseline = try threadCount()
+    let threads = try threadCount()
+    let descriptors = openDescriptorCount()
+    let started = Date()
     for _ in 0..<15 {
       _ = try ProcessRunner().run("/bin/sh", ["-c", "echo x; sleep 2 & exit 0"])
     }
-    XCTAssertLessThan(try threadCount(), baseline + 10)
+    XCTAssertLessThan(Date().timeIntervalSince(started), 10)
+    XCTAssertLessThanOrEqual(openDescriptorCount(), descriptors)
+    XCTAssertLessThanOrEqual(try threadCount(), threads + 2)
+  }
+
+  private func openDescriptorCount() -> Int {
+    (0..<Int32(getdtablesize())).filter { fcntl($0, F_GETFD) != -1 }.count
   }
 
   private func threadCount() throws -> Int {

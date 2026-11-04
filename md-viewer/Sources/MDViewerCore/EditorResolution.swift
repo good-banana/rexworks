@@ -27,20 +27,20 @@ public struct LoginEnvironment: Equatable, Sendable {
 
   public static func parse(_ data: Data) -> [String: String] {
     var variables: [String: String] = [:]
-    var records = data.split(separator: 0, omittingEmptySubsequences: false).map {
-      String(decoding: $0, as: UTF8.self)
-    }
-    if let first = records.first, let newline = first.lastIndex(of: "\n") {
-      records[0] = String(first[first.index(after: newline)...])
+    var records = data.split(separator: 0, omittingEmptySubsequences: false)
+    if let first = records.first, let newline = first.lastIndex(of: UInt8(ascii: "\n")) {
+      records[0] = first[first.index(after: newline)...]
     }
     for record in records {
-      guard let equals = record.firstIndex(of: "="), isVariableName(record[..<equals]) else { continue }
-      variables[String(record[..<equals])] = String(record[record.index(after: equals)...])
+      guard let equals = record.firstIndex(of: UInt8(ascii: "=")) else { continue }
+      let name = String(decoding: record[..<equals], as: UTF8.self)
+      guard isVariableName(name) else { continue }
+      variables[name] = String(decoding: record[record.index(after: equals)...], as: UTF8.self)
     }
     return variables
   }
 
-  private static func isVariableName(_ name: Substring) -> Bool {
+  private static func isVariableName(_ name: String) -> Bool {
     guard let first = name.unicodeScalars.first, first == "_" || isASCIILetter(first) else { return false }
     return name.unicodeScalars.allSatisfy { $0 == "_" || isASCIILetter($0) || ("0"..."9").contains($0) }
   }
@@ -51,37 +51,42 @@ public struct LoginEnvironment: Equatable, Sendable {
 }
 
 public enum ShellWords {
+  private static let whitespace: Set<Unicode.Scalar> = [" ", "\t", "\n", "\r"]
+  private static let escapableInDoubleQuotes: Set<Unicode.Scalar> = ["$", "`", "\"", "\\", "\n"]
+
   public static func split(_ text: String) -> [String]? {
     var words: [String] = []
-    var current = ""
+    var current = String.UnicodeScalarView()
     var inWord = false
-    var quote: Character?
+    var quote: Unicode.Scalar?
     var escaped = false
-    for character in text {
+    for scalar in text.unicodeScalars {
       if escaped {
-        current.append(character)
         escaped = false
+        if scalar == "\n" { continue }
+        if quote == "\"" && !escapableInDoubleQuotes.contains(scalar) { current.append("\\") }
+        current.append(scalar)
+        inWord = true
       } else if quote == "'" {
-        if character == "'" { quote = nil } else { current.append(character) }
-      } else if character == "\\" {
+        if scalar == "'" { quote = nil } else { current.append(scalar) }
+      } else if scalar == "\\" {
         escaped = true
-        inWord = true
       } else if quote == "\"" {
-        if character == "\"" { quote = nil } else { current.append(character) }
-      } else if character == "'" || character == "\"" {
-        quote = character
+        if scalar == "\"" { quote = nil } else { current.append(scalar) }
+      } else if scalar == "'" || scalar == "\"" {
+        quote = scalar
         inWord = true
-      } else if character == " " || character == "\t" || character == "\n" {
-        if inWord { words.append(current) }
-        current = ""
+      } else if whitespace.contains(scalar) {
+        if inWord { words.append(String(current)) }
+        current = String.UnicodeScalarView()
         inWord = false
       } else {
-        current.append(character)
+        current.append(scalar)
         inWord = true
       }
     }
     if escaped || quote != nil { return nil }
-    if inWord { words.append(current) }
+    if inWord { words.append(String(current)) }
     return words
   }
 }
@@ -162,7 +167,7 @@ public struct EditorResolver {
     }
 
     if let setting = settings.editor {
-      if let editor = editor(from: setting, kind: settings.editorKind, source: .setting, login: loginValue()) {
+      if let editor = editor(from: setting, kind: settings.editorKind, source: .setting, login: loginValue) {
         return finish(.resolved(editor))
       }
       let name = ShellWords.split(setting)?.first ?? setting
@@ -171,13 +176,13 @@ public struct EditorResolver {
 
     for name in ["VISUAL", "EDITOR"] {
       let source = EditorSource.ownEnvironment(name)
-      if let editor = fromEnvironment(ownEnvironment, name, source, loginValue(), &skipped) {
+      if let editor = fromEnvironment(ownEnvironment, name, source, loginValue, &skipped) {
         return finish(.resolved(editor))
       }
     }
     for name in ["VISUAL", "EDITOR"] {
       let source = EditorSource.loginEnvironment(name)
-      if let editor = fromEnvironment(loginValue().variables, name, source, loginValue(), &skipped) {
+      if let editor = fromEnvironment(loginValue().variables, name, source, loginValue, &skipped) {
         return finish(.resolved(editor))
       }
     }
@@ -193,7 +198,7 @@ public struct EditorResolver {
   }
 
   private func fromEnvironment(
-    _ environment: [String: String], _ name: String, _ source: EditorSource, _ login: LoginEnvironment,
+    _ environment: [String: String], _ name: String, _ source: EditorSource, _ login: () -> LoginEnvironment,
     _ skipped: inout [String]
   ) -> ResolvedEditor? {
     guard let value = environment[name], !value.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
@@ -205,7 +210,7 @@ public struct EditorResolver {
   }
 
   private func editor(
-    from value: String, kind: EditorKind?, source: EditorSource, login: LoginEnvironment
+    from value: String, kind: EditorKind?, source: EditorSource, login: () -> LoginEnvironment
   ) -> ResolvedEditor? {
     guard let words = ShellWords.split(value), let first = words.first,
       let executable = locate(first, login: login)
@@ -215,10 +220,10 @@ public struct EditorResolver {
       kind: kind ?? EditorProfile.detectKind(executable: first), source: source)
   }
 
-  private func locate(_ word: String, login: LoginEnvironment) -> String? {
+  private func locate(_ word: String, login: () -> LoginEnvironment) -> String? {
     if word.contains("/") { return word.hasPrefix("/") && isExecutable(word) ? word : nil }
     let directories =
-      Self.pathDirectories(login.variables["PATH"]) + Self.pathDirectories(ownEnvironment["PATH"])
+      Self.pathDirectories(login().variables["PATH"]) + Self.pathDirectories(ownEnvironment["PATH"])
     return directories.map { "\($0)/\(word)" }.first(where: isExecutable)
   }
 
