@@ -9,17 +9,20 @@ enum EditCommand {
     case .success(let edit):
       do {
         let paths = currentPaths()
-        let open = OpenArguments(file: edit.file)
-        guard let block = try OpenCommand.open(open, requiresBlock: true) else {
-          fail("could not find the preview block for \(edit.file)", status: 1)
-        }
+        let prepared = try OpenCommand.prepare(OpenArguments(file: edit.file))
         let mode = edit.requestMode(editMode: SettingsStore.load(paths).editMode)
-        let socket = paths.viewerSocket(block: block)
-        let delivered = deliverWithRetry {
-          ViewerSocketClient.sendEdit(mode: mode, line: edit.line, to: socket)
+        let delivery = try openAndDeliverEdit(
+          lock: paths.openLock, open: { try OpenCommand.open(prepared, requiresBlock: true) },
+          deliver: { block in
+            deliverWithRetry {
+              ViewerSocketClient.sendEdit(mode: mode, line: edit.line, to: paths.viewerSocket(block: block))
+            }
+          })
+        switch delivery {
+        case .noPreview: fail("could not find the preview block for \(edit.file)", status: 1)
+        case .unreachable: fail("could not reach the preview to start editing", status: 1)
+        case .delivered: exit(0)
         }
-        guard delivered else { fail("could not reach the preview to start editing", status: 1) }
-        exit(0)
       } catch {
         fail("\(error)", status: 1)
       }

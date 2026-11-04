@@ -443,6 +443,21 @@ public func deliverWithRetry(
   }
 }
 
+public enum EditDelivery: Equatable, Sendable {
+  case noPreview
+  case delivered
+  case unreachable
+}
+
+public func openAndDeliverEdit(
+  lock: URL, open: () throws -> String?, deliver: (String) -> Bool
+) rethrows -> EditDelivery {
+  try OpenLock.holding(lock) {
+    guard let block = try open() else { return .noPreview }
+    return deliver(block) ? .delivered : .unreachable
+  }
+}
+
 public let editUsage = "usage: md-viewer edit [--here] [--line N] <file>"
 
 public struct EditArguments: Equatable, Sendable {

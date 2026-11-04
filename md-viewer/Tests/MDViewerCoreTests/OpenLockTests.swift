@@ -73,4 +73,44 @@ final class OpenLockTests: XCTestCase {
     XCTAssertNil(OpenLock.acquire(url, timeout: 0))
     XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
   }
+
+  func testAnEditIsDeliveredBeforeAConcurrentOpenCanRetargetThePreview() throws {
+    let url = directory.appendingPathComponent("support/open.lock")
+    let events = Events()
+    let concurrent = DispatchGroup()
+    let delivery = openAndDeliverEdit(
+      lock: url,
+      open: {
+        events.record("open")
+        return "block:preview"
+      },
+      deliver: { block in
+        DispatchQueue.global().async(group: concurrent) {
+          let lock = OpenLock.acquire(url)
+          events.record("concurrent open")
+          lock?.release()
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        events.record("edit \(block)")
+        return true
+      })
+    XCTAssertEqual(concurrent.wait(timeout: .now() + 5), .success)
+    XCTAssertEqual(delivery, .delivered)
+    XCTAssertEqual(events.all, ["open", "edit block:preview", "concurrent open"])
+  }
+
+  func testAnEditWithoutAPreviewOrAnAnswerReportsWhy() {
+    let url = directory.appendingPathComponent("support/open.lock")
+    var delivered: [String] = []
+    let missing = openAndDeliverEdit(
+      lock: url, open: { nil },
+      deliver: {
+        delivered.append($0)
+        return true
+      })
+    XCTAssertEqual(missing, .noPreview)
+    XCTAssertEqual(delivered, [])
+    XCTAssertEqual(openAndDeliverEdit(lock: url, open: { "block:p" }, deliver: { _ in false }), .unreachable)
+    XCTAssertNotNil(OpenLock.acquire(url, timeout: 0), "the lock is released afterwards")
+  }
 }

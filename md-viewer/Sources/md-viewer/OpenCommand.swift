@@ -8,14 +8,27 @@ struct OpenFailure: Error, CustomStringConvertible {
 enum OpenCommand {
   static func run(_ arguments: OpenArguments) -> Never {
     do {
-      _ = try open(arguments, requiresBlock: false)
+      let prepared = try prepare(arguments)
+      _ = try OpenLock.holding(prepared.paths.openLock) { try open(prepared, requiresBlock: false) }
       exit(0)
     } catch {
       fail("\(error)", status: 1)
     }
   }
 
-  static func open(_ arguments: OpenArguments, requiresBlock: Bool) throws -> String? {
+  struct Prepared {
+    var arguments: OpenArguments
+    var file: URL
+    var runner: ProcessRunner
+    var paths: SupportPaths
+    var config: Config?
+    var rex: String
+    var mdViewer: String
+    var viewerIsCurrent: Bool
+    var target: PaneTarget
+  }
+
+  static func prepare(_ arguments: OpenArguments) throws -> Prepared {
     guard let file = validatedMarkdownFile(arguments.file) else {
       throw OpenFailure(description: "not a Markdown file: \(arguments.file)")
     }
@@ -30,9 +43,15 @@ enum OpenCommand {
       environment: ProcessInfo.processInfo.environment,
       inspectBlock: { try? rexJSON(runner, rex, ["block", "inspect", $0, "--json"]) },
       focusedTarget: { try focusedTarget(runner, rex) })
+    return Prepared(
+      arguments: arguments, file: file, runner: runner, paths: paths, config: config, rex: rex, mdViewer: mdViewer,
+      viewerIsCurrent: viewerIsCurrent, target: target)
+  }
 
-    let lock = OpenLock.acquire(paths.openLock)
-    defer { lock?.release() }
+  static func open(_ prepared: Prepared, requiresBlock: Bool) throws -> String? {
+    let (file, runner, paths, rex, target) = (
+      prepared.file, prepared.runner, prepared.paths, prepared.rex, prepared.target
+    )
     var previews: [PreviewPane] = []
     if let window = target.window {
       let blocks = try rexJSON(runner, rex, ["block", "ls", "-s", target.session, "--json"])
@@ -46,9 +65,11 @@ enum OpenCommand {
         blockListJSON: (try? rexJSON(runner, rex, ["block", "ls", "-s", target.session, "--json"])) ?? Data())
       : []
 
-    let origin = viewerIsCurrent ? ViewerOrigin(themeSourceBlock: target.block, opener: target.block) : ViewerOrigin()
+    let origin =
+      prepared.viewerIsCurrent ? ViewerOrigin(themeSourceBlock: target.block, opener: target.block) : ViewerOrigin()
     let outcome = resolveOpen(
-      target: target, file: file, previews: previews, policy: arguments.policy(config?.previewMode ?? .perFile)
+      target: target, file: file, previews: previews,
+      policy: prepared.arguments.policy(prepared.config?.previewMode ?? .perFile)
     ) { ViewerSocketClient.send(path: $1, to: paths.viewerSocket(block: $0)) }
     var runJSON: Data?
     switch outcome {
@@ -56,10 +77,11 @@ enum OpenCommand {
       break
     case .split(let placement):
       runJSON = try rexJSON(
-        runner, rex, splitArguments(placement: placement, file: file, mdViewer: mdViewer, origin: origin))
+        runner, rex,
+        splitArguments(placement: placement, file: file, mdViewer: prepared.mdViewer, origin: origin))
     case .newTab(let session):
       runJSON = try rexJSON(
-        runner, rex, tabArguments(session: session, file: file, mdViewer: mdViewer, origin: origin))
+        runner, rex, tabArguments(session: session, file: file, mdViewer: prepared.mdViewer, origin: origin))
     }
     guard requiresBlock else { return nil }
     return openedPreviewBlock(outcome: outcome, runJSON: runJSON, knownPreviews: knownPreviews) {

@@ -31,6 +31,12 @@ public final class OpenLock {
     return OpenLock(descriptor: descriptor)
   }
 
+  public static func holding<T>(_ url: URL, _ body: () throws -> T) rethrows -> T {
+    let lock = acquire(url)
+    defer { lock?.release() }
+    return try body()
+  }
+
   public func release() {
     guard descriptor >= 0 else { return }
     close(descriptor)
