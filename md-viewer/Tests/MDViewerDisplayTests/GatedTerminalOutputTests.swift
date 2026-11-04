@@ -1,3 +1,4 @@
+import MDViewerCore
 import XCTest
 
 @testable import MDViewerDisplay
@@ -45,8 +46,56 @@ final class GatedTerminalOutputTests: XCTestCase {
     ) { size, old in
       DisplayViewport(size: size, statusRows: old.statusRows, pageHeight: old.pageHeight, offset: old.offset)
     }
-    gate.closeGate()
     transport.pump(at: 0)
+    XCTAssertFalse(target.take().isEmpty, "an open gate passes the transport's frame through")
+    transport.handle(GraphicsResponse(id: transport.pacer.inFlight?.fence ?? 0, message: "OK"), at: 1)
+    gate.closeGate()
+    transport.invalidateAll()
+    transport.pump(at: 100 * ms)
     XCTAssertEqual(target.writes, [])
+  }
+
+  private final class BlockingOutput: TerminalOutput, @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var recorded: [String] = []
+
+    var writes: [String] { lock.withLock { recorded } }
+
+    func write(_ text: String) {
+      if text == "blocked" {
+        entered.signal()
+        release.wait()
+      }
+      lock.withLock { recorded.append(text) }
+    }
+  }
+
+  func testClosingAndOpeningNeverWaitOnABlockedWrite() {
+    let output = BlockingOutput()
+    let gate = GatedTerminalOutput(output)
+    let writer = DispatchGroup()
+    DispatchQueue.global().async(group: writer) { gate.write("blocked") }
+    XCTAssertEqual(output.entered.wait(timeout: .now() + 5), .success)
+
+    let toggled = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      gate.closeGate()
+      gate.openGate()
+      gate.closeGate()
+      toggled.signal()
+    }
+    let returned = toggled.wait(timeout: .now() + 2) == .success
+    XCTAssertTrue(returned, "the gate waited for the blocked write")
+
+    let bypass = DispatchGroup()
+    DispatchQueue.global().async(group: bypass) { gate.writeBypassingGate("restore") }
+    output.release.signal()
+    XCTAssertEqual(writer.wait(timeout: .now() + 5), .success)
+    XCTAssertEqual(bypass.wait(timeout: .now() + 5), .success)
+    if !returned { XCTAssertEqual(toggled.wait(timeout: .now() + 5), .success) }
+    gate.write("late")
+    XCTAssertEqual(output.writes, ["blocked", "restore"], "bypass writes queue behind the admitted write")
   }
 }

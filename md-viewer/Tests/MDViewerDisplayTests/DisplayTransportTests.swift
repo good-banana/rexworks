@@ -544,11 +544,13 @@ final class DisplayTransportTests: XCTestCase {
     events = []
     transport.handle(GraphicsResponse(id: fence, message: "OK"), at: 1 * ms)
     transport.handle(GraphicsResponse(id: 100, message: "ENOENT: gone"), at: 1 * ms)
+    transport.observe(paneSize(columns: 12, rows: 6, cellWidth: 10, cellHeight: 20), at: 2 * ms)
     transport.scroll(by: 400)
     transport.invalidateAll()
     transport.pump(at: 100 * ms)
     XCTAssertEqual(output.writes, [])
     XCTAssertEqual(events, [])
+    XCTAssertEqual(relayouts, [])
     XCTAssertNil(transport.nextWake(after: 100 * ms))
     XCTAssertTrue(transport.ledger.live.isEmpty)
   }
