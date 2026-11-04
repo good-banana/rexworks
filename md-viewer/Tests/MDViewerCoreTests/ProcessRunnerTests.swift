@@ -64,6 +64,8 @@ final class ProcessRunnerTests: XCTestCase {
       _ = try ProcessRunner().run("/bin/sh", ["-c", "echo x; sleep 2 & exit 0"])
     }
     XCTAssertLessThan(Date().timeIntervalSince(started), 10)
+    let deadline = Date().addingTimeInterval(1)
+    while openDescriptorCount() > descriptors, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
     XCTAssertLessThanOrEqual(openDescriptorCount(), descriptors, "a blocked reader keeps its pipe open")
   }
 
