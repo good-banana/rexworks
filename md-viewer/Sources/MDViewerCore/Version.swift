@@ -1,1 +1,1 @@
-public let mdViewerVersion = "0.2.1"
+public let mdViewerVersion = "0.3.0"
