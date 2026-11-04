@@ -120,7 +120,8 @@ final class NeovimPluginTests: XCTestCase {
     let markdown = try body(of: "local function is_markdown(buf)")
     XCTAssertTrue(markdown.contains("name:match('%.md$') ~= nil or name:match('%.markdown$') ~= nil"))
     XCTAssertTrue(try body(of: "local function realpath(buf)").contains("uv.fs_realpath(name)"))
-    XCTAssertTrue(try body(of: "local function send(kind, buf, extra)").contains("local file = realpath(buf)"))
+    let send = try body(of: "local function send(kind, buf, extra)")
+    XCTAssertTrue(send.contains("send_file(kind, realpath(buf), extra)"))
   }
 
   func testControlServerListensWithBacklogAndClosesOnLeave() throws {
@@ -193,7 +194,7 @@ final class NeovimPluginTests: XCTestCase {
     XCTAssertTrue(
       run.contains(
         """
-            if mode == 'c' then
+            if mode:sub(1, 1) == 'c' then
               if awaiting_cmdline then return end
               awaiting_cmdline = true
               api.nvim_create_autocmd('CmdlineLeave', {
@@ -219,7 +220,7 @@ final class NeovimPluginTests: XCTestCase {
   func testLinkAdoptsTokenOnlyAfterSuccess() throws {
     let link = try body(of: "local function run_link(command)")
     let failure = try XCTUnwrap(link.range(of: "if not ok then"))
-    let unlinked = try XCTUnwrap(link.range(of: "send('unlinked', target)"))
+    let unlinked = try XCTUnwrap(link.range(of: "send_file('unlinked', last_file or realpath(target))"))
     let adopt = try XCTUnwrap(link.range(of: "link.token = command.token"))
     let snapshot = try XCTUnwrap(link.range(of: "snapshot(target)"))
     XCTAssertLessThan(failure.lowerBound, unlinked.lowerBound)

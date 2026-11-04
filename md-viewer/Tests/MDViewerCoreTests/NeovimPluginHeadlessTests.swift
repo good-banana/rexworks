@@ -174,4 +174,32 @@ final class NeovimPluginHeadlessTests: XCTestCase {
     XCTAssertLessThan(saved, relinked, "clean goes out on BufWritePost, not after a debounce: \(received)")
     XCTAssertGreaterThan(saved, try XCTUnwrap(received.lastIndex(of: "A buffer a.md")))
   }
+
+  func testCommandsWaitOutExModeLikeTheCommandLine() throws {
+    let session = try start()
+    FileManager.default.createFile(atPath: session.marker.path, contents: nil)
+    wait("the VimEnter snapshot") { summary(session.inbox.messages).filter { $0 == "A follow a.md" }.count == 2 }
+    try remote(["--remote-send", "gQ"], session)
+    wait("Ex mode") { (try? remote(["--remote-expr", "mode(1)"], session)) == "cv" }
+    send(.link(socket: session.preview.path, token: "B", file: session.other.path, line: 1), session)
+    Thread.sleep(forTimeInterval: 0.5)
+    XCTAssertFalse(summary(session.inbox.messages).contains { $0.hasPrefix("B ") }, "\(session.inbox.messages)")
+    try remote(["--remote-send", "visual<CR>"], session)
+    wait("the relink") { summary(session.inbox.messages).contains("B follow b.md") }
+  }
+
+  func testUnlinkedReachesTheOldPreviewWhenTheNewTargetIsMissing() throws {
+    let session = try start()
+    let newInbox = Inbox()
+    let newPreview = session.directory.appendingPathComponent("q.sock")
+    let newServer = try ViewerSocketServer(
+      socket: newPreview, buffersDirectory: session.directory.appendingPathComponent("buffers"), onOpen: { _ in },
+      onEditor: { newInbox.add($0) })
+    defer { newServer.close() }
+    FileManager.default.createFile(atPath: session.marker.path, contents: nil)
+    wait("the VimEnter snapshot") { summary(session.inbox.messages).filter { $0 == "A follow a.md" }.count == 2 }
+    let missing = session.directory.appendingPathComponent("gone.md")
+    send(.link(socket: newPreview.path, token: "B", file: missing.path, line: 1), session)
+    wait("the unlinked message") { summary(session.inbox.messages).contains("A unlinked a.md") }
+  }
 }

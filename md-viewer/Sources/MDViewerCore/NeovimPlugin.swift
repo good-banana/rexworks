@@ -169,13 +169,15 @@ public enum NeovimPlugin {
       return vim.json.encode(fields)
     end
 
-    local function send(kind, buf, extra)
-      if not linked() then return end
-      local file = realpath(buf)
-      if not file then return end
+    local function send_file(kind, file, extra)
+      if not linked() or not file then return end
       last_file = file
       queue[#queue + 1] = { socket = link.socket, generation = link.generation, line = message(kind, file, extra) }
       pump()
+    end
+
+    local function send(kind, buf, extra)
+      send_file(kind, realpath(buf), extra)
     end
 
     local function window_for(buf)
@@ -328,7 +330,7 @@ public enum NeovimPlugin {
         return
       end
       if link.socket ~= nil and link.socket ~= command.socket then
-        send('unlinked', target)
+        send_file('unlinked', last_file or realpath(target))
       end
       link.socket = command.socket
       link.token = command.token
@@ -355,7 +357,7 @@ public enum NeovimPlugin {
       if running_command or leaving then return end
       while commands[1] do
         local mode = api.nvim_get_mode().mode
-        if mode == 'c' then
+        if mode:sub(1, 1) == 'c' then
           if awaiting_cmdline then return end
           awaiting_cmdline = true
           api.nvim_create_autocmd('CmdlineLeave', {
