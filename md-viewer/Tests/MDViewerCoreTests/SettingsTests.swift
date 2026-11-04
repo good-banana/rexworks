@@ -42,6 +42,8 @@ final class SettingsTests: XCTestCase {
     let json = #"{"previews":"tabs","editMode":3,"editor":["vim"],"editorKind":"emacs2"}"#
     XCTAssertEqual(Settings(data: Data(json.utf8)), Settings())
     XCTAssertNil(Settings(data: Data(#"{"editor":""}"#.utf8)).editor)
+    XCTAssertNil(Settings(data: Data(#"{"editor":"  \t "}"#.utf8)).editor)
+    XCTAssertEqual(Settings(data: Data(#"{"editor":" hx "}"#.utf8)).editor, "hx")
     XCTAssertEqual(Settings(data: Data("[1]".utf8)), Settings())
   }
 

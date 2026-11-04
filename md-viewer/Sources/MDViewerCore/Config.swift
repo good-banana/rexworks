@@ -85,7 +85,9 @@ public struct Settings: Equatable, Sendable {
   init(object: [String: Any]) {
     previews = (object[SettingKey.previews.rawValue] as? String).flatMap(PreviewMode.init(rawValue:)) ?? .perFile
     editMode = (object[SettingKey.editMode.rawValue] as? String).flatMap(EditMode.init(rawValue:)) ?? .split
-    editor = (object[SettingKey.editor.rawValue] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    editor = (object[SettingKey.editor.rawValue] as? String)
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .flatMap { $0.isEmpty ? nil : $0 }
     editorKind = (object[SettingKey.editorKind.rawValue] as? String).flatMap(EditorKind.init(rawValue:))
   }
 }
@@ -158,9 +160,9 @@ public enum ConfigStore {
   }
 
   static func write(_ object: [String: Any], _ paths: SupportPaths) throws {
-    try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-      .write(to: paths.configFile, options: .atomic)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: paths.configFile.path)
+    try PrivateFile.write(
+      JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+      to: paths.configFile)
   }
 
   private static func prepareRoot(_ paths: SupportPaths) throws {

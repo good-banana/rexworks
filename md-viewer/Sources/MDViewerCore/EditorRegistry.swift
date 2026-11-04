@@ -103,9 +103,7 @@ public struct EditorRegistry: Sendable {
     try FileManager.default.createDirectory(
       at: paths.editorsDirectory, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
-    let file = entryFile(block: entry.block)
-    try JSONEncoder().encode(entry).write(to: file, options: .atomic)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    try PrivateFile.write(JSONEncoder().encode(entry), to: entryFile(block: entry.block))
   }
 
   @discardableResult

@@ -46,6 +46,15 @@ final class NeovimPluginTests: XCTestCase {
     XCTAssertEqual(try mode(paths.neovimPlugin), 0o600)
   }
 
+  func testInstallTightensALooseModeOnMatchingContent() throws {
+    let paths = temporaryPaths()
+    defer { try? FileManager.default.removeItem(at: paths.home) }
+    XCTAssertTrue(try NeovimPlugin.install(paths))
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: paths.neovimPlugin.path)
+    XCTAssertFalse(try NeovimPlugin.install(paths))
+    XCTAssertEqual(try mode(paths.neovimPlugin), 0o600)
+  }
+
   func testSourceParsesAsLua() throws {
     let luac = "/opt/homebrew/bin/luac"
     try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: luac), "luac is not installed")

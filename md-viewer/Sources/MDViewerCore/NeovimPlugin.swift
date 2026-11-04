@@ -5,13 +5,14 @@ public enum NeovimPlugin {
   public static func install(_ paths: SupportPaths) throws -> Bool {
     let file = paths.neovimPlugin
     let content = Data(source.utf8)
-    if (try? Data(contentsOf: file)) == content { return false }
-    let fileManager = FileManager.default
-    try fileManager.createDirectory(
+    if (try? Data(contentsOf: file)) == content {
+      try PrivateFile.restrict(file)
+      return false
+    }
+    try FileManager.default.createDirectory(
       at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
-    try content.write(to: file, options: .atomic)
-    try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    try PrivateFile.write(content, to: file)
     return true
   }
 
