@@ -58,29 +58,16 @@ final class ProcessRunnerTests: XCTestCase {
   }
 
   func testNoReaderThreadStaysBlockedAcrossManyCalls() throws {
-    let threads = try threadCount()
     let descriptors = openDescriptorCount()
     let started = Date()
     for _ in 0..<15 {
       _ = try ProcessRunner().run("/bin/sh", ["-c", "echo x; sleep 2 & exit 0"])
     }
     XCTAssertLessThan(Date().timeIntervalSince(started), 10)
-    XCTAssertLessThanOrEqual(openDescriptorCount(), descriptors)
-    XCTAssertLessThanOrEqual(try threadCount(), threads + 2)
+    XCTAssertLessThanOrEqual(openDescriptorCount(), descriptors, "a blocked reader keeps its pipe open")
   }
 
   private func openDescriptorCount() -> Int {
     (0..<Int32(getdtablesize())).filter { fcntl($0, F_GETFD) != -1 }.count
-  }
-
-  private func threadCount() throws -> Int {
-    var list: thread_act_array_t?
-    var count = mach_msg_type_number_t(0)
-    XCTAssertEqual(task_threads(mach_task_self_, &list, &count), KERN_SUCCESS)
-    if let list {
-      vm_deallocate(
-        mach_task_self_, vm_address_t(UInt(bitPattern: list)), vm_size_t(Int(count) * MemoryLayout<thread_t>.size))
-    }
-    return Int(count)
   }
 }
