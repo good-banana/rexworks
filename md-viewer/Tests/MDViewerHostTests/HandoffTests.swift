@@ -16,6 +16,7 @@ final class FakeHandoffTerminal: HandoffTerminal {
   var rawModeFails = false
   var launches: [EditorLaunch] = []
   var onExit: (@MainActor (Int32) -> Void)?
+  var onSetHandoffActive: ((Bool) -> Void)?
 
   init(output: RecordingOutput) {
     output.onWrite = { [unowned self] text in
@@ -31,7 +32,10 @@ final class FakeHandoffTerminal: HandoffTerminal {
 
   var spawned: Bool { !launches.isEmpty }
 
-  func setHandoffActive(_ active: Bool) { calls.append("handoff \(active)") }
+  func setHandoffActive(_ active: Bool) {
+    calls.append("handoff \(active)")
+    onSetHandoffActive?(active)
+  }
   func suspendInput() { calls.append("suspend input") }
   func waitForInputQueue() { calls.append("sync input queue") }
 
@@ -173,6 +177,29 @@ final class HandoffTests: XCTestCase {
       fixture.output.writes.first?.hasPrefix(TerminalSequences.enter + TerminalSequences.enableViewerModes) == true)
     XCTAssertFalse(fixture.host.handoffActive)
     XCTAssertFalse(fixture.host.transport.isSuspended)
+  }
+
+  func testResumeShowsTheDisplayBeforeEndingTheHandoffAndRequestsTheThemeBeforeReplay() throws {
+    let fixture = try HandoffFixture()
+    fixture.runEditor()
+    let host = fixture.host
+    var steps: [String] = []
+    func record(_ step: String) {
+      let display = host.transport.isSuspended ? "suspended" : "resumed"
+      let handoff = host.handoffActive ? "active" : "ended"
+      let theme = host.themeScheduler.dueAt == nil ? "idle" : "requested"
+      steps.append("\(step): display \(display), handoff \(handoff), theme \(theme)")
+    }
+    fixture.terminal.onSetHandoffActive = { if !$0 { record("terminal released") } }
+    fixture.control.onEditorMessage = { _ in record("replay") }
+    fixture.control.receive(editor: .edit(mode: .configured, line: 1))
+    fixture.terminal.exit(0)
+    XCTAssertEqual(
+      steps,
+      [
+        "terminal released: display resumed, handoff active, theme idle",
+        "replay: display resumed, handoff ended, theme requested",
+      ])
   }
 
   func testASecondEditDuringTheHandoffIsIgnored() throws {
