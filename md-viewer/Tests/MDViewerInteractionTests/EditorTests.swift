@@ -311,9 +311,26 @@ final class EditorCursorTests: XCTestCase {
 
     h.effects = []
     h.run(h.model.applyEditorCursor(EditorCursor(line: line, top: line, height: 40)))
-    XCTAssertEqual(h.model.offset, h.model.snapped(y), "the line at the top of Neovim's window is at the top")
+    XCTAssertEqual(h.model.offset, (y / 30).rounded(.down) * 30, "the line at the top of Neovim's window is at the top")
     XCTAssertEqual(h.model.overlay.sourceCursor, bar)
     XCTAssertTrue(h.effects.redrawRects.isEmpty, "the unchanged bar is not redrawn")
+  }
+
+  func testTheCursorLineStaysFullyInViewAtNeovimsTopAndBottomRows() throws {
+    for row: CGFloat in [30, 17] {
+      var h = Harness(longDocument(), height: 600, row: row)
+      for line in stride(from: 41, through: 81, by: 4) {
+        for cursor in [
+          EditorCursor(line: line, top: line - 39, height: 40), EditorCursor(line: line, top: line - 60, height: 40),
+          EditorCursor(line: line, top: line, height: 40),
+        ] {
+          h.run(h.model.applyEditorCursor(cursor))
+          let bar = try XCTUnwrap(h.model.overlay.sourceCursor)
+          XCTAssertGreaterThanOrEqual(bar.minY, h.model.offset, "row \(row) \(cursor)")
+          XCTAssertLessThanOrEqual(bar.maxY, h.model.offset + 600, "row \(row) \(cursor)")
+        }
+      }
+    }
   }
 
   func testTheCursorIsAppliedAgainAfterABufferLayout() throws {

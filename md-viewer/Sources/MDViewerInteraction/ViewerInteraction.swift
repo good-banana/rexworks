@@ -656,7 +656,14 @@ public struct ViewerInteraction {
     guard let band = sourceLineBand(cursor.line, in: page) else { return nil }
     let fraction =
       cursor.height > 0 ? min(max(CGFloat(cursor.line - cursor.top) / CGFloat(cursor.height), 0), 1) : 0
-    return band.top - fraction * geometry.contentHeight
+    let height = geometry.contentHeight
+    let row = geometry.rowHeight
+    func aligned(_ value: CGFloat, _ rule: FloatingPointRoundingRule) -> CGFloat {
+      row > 0 ? (value / row).rounded(rule) * row : value
+    }
+    var target = snapped(band.top - fraction * height)
+    if target + height < band.bottom { target = aligned(band.bottom - height, .up) }
+    return min(target, aligned(band.top, .down))
   }
 
   func sourceCursorBar(for cursor: EditorCursor, in page: PageLayout) -> CGRect? {
