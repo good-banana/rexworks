@@ -207,14 +207,14 @@ final class EditorCoordinatorTests: XCTestCase {
   func testNeovimLiveSyncFailuresAreReportedAndTheLaunchProceeds() throws {
     let noSocket = try EditorFixture(previewSocket: false)
     noSocket.launchNeovim()
-    XCTAssertEqual(noSocket.status, "Neovim live sync unavailable (no preview socket); refreshing on save")
+    XCTAssertEqual(noSocket.status, "Live sync unavailable: no preview socket. Preview will refresh on save.")
     XCTAssertNil(noSocket.coordinator.link.token)
     XCTAssertEqual(noSocket.host.interaction.status.editor, "Neovim: on save")
     XCTAssertTrue(noSocket.logs.values.contains { $0.contains("no preview socket") })
 
     let long = try EditorFixture(homeSuffix: String(repeating: "h", count: 60))
     long.launchNeovim()
-    XCTAssertEqual(long.status, "Neovim live sync unavailable (socket path too long); refreshing on save")
+    XCTAssertEqual(long.status, "Live sync unavailable: socket path too long. Preview will refresh on save.")
     XCTAssertEqual(
       long.runner.rexCalls.first { $0.first == "run" }?.suffix(3), ["/fake/bin/nvim", "+1", long.file.path])
     XCTAssertTrue(long.logs.values.contains { $0.contains("socket path too long") })
@@ -222,7 +222,7 @@ final class EditorCoordinatorTests: XCTestCase {
     let broken = try EditorFixture()
     try Data().write(to: broken.paths.root.appendingPathComponent("nvim"))
     broken.launchNeovim()
-    XCTAssertEqual(broken.status, "Neovim live sync unavailable (plugin install failed); refreshing on save")
+    XCTAssertEqual(broken.status, "Live sync unavailable: plugin install failed. Preview will refresh on save.")
     XCTAssertNil(broken.coordinator.link.token)
     XCTAssertTrue(broken.logs.values.contains { $0.contains("plugin install failed") })
   }
@@ -233,7 +233,7 @@ final class EditorCoordinatorTests: XCTestCase {
     fixture.runner.queueRun((0, runJSON(block: "block:helix"), Data()))
     fixture.press()
     fixture.waitIdle()
-    XCTAssertEqual(fixture.status, "Could not record the editor; another e may open a second one")
+    XCTAssertEqual(fixture.status, "Failed to save editor setting.")
     XCTAssertEqual(fixture.coordinator.link.block, "block:helix")
     XCTAssertTrue(fixture.logs.values.contains { $0.contains("could not write the entry for block:helix") })
   }
@@ -459,6 +459,20 @@ final class EditorCoordinatorTests: XCTestCase {
     XCTAssertEqual(settings.editMode, .split)
     XCTAssertEqual(fixture.coordinator.link.block, EditorFixture.launchedBlock)
     XCTAssertEqual(fixture.runner.rexCalls.first { $0.first == "run" }?.suffix(2), ["+2", fixture.file.path])
+  }
+
+  func testAPickerChoiceThatCannotBeSavedStopsWithAnError() throws {
+    let fixture = try EditorFixture(editor: nil)
+    try FileManager.default.createDirectory(at: fixture.paths.root, withIntermediateDirectories: true)
+    try Data("[]".utf8).write(to: fixture.paths.configFile)
+    fixture.press()
+    fixture.waitIdle()
+    XCTAssertNotNil(fixture.host.interaction.editorPicker)
+    fixture.host.receive(Array("1".utf8))
+    fixture.waitIdle()
+    XCTAssertEqual(fixture.status, "Could not save")
+    XCTAssertTrue(fixture.runner.rexCalls.isEmpty)
+    XCTAssertNil(fixture.coordinator.link.block)
   }
 
   func testAnUnresolvableSettingStopsWithItsMessage() throws {

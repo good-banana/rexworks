@@ -191,11 +191,11 @@ public final class EditorCoordinator {
   public nonisolated static let alreadyEditingMessage = "Already editing in another pane"
   public nonisolated static let relinkedMessage = "Editor linked to another preview"
   public nonisolated static let closedMessage = "Editor closed"
-  public nonisolated static let unrecordedMessage = "Could not record the editor; another e may open a second one"
+  public nonisolated static let unrecordedMessage = "Failed to save editor setting."
   public nonisolated static let registryFailedMessage = "Could not read the editor registry"
 
   public nonisolated static func liveSyncUnavailable(_ reason: String) -> String {
-    "Neovim live sync unavailable (\(reason)); refreshing on save"
+    "Live sync unavailable: \(reason). Preview will refresh on save."
   }
 
   public let context: EditorContext
@@ -257,7 +257,7 @@ public final class EditorCoordinator {
         try SettingsStore.update(
           context.paths, set: [.editor: candidate.name, .editMode: mode.rawValue], unset: [.editorKind])
       } catch {
-        return finish(Outcome(status: ("Could not save the editor setting", .error)))
+        return finish(Outcome(status: ("Could not save", .error)))
       }
       guard let pending, let file else { return finish(Outcome { $0.host?.setEditMode(mode) }) }
       run(EditJob(request: pending, file: file, fromSocket: false, link: snapshot))

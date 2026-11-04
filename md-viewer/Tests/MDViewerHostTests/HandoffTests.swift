@@ -416,14 +416,14 @@ final class HandoffTests: XCTestCase {
     noSocket.terminal.exit(2)
     XCTAssertEqual(
       noSocket.editor.status,
-      "nvim exited with status 2; Neovim live sync unavailable (no preview socket); refreshing on save")
+      "nvim exited with status 2; Live sync unavailable: no preview socket. Preview will refresh on save.")
 
     let unrecorded = try HandoffFixture(editor: "hx")
     try Data().write(to: unrecorded.editor.paths.editorsDirectory)
     unrecorded.runEditor()
     unrecorded.terminal.exit(0)
     XCTAssertEqual(
-      unrecorded.editor.status, "Back from hx; Could not record the editor; another e may open a second one")
+      unrecorded.editor.status, "Back from hx; Failed to save editor setting.")
     XCTAssertEqual(unrecorded.host.interaction.status.message?.kind, .error)
   }
 
