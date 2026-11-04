@@ -192,6 +192,7 @@ public final class EditorCoordinator {
   public nonisolated static let relinkedMessage = "Editor linked to another preview"
   public nonisolated static let closedMessage = "Editor closed"
   public nonisolated static let unrecordedMessage = "Could not record the editor; another e may open a second one"
+  public nonisolated static let registryFailedMessage = "Could not read the editor registry"
 
   public nonisolated static func liveSyncUnavailable(_ reason: String) -> String {
     "Neovim live sync unavailable (\(reason)); refreshing on save"
@@ -476,8 +477,11 @@ public final class EditorCoordinator {
         if !editor.profile.runsInTerminal { return launchGUI(editor, job: job) }
         return mode == .split ? launchSplit(editor, job: job, lock: lock) : launchHere(editor, job: job, lock: lock)
       }
+    } catch let error as EditorRegistryError {
+      return Outcome(status: (error.description, .error))
     } catch {
-      return Outcome(status: ("\(error)", .error))
+      work.system.log("editor: could not read the editor registry: \(error)")
+      return Outcome(status: (EditorCoordinator.registryFailedMessage, .error))
     }
   }
 

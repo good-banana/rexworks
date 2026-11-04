@@ -238,6 +238,21 @@ final class EditorCoordinatorTests: XCTestCase {
     XCTAssertTrue(fixture.logs.values.contains { $0.contains("could not write the entry for block:helix") })
   }
 
+  func testARegistryFileErrorShowsAPlainMessage() throws {
+    let fixture = try EditorFixture()
+    try fixture.write(fixture.neovimEntry(block: "block:gone", files: [fixture.file]))
+    fixture.runner.reply(
+      to: "block inspect",
+      (3, Data(), Data("Error: block target \"block:gone\" not found\n".utf8)))
+    let editors = fixture.paths.editorsDirectory.path
+    XCTAssertEqual(chmod(editors, 0o500), 0)
+    defer { chmod(editors, 0o700) }
+    fixture.press()
+    fixture.waitIdle()
+    XCTAssertEqual(fixture.status, "Could not read the editor registry")
+    XCTAssertTrue(fixture.logs.values.contains { $0.contains("could not read the editor registry") })
+  }
+
   func testAMissingEditorIsPrunedAndANewOneLaunched() throws {
     let fixture = try EditorFixture()
     try fixture.write(fixture.neovimEntry(block: "block:gone", files: [fixture.file]))
