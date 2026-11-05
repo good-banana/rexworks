@@ -1,6 +1,6 @@
 import Foundation
 
-public let agentStubVersion = "1"
+public let agentStubVersion = "2"
 public let agentStubMarkerKey = "md-viewer-stub"
 
 public let agentStub = """
@@ -15,7 +15,7 @@ public let agentStub = """
   Run `md-viewer agent-guide` and follow the guide it prints. The guide comes from
   the installed md-viewer, so it describes the behavior of that version.
 
-  If the command fails, md-viewer is not available. Mention the file path and continue.
+  If the command fails, md-viewer is not available. Mention the file's absolute path and continue.
 
   """
 
@@ -35,14 +35,14 @@ public let agentGuide = """
   - Add `--replace` when updating or revising the same deliverable, so the preview you opened last switches to it instead of a new pane opening.
   - Add `--new` when the user should compare documents side by side, so each one opens in its own pane.
   - When unsure, use no flag.
-  - Always also print the file path in your reply.
+  - Always also print the file's absolute path in your reply.
 
   Editing:
   - Settings: when the user asks to change the editor md-viewer opens or how it opens, run `md-viewer config set editor <command>` (for example `nvim`, `hx`, `code`) or `md-viewer config set edit-mode split|here`. Run `md-viewer config` to show the current values. Do not edit config.json.
   - Do not open editor panes or run `md-viewer edit` unless the user asks.
   - The user may be editing a file in an editor beside its preview. If a write is refused because the file changed, re-read it and never overwrite the user's saved changes.
 
-  If the command fails, or md-viewer or Rex is unavailable, mention the file path and continue. Do not retry, use another viewer, or install anything.
+  If the command fails, or md-viewer or Rex is unavailable, mention the file's absolute path and continue. Do not retry, use another viewer, or install anything.
 
   """
 

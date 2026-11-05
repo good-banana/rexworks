@@ -40,12 +40,22 @@ final class AgentSkillTests: XCTestCase {
     XCTAssertEqual(stubVersion(of: agentStub), agentStubVersion)
     XCTAssertTrue(agentStub.contains("`md-viewer agent-guide`"))
     XCTAssertTrue(agentStub.contains("Installed by \"md-viewer agents install\""))
+    XCTAssertTrue(agentStub.contains("Mention the file's absolute path and continue.\n"))
+    XCTAssertFalse(agentStub.contains("Relative paths are not clickable"))
+    XCTAssertFalse(agentStub.contains("Mention the file path"))
   }
 
   func testGuideContainsOpenCommandAndFallbackRule() {
     XCTAssertTrue(agentGuide.contains("md-viewer open /absolute/path/to/file.md"))
+    XCTAssertTrue(
+      agentGuide.contains(
+        "If the command fails, or md-viewer or Rex is unavailable, mention the file's absolute path and continue."
+      ))
     XCTAssertTrue(agentGuide.contains("Do not retry, use another viewer, or install anything."))
-    XCTAssertTrue(agentGuide.contains("print the file path"))
+    XCTAssertFalse(agentGuide.contains("mention the file path"))
+    XCTAssertTrue(agentGuide.contains("- Always also print the file's absolute path in your reply.\n"))
+    XCTAssertFalse(agentGuide.contains("Relative paths are not clickable"))
+    XCTAssertFalse(agentGuide.contains("print the file path"))
     XCTAssertTrue(agentGuide.contains("beside the pane the command runs in (your own pane)"))
     XCTAssertFalse(agentGuide.contains("focused in Rex"))
     XCTAssertFalse(agentGuide.contains("reuse that tab's preview"))
@@ -63,7 +73,7 @@ final class AgentSkillTests: XCTestCase {
     XCTAssertTrue(
       agentGuide.contains(
         "If a write is refused because the file changed, re-read it and never overwrite the user's saved changes."))
-    XCTAssertEqual(agentStubVersion, "1")
+    XCTAssertEqual(agentStubVersion, "2")
   }
 
   func testStubVersionRejectsForeignContent() {

@@ -33,7 +33,7 @@ brew install good-banana/rexworks/md-viewer && md-viewer setup
 
 `md-viewer setup` installs the background handler app and makes it the default handler for Markdown files when you click them in Rex. Clicking a Markdown file in any other app will open it in your normal default Markdown app.
 
-`md-viewer setup` also adds a Cmd-F binding to your Rex config (`~/.config/rex/init.lua`, or the file `REX_CONFIG` names). It opens md-viewer's find in a preview pane and keeps Rex's normal Find everywhere else.
+`md-viewer setup` also adds a Cmd-F binding to your Rex config (`~/.config/rex/init.lua`, or the file `REX_CONFIG` names). It opens md-viewer's find in a preview pane and keeps Rex's normal Find everywhere else. Setup also makes your shell report its current folder to Rex, so relative Markdown paths are clickable too.
 
 `md-viewer setup` also saves `$VISUAL` or `$EDITOR` from its environment as the `editor` setting, without asking, when no `editor` setting exists yet and the value names an executable. It prints which editor it saved and how to change it (`md-viewer config set editor <command>`). If neither is set, the preview asks you to choose an editor the first time you press `e`.
 
@@ -187,7 +187,7 @@ Opens the file's preview, or reuses the one that is already open, then starts ed
 ```
 md-viewer uninstall && brew uninstall md-viewer
 ```
-`md-viewer uninstall` removes the handler app, restores the previous Markdown handler and removes the Cmd-F binding from your Rex config. It also deletes md-viewer's support folder, which holds the Neovim plugin, its sockets and sidecars, the editor files and your settings. macOS may ask you to confirm the change of default app for Markdown files.
+`md-viewer uninstall` removes the handler app, restores the previous Markdown handler and removes the Cmd-F binding from your Rex config. The folder reporting that setup added to your shell's startup files is removed too. It also deletes md-viewer's support folder, which holds the Neovim plugin, its sockets and sidecars, the editor files and your settings. macOS may ask you to confirm the change of default app for Markdown files.
 
 ## Settings
 

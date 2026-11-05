@@ -51,6 +51,14 @@ enum DoctorCommand {
       "\(MermaidRenderer.bundleName) \(mermaid.map { "at \($0.deletingLastPathComponent().deletingLastPathComponent().path)" } ?? "not found")"
     )
 
+    for line in SetupCommand.shellSetup().doctorLines(rexPath: rex) {
+      switch line.level {
+      case .ok: report(true, line.text)
+      case .fail: report(false, line.text)
+      case .info: print("info \(line.text)")
+      }
+    }
+
     let settings = SettingsStore.load(paths)
     let editorLines = EditorDoctor.lines(
       settings: settings, resolution: systemEditorResolver(settings: settings).resolve(),

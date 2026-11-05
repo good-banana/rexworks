@@ -40,6 +40,7 @@ enum SetupCommand {
     }
     print("md-viewer is now the default Markdown handler. Run md-viewer doctor to verify.")
     updateFindBinding(rex: rex, install: true)
+    updateShellReporting(install: true)
     print(
       EditorSetup.apply(
         paths: currentPaths(), ownEnvironment: ProcessInfo.processInfo.environment,
@@ -54,7 +55,10 @@ enum SetupCommand {
     do {
       let failures = try await uninstallThenRemoveFindBinding(
         restore: { try await systemInstaller().uninstall() },
-        removeFindBinding: { updateFindBinding(rex: rex, install: false) })
+        removeFindBinding: {
+          updateFindBinding(rex: rex, install: false)
+          updateShellReporting(install: false)
+        })
       for failure in failures { FileHandle.standardError.write(Data((failure + "\n").utf8)) }
       if failures.isEmpty {
         print("md-viewer removed and previous handlers restored.")
@@ -83,6 +87,29 @@ enum SetupCommand {
     } catch {
       FileHandle.standardError.write(
         Data("Left \(config.path) unchanged because \(error). Cmd-F was not \(install ? "set up" : "removed").\n".utf8))
+    }
+  }
+
+  static func shellSetup() -> ShellSetup {
+    let environment = ProcessInfo.processInfo.environment
+    return ShellSetup(
+      home: FileManager.default.homeDirectoryForCurrentUser, environment: environment,
+      loginShell: loginShellPath(environment: environment), locate: locateShell)
+  }
+
+  static func locateShell(_ name: String) -> String? {
+    locateExecutable(name)
+      ?? ["/opt/homebrew/bin", "/usr/local/bin", "/bin", "/usr/bin"].map { "\($0)/\(name)" }.first {
+        FileManager.default.isExecutableFile(atPath: $0)
+      }
+  }
+
+  static func updateShellReporting(install: Bool) {
+    let setup = shellSetup()
+    let outcome = install ? setup.install() : setup.remove()
+    for line in shellSetupLines(outcome, installing: install) { print(line) }
+    for line in shellFailureLines(outcome, installing: install) {
+      FileHandle.standardError.write(Data((line + "\n").utf8))
     }
   }
 }
