@@ -1,0 +1,8 @@
+{
+  "session_id": "session:focused",
+  "active_window_id": "window:active",
+  "windows": [
+    { "window_id": "window:other", "focused_block_id": "block:elsewhere" },
+    { "window_id": "window:active", "focused_block_id": "block:shell" }
+  ]
+}

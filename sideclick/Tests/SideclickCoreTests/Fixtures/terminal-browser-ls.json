@@ -1,0 +1,20 @@
+{
+  "self": null,
+  "browsers": [
+    {
+      "key": "50273-1",
+      "pid": 50273,
+      "tty": "/dev/ttys005",
+      "pane": { "tab": null, "pane": null },
+      "tabs": [{ "id": 1, "url": "https://example.com/", "active": true }]
+    },
+    {
+      "key": "50273-6",
+      "pid": 50273,
+      "tty": "/dev/ttys009",
+      "pane": { "tab": null, "pane": null },
+      "tabs": [{ "id": 1, "url": "https://example.org/", "active": true }]
+    },
+    { "key": "50273-7", "pid": 50273, "tty": null, "tabs": [] }
+  ]
+}

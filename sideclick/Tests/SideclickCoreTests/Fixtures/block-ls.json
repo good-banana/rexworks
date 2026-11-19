@@ -1,0 +1,8 @@
+{
+  "blocks": [
+    { "block_id": "block:elsewhere", "label": "shell", "window_id": "window:other" },
+    { "block_id": "block:shell", "label": "shell", "window_id": "window:active" },
+    { "block_id": "block:browser", "label": "terminal-browser", "window_id": "window:active" },
+    { "block_id": "block:preview", "label": "md-viewer", "window_id": "window:active" }
+  ]
+}

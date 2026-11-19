@@ -1,0 +1,15 @@
+{
+  "clients": [
+    {
+      "client_id": "client:cli",
+      "info": { "kind": "cli", "platform": "macos", "name": "rex" },
+      "connection_state": "connected"
+    },
+    {
+      "client_id": "client:app",
+      "info": { "kind": "app", "platform": "macos", "name": "Rex Beta" },
+      "connection_state": "connected",
+      "session_ids": ["session:first", "session:focused"]
+    }
+  ]
+}
